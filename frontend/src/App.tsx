@@ -3,6 +3,7 @@ import {
   BarChart3,
   Check,
   ClipboardList,
+  Download,
   FileText,
   Gauge,
   Layers,
@@ -16,6 +17,7 @@ import {
   Upload
 } from "lucide-react";
 import { createComparison, createTextAsset, listAssets, seedDemo } from "./api";
+import { getReport } from "./api";
 import type { Asset, AssetType, Comparison, ScoreBreakdown, Suggestion, TimelinePoint, VariantResult } from "./types";
 
 const assetTypes: { label: string; value: AssetType }[] = [
@@ -44,6 +46,9 @@ export function App() {
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState<AssetType>("script");
   const [text, setText] = useState("");
+  const [url, setUrl] = useState("");
+  const [durationSeconds, setDurationSeconds] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [objective, setObjective] = useState("Pick the DTC creative most likely to earn attention, build memory, and convert.");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,18 +83,29 @@ export function App() {
   }
 
   async function handleCreateAsset() {
-    if (!name.trim() || !text.trim()) {
-      setError("Add a name and enough creative text or notes to analyze.");
+    if (!name.trim() || (!text.trim() && !url.trim() && !file)) {
+      setError("Add a name plus text, a URL, or a file.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const asset = await createTextAsset({ assetType, name, text });
+      const parsedDuration = durationSeconds ? Number(durationSeconds) : undefined;
+      const asset = await createTextAsset({
+        assetType,
+        name,
+        text,
+        url: url || undefined,
+        durationSeconds: Number.isFinite(parsedDuration) ? parsedDuration : undefined,
+        file
+      });
       setAssets([asset, ...assets]);
       setSelected((current) => [...new Set([...current, asset.id])].slice(-4));
       setName("");
       setText("");
+      setUrl("");
+      setDurationSeconds("");
+      setFile(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create asset.");
     } finally {
@@ -160,6 +176,27 @@ export function App() {
           <label>
             Name
             <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Variant C - proof-led hook" />
+          </label>
+          <label>
+            URL
+            <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://brand.com/offer" />
+          </label>
+          <label>
+            Duration seconds
+            <input
+              value={durationSeconds}
+              inputMode="decimal"
+              onChange={(event) => setDurationSeconds(event.target.value)}
+              placeholder="30"
+            />
+          </label>
+          <label>
+            File
+            <input
+              type="file"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              accept=".txt,.md,.png,.jpg,.jpeg,.webp,.mp3,.wav,.mp4,.mov"
+            />
           </label>
           <label>
             Creative text, transcript, URL notes, or visual notes
@@ -255,6 +292,7 @@ function PreComparison({ selectedAssets }: { selectedAssets: Asset[] }) {
 
 function ComparisonView({ comparison }: { comparison: Comparison }) {
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
+  const [reportBusy, setReportBusy] = useState(false);
 
   return (
     <div className="results-stack">
@@ -273,6 +311,10 @@ function ComparisonView({ comparison }: { comparison: Comparison }) {
             <span>overall</span>
           </div>
         )}
+        <button className="button report-button" onClick={() => exportReport(comparison.id, setReportBusy)} disabled={reportBusy}>
+          {reportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
+          Report
+        </button>
       </section>
 
       <section className="panel">
@@ -314,6 +356,22 @@ function ComparisonView({ comparison }: { comparison: Comparison }) {
       </section>
     </div>
   );
+}
+
+async function exportReport(comparisonId: string, setBusy: (value: boolean) => void) {
+  setBusy(true);
+  try {
+    const report = await getReport(comparisonId);
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `stimli-report-${comparisonId}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } finally {
+    setBusy(false);
+  }
 }
 
 function VariantCard({ variant }: { variant: VariantResult }) {
@@ -378,4 +436,3 @@ function SuggestionCard({ suggestion, comparison }: { suggestion: Suggestion; co
     </article>
   );
 }
-

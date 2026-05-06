@@ -1,4 +1,4 @@
-import type { Asset, AssetType, Comparison } from "./types";
+import type { Asset, AssetType, Comparison, Report } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
@@ -18,13 +18,15 @@ export async function createTextAsset(input: {
   text: string;
   url?: string;
   durationSeconds?: number;
+  file?: File | null;
 }): Promise<Asset> {
   const form = new FormData();
   form.append("asset_type", input.assetType);
   form.append("name", input.name);
-  form.append("text", input.text);
+  if (input.text) form.append("text", input.text);
   if (input.url) form.append("url", input.url);
   if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
+  if (input.file) form.append("file", input.file);
   const response = await fetch(`${API_BASE}/assets`, { method: "POST", body: form });
   const payload = await parseResponse<{ asset: Asset }>(response);
   return payload.asset;
@@ -39,6 +41,11 @@ export async function createComparison(assetIds: string[], objective: string): P
   return parseResponse(response);
 }
 
+export async function getReport(comparisonId: string): Promise<Report> {
+  const response = await fetch(`${API_BASE}/reports/${comparisonId}`);
+  return parseResponse(response);
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const message = await response.text();
@@ -46,4 +53,3 @@ async function parseResponse<T>(response: Response): Promise<T> {
   }
   return response.json() as Promise<T>;
 }
-

@@ -76,3 +76,12 @@ export type Comparison = {
   created_at: string;
 };
 
+export type Report = {
+  comparison_id: string;
+  title: string;
+  executive_summary: string;
+  recommendation: Recommendation;
+  variants: VariantResult[];
+  suggestions: Suggestion[];
+  next_steps: string[];
+};
