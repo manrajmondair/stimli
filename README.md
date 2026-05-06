@@ -60,6 +60,9 @@ Then open `http://localhost:5173`.
 3. Use the built-in sample variants or upload/paste your own assets.
 4. Run a comparison.
 5. Review the winner, confidence, timeline evidence, and action cards.
+6. Draft a challenger variant and export a Markdown report.
+
+Sample text assets live in `backend/data/sample_assets/`.
 
 ## API
 
