@@ -26,6 +26,10 @@ def test_demo_seed_and_compare():
     assert report.status_code == 200
     assert report.json()["title"] == "Stimli Creative Decision Report"
 
+    markdown = client.get(f"/reports/{comparison['id']}/markdown")
+    assert markdown.status_code == 200
+    assert "## Recommendation" in markdown.text
+
 
 def test_text_asset_upload():
     response = client.post(

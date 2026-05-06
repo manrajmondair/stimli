@@ -27,6 +27,7 @@ import {
   createTextAsset,
   getLearningSummary,
   getReport,
+  getReportMarkdown,
   listAssets,
   listComparisons,
   seedDemo
@@ -438,7 +439,11 @@ function ComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison
         )}
         <button className="button report-button" onClick={() => exportReport(comparison.id, setReportBusy)} disabled={reportBusy}>
           {reportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
-          Report
+          JSON
+        </button>
+        <button className="button report-button" onClick={() => exportMarkdownReport(comparison.id, setReportBusy)} disabled={reportBusy}>
+          {reportBusy ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+          Markdown
         </button>
       </section>
 
@@ -586,6 +591,22 @@ async function exportReport(comparisonId: string, setBusy: (value: boolean) => v
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = `stimli-report-${comparisonId}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function exportMarkdownReport(comparisonId: string, setBusy: (value: boolean) => void) {
+  setBusy(true);
+  try {
+    const report = await getReportMarkdown(comparisonId);
+    const blob = new Blob([report], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `stimli-report-${comparisonId}.md`;
     anchor.click();
     URL.revokeObjectURL(url);
   } finally {

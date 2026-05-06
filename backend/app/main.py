@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import CreativeAnalyzer, build_challenger_text
@@ -144,6 +144,54 @@ def get_report(comparison_id: str) -> Report:
             "Launch the winner with a clean post-flight label so outcome data can calibrate future scoring.",
         ],
     )
+
+
+@app.get("/reports/{comparison_id}/markdown")
+def get_markdown_report(comparison_id: str) -> Response:
+    report = get_report(comparison_id)
+    lines = [
+        f"# {report.title}",
+        "",
+        report.executive_summary,
+        "",
+        "## Recommendation",
+        "",
+        f"- Verdict: {report.recommendation.verdict}",
+        f"- Confidence: {round(report.recommendation.confidence * 100)}%",
+        f"- Winner: {report.recommendation.winner_asset_id or 'None'}",
+        "",
+        "## Reasons",
+        "",
+        *[f"- {reason}" for reason in report.recommendation.reasons],
+        "",
+        "## Variant Scores",
+        "",
+        "| Rank | Variant | Overall | Hook | CTA | Offer | Audience |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for variant in report.variants:
+        scores = variant.analysis.scores
+        lines.append(
+            f"| {variant.rank} | {variant.asset.name} | {scores.overall} | {scores.hook} | {scores.cta} | {scores.offer_strength} | {scores.audience_fit} |"
+        )
+    lines.extend(["", "## Edit Cards", ""])
+    for suggestion in report.suggestions:
+        lines.extend(
+            [
+                f"### {suggestion.target}",
+                "",
+                f"Severity: {suggestion.severity}",
+                "",
+                f"Issue: {suggestion.issue}",
+                "",
+                f"Edit: {suggestion.suggested_edit}",
+                "",
+                f"Draft: {suggestion.draft_revision or 'No draft available.'}",
+                "",
+            ]
+        )
+    lines.extend(["## Next Steps", "", *[f"- {step}" for step in report.next_steps], ""])
+    return Response("\n".join(lines), media_type="text/markdown")
 
 
 @app.post("/comparisons/{comparison_id}/challengers", response_model=ChallengerResponse)

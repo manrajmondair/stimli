@@ -60,6 +60,15 @@ export async function getReport(comparisonId: string): Promise<Report> {
   return parseResponse(response);
 }
 
+export async function getReportMarkdown(comparisonId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/reports/${comparisonId}/markdown`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed with ${response.status}`);
+  }
+  return response.text();
+}
+
 export async function createOutcome(comparisonId: string, outcome: OutcomeCreate): Promise<Outcome> {
   const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/outcomes`, {
     method: "POST",
