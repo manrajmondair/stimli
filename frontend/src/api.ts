@@ -1,0 +1,49 @@
+import type { Asset, AssetType, Comparison } from "./types";
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
+export async function seedDemo(): Promise<Asset[]> {
+  const response = await fetch(`${API_BASE}/demo/seed`, { method: "POST" });
+  return parseResponse(response);
+}
+
+export async function listAssets(): Promise<Asset[]> {
+  const response = await fetch(`${API_BASE}/assets`);
+  return parseResponse(response);
+}
+
+export async function createTextAsset(input: {
+  assetType: AssetType;
+  name: string;
+  text: string;
+  url?: string;
+  durationSeconds?: number;
+}): Promise<Asset> {
+  const form = new FormData();
+  form.append("asset_type", input.assetType);
+  form.append("name", input.name);
+  form.append("text", input.text);
+  if (input.url) form.append("url", input.url);
+  if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
+  const response = await fetch(`${API_BASE}/assets`, { method: "POST", body: form });
+  const payload = await parseResponse<{ asset: Asset }>(response);
+  return payload.asset;
+}
+
+export async function createComparison(assetIds: string[], objective: string): Promise<Comparison> {
+  const response = await fetch(`${API_BASE}/comparisons`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ asset_ids: assetIds, objective })
+  });
+  return parseResponse(response);
+}
+
+async function parseResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Request failed with ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
