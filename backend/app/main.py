@@ -7,7 +7,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import CreativeAnalyzer
-from app.models import Asset, AssetType, AssetUploadResponse, Comparison, ComparisonCreate, Report
+from app.extractor import extract_landing_page_text
+from app.models import Asset, AssetType, AssetUploadResponse, Comparison, ComparisonCreate, LearningSummary, Outcome, OutcomeCreate, Report
 from app.storage import UPLOAD_DIR, Store, new_id, now_iso
 
 
@@ -53,7 +54,9 @@ async def create_asset(
             extracted_text = destination.read_text(errors="ignore")
 
     if asset_type == "landing_page" and url and not extracted_text:
-        extracted_text = _landing_page_proxy_text(url)
+        extracted_text, extraction_metadata = extract_landing_page_text(url)
+    else:
+        extraction_metadata = {}
 
     if asset_type in {"image", "audio", "video"} and not extracted_text:
         extracted_text = _text_from_filename(final_name)
@@ -66,7 +69,7 @@ async def create_asset(
         file_path=file_path,
         extracted_text=extracted_text.strip(),
         duration_seconds=duration_seconds,
-        metadata={"original_filename": file.filename if file else None},
+        metadata={"original_filename": file.filename if file else None, **extraction_metadata},
         created_at=now_iso(),
     )
     store.save_asset(asset)
@@ -86,9 +89,14 @@ def create_comparison(payload: ComparisonCreate) -> Comparison:
         if asset is None:
             raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
         assets.append(asset)
-    comparison = analyzer.compare(new_id("cmp"), payload.objective, assets, now_iso())
+    comparison = analyzer.compare(new_id("cmp"), payload.objective, assets, now_iso(), payload.brief)
     store.save_comparison(comparison)
     return comparison
+
+
+@app.get("/comparisons", response_model=list[Comparison])
+def list_comparisons() -> list[Comparison]:
+    return store.list_comparisons()
 
 
 @app.get("/comparisons/{comparison_id}", response_model=Comparison)
@@ -102,6 +110,7 @@ def get_comparison(comparison_id: str) -> Comparison:
 @app.get("/reports/{comparison_id}", response_model=Report)
 def get_report(comparison_id: str) -> Report:
     comparison = get_comparison(comparison_id)
+    learning = _learning_summary(store.list_outcomes(comparison_id))
     winner = next((variant for variant in comparison.variants if variant.asset.id == comparison.recommendation.winner_asset_id), None)
     summary = (
         f"{comparison.recommendation.headline}. "
@@ -115,12 +124,46 @@ def get_report(comparison_id: str) -> Report:
         recommendation=comparison.recommendation,
         variants=comparison.variants,
         suggestions=comparison.suggestions,
+        brief=comparison.brief,
+        learning_summary=learning,
         next_steps=[
             "Apply high-severity edits to the current leader.",
             "Create one focused challenger that changes only the hook.",
             "Launch the winner with a clean post-flight label so outcome data can calibrate future scoring.",
         ],
     )
+
+
+@app.post("/comparisons/{comparison_id}/outcomes", response_model=Outcome)
+def create_outcome(comparison_id: str, payload: OutcomeCreate) -> Outcome:
+    comparison = get_comparison(comparison_id)
+    variant_ids = {variant.asset.id for variant in comparison.variants}
+    if payload.asset_id not in variant_ids:
+        raise HTTPException(status_code=400, detail="Outcome asset must belong to the comparison.")
+    outcome = Outcome(
+        id=new_id("outcome"),
+        comparison_id=comparison_id,
+        asset_id=payload.asset_id,
+        spend=payload.spend,
+        impressions=payload.impressions,
+        clicks=payload.clicks,
+        conversions=payload.conversions,
+        revenue=payload.revenue,
+        notes=payload.notes,
+        created_at=now_iso(),
+    )
+    return store.save_outcome(outcome)
+
+
+@app.get("/comparisons/{comparison_id}/outcomes", response_model=list[Outcome])
+def list_comparison_outcomes(comparison_id: str) -> list[Outcome]:
+    get_comparison(comparison_id)
+    return store.list_outcomes(comparison_id)
+
+
+@app.get("/learning/summary", response_model=LearningSummary)
+def learning_summary() -> LearningSummary:
+    return _learning_summary(store.list_outcomes())
 
 
 @app.post("/demo/seed", response_model=list[Asset])
@@ -137,7 +180,7 @@ def seed_demo() -> list[Asset]:
                 "Try the starter kit today."
             ),
             duration_seconds=28,
-            metadata={"demo": True},
+            metadata={"demo": True, "channel": "paid social"},
             created_at=now_iso(),
         ),
         Asset(
@@ -150,7 +193,7 @@ def seed_demo() -> list[Asset]:
                 "It is simple, premium, and made to fit your lifestyle."
             ),
             duration_seconds=25,
-            metadata={"demo": True},
+            metadata={"demo": True, "channel": "paid social"},
             created_at=now_iso(),
         ),
         Asset(
@@ -163,7 +206,7 @@ def seed_demo() -> list[Asset]:
                 "Dermatologist tested formula with ceramides, peptides, and daily SPF support. "
                 "Shop the starter kit now and get free shipping."
             ),
-            metadata={"demo": True},
+            metadata={"demo": True, "channel": "landing page"},
             created_at=now_iso(),
         ),
     ]
@@ -172,11 +215,34 @@ def seed_demo() -> list[Asset]:
     return samples
 
 
-def _landing_page_proxy_text(url: str) -> str:
-    cleaned = url.replace("https://", "").replace("http://", "").replace("/", " ")
-    return f"Landing page submitted from {cleaned}. Add page copy for stronger analysis. Shop now."
-
-
 def _text_from_filename(name: str) -> str:
     stem = Path(name).stem.replace("-", " ").replace("_", " ")
     return f"Creative asset named {stem}. Add transcript or visual notes for deeper scoring."
+
+
+def _learning_summary(outcomes: list[Outcome]) -> LearningSummary:
+    total_spend = round(sum(outcome.spend for outcome in outcomes), 2)
+    total_revenue = round(sum(outcome.revenue for outcome in outcomes), 2)
+    total_impressions = sum(outcome.impressions for outcome in outcomes)
+    total_clicks = sum(outcome.clicks for outcome in outcomes)
+    total_conversions = sum(outcome.conversions for outcome in outcomes)
+    average_ctr = round(total_clicks / total_impressions, 4) if total_impressions else 0
+    average_cvr = round(total_conversions / total_clicks, 4) if total_clicks else 0
+    best_asset_id = None
+    if outcomes:
+        best = max(outcomes, key=lambda outcome: (outcome.revenue - outcome.spend, outcome.conversions, outcome.clicks))
+        best_asset_id = best.asset_id
+    insight = (
+        "Outcome data is ready to compare pre-spend predictions with launch performance."
+        if outcomes
+        else "No launch outcomes logged yet. Add post-flight results after a test campaign."
+    )
+    return LearningSummary(
+        outcome_count=len(outcomes),
+        total_spend=total_spend,
+        total_revenue=total_revenue,
+        average_ctr=average_ctr,
+        average_cvr=average_cvr,
+        best_asset_id=best_asset_id,
+        insight=insight,
+    )

@@ -27,6 +27,8 @@ export type ScoreBreakdown = {
   cta: number;
   brand_cue: number;
   pacing: number;
+  offer_strength: number;
+  audience_fit: number;
   neural_attention: number;
   memory: number;
   cognitive_load: number;
@@ -66,14 +68,50 @@ export type Suggestion = {
   expected_effect: string;
 };
 
+export type CreativeBrief = {
+  brand_name: string;
+  audience: string;
+  product_category: string;
+  primary_offer: string;
+  required_claims: string[];
+  forbidden_terms: string[];
+};
+
 export type Comparison = {
   id: string;
   objective: string;
+  brief: CreativeBrief;
   status: "complete";
   variants: VariantResult[];
   recommendation: Recommendation;
   suggestions: Suggestion[];
   created_at: string;
+};
+
+export type OutcomeCreate = {
+  asset_id: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  revenue: number;
+  notes: string;
+};
+
+export type Outcome = OutcomeCreate & {
+  id: string;
+  comparison_id: string;
+  created_at: string;
+};
+
+export type LearningSummary = {
+  outcome_count: number;
+  total_spend: number;
+  total_revenue: number;
+  average_ctr: number;
+  average_cvr: number;
+  best_asset_id: string | null;
+  insight: string;
 };
 
 export type Report = {
@@ -84,4 +122,6 @@ export type Report = {
   variants: VariantResult[];
   suggestions: Suggestion[];
   next_steps: string[];
+  brief: CreativeBrief;
+  learning_summary: LearningSummary | null;
 };

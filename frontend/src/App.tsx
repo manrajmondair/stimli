@@ -1,24 +1,38 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   BarChart3,
   Check,
   ClipboardList,
   Download,
   FileText,
   Gauge,
+  History,
   Layers,
   Lightbulb,
   Loader2,
   Play,
   Plus,
   RefreshCw,
+  Send,
   Sparkles,
   Target,
+  TrendingUp,
   Upload
 } from "lucide-react";
-import { createComparison, createTextAsset, listAssets, seedDemo } from "./api";
-import { getReport } from "./api";
-import type { Asset, AssetType, Comparison, ScoreBreakdown, Suggestion, TimelinePoint, VariantResult } from "./types";
+import { createBriefComparison, createOutcome, createTextAsset, getLearningSummary, getReport, listAssets, listComparisons, seedDemo } from "./api";
+import type {
+  Asset,
+  AssetType,
+  Comparison,
+  CreativeBrief,
+  LearningSummary,
+  OutcomeCreate,
+  ScoreBreakdown,
+  Suggestion,
+  TimelinePoint,
+  VariantResult
+} from "./types";
 
 const assetTypes: { label: string; value: AssetType }[] = [
   { label: "Script", value: "script" },
@@ -34,6 +48,8 @@ const scoreLabels: { key: keyof ScoreBreakdown; label: string }[] = [
   { key: "cta", label: "CTA" },
   { key: "brand_cue", label: "Brand Cue" },
   { key: "pacing", label: "Pacing" },
+  { key: "offer_strength", label: "Offer" },
+  { key: "audience_fit", label: "Audience" },
   { key: "neural_attention", label: "Attention" },
   { key: "memory", label: "Memory" },
   { key: "cognitive_load", label: "Load" }
@@ -41,8 +57,10 @@ const scoreLabels: { key: keyof ScoreBreakdown; label: string }[] = [
 
 export function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [comparisons, setComparisons] = useState<Comparison[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [learning, setLearning] = useState<LearningSummary | null>(null);
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState<AssetType>("script");
   const [text, setText] = useState("");
@@ -50,18 +68,38 @@ export function App() {
   const [durationSeconds, setDurationSeconds] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [objective, setObjective] = useState("Pick the DTC creative most likely to earn attention, build memory, and convert.");
+  const [brandName, setBrandName] = useState("Lumina");
+  const [audience, setAudience] = useState("busy women with dry or sensitive skin");
+  const [productCategory, setProductCategory] = useState("skincare hydration system");
+  const [primaryOffer, setPrimaryOffer] = useState("starter kit with free shipping");
+  const [requiredClaims, setRequiredClaims] = useState("24 hour hydration, dermatologist tested");
+  const [forbiddenTerms, setForbiddenTerms] = useState("miracle cure, guaranteed");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    refreshAssets();
+    refreshWorkspace();
   }, []);
 
   const selectedAssets = useMemo(() => assets.filter((asset) => selected.includes(asset.id)), [assets, selected]);
+  const brief = useMemo<CreativeBrief>(
+    () => ({
+      brand_name: brandName,
+      audience,
+      product_category: productCategory,
+      primary_offer: primaryOffer,
+      required_claims: splitList(requiredClaims),
+      forbidden_terms: splitList(forbiddenTerms)
+    }),
+    [brandName, audience, productCategory, primaryOffer, requiredClaims, forbiddenTerms]
+  );
 
-  async function refreshAssets() {
+  async function refreshWorkspace() {
     try {
-      setAssets(await listAssets());
+      const [assetList, comparisonList, learningSummary] = await Promise.all([listAssets(), listComparisons(), getLearningSummary()]);
+      setAssets(assetList);
+      setComparisons(comparisonList);
+      setLearning(learningSummary);
     } catch {
       setError("Backend is not reachable. Start the API on port 8000.");
     }
@@ -72,8 +110,7 @@ export function App() {
     setError(null);
     try {
       const seeded = await seedDemo();
-      const updated = await listAssets();
-      setAssets(updated);
+      await refreshWorkspace();
       setSelected(seeded.slice(0, 2).map((asset) => asset.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not seed demo assets.");
@@ -121,7 +158,9 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      setComparison(await createComparison(selected, objective));
+      const nextComparison = await createBriefComparison(selected, objective, brief);
+      setComparison(nextComparison);
+      await refreshWorkspace();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create comparison.");
     } finally {
@@ -142,6 +181,7 @@ export function App() {
           <p className="subhead">
             Compare scripts, pages, static ads, audio, and video notes with predicted response signals and practical edit cards.
           </p>
+          {learning && <LearningSnapshot learning={learning} />}
         </div>
         <div className="hero-actions">
           <button className="button secondary" onClick={handleSeed} disabled={busy}>
@@ -216,6 +256,30 @@ export function App() {
               Decision objective
               <textarea value={objective} onChange={(event) => setObjective(event.target.value)} />
             </label>
+            <label>
+              Brand
+              <input value={brandName} onChange={(event) => setBrandName(event.target.value)} />
+            </label>
+            <label>
+              Audience
+              <input value={audience} onChange={(event) => setAudience(event.target.value)} />
+            </label>
+            <label>
+              Category
+              <input value={productCategory} onChange={(event) => setProductCategory(event.target.value)} />
+            </label>
+            <label>
+              Primary offer
+              <input value={primaryOffer} onChange={(event) => setPrimaryOffer(event.target.value)} />
+            </label>
+            <label>
+              Required claims
+              <input value={requiredClaims} onChange={(event) => setRequiredClaims(event.target.value)} />
+            </label>
+            <label>
+              Forbidden terms
+              <input value={forbiddenTerms} onChange={(event) => setForbiddenTerms(event.target.value)} />
+            </label>
           </div>
         </aside>
 
@@ -228,7 +292,7 @@ export function App() {
               </div>
               <p>{selected.length} selected for comparison</p>
             </div>
-            <button className="icon-button" onClick={refreshAssets} aria-label="Refresh assets">
+            <button className="icon-button" onClick={refreshWorkspace} aria-label="Refresh assets">
               <RefreshCw size={18} />
             </button>
           </div>
@@ -254,10 +318,33 @@ export function App() {
               ))
             )}
           </div>
+
+          <div className="history-block">
+            <div className="inline-title history-title">
+              <History size={17} />
+              <h2>Recent Decisions</h2>
+            </div>
+            {comparisons.length === 0 ? (
+              <p className="muted">No comparisons yet.</p>
+            ) : (
+              comparisons.slice(0, 5).map((item) => (
+                <button className="history-row" key={item.id} onClick={() => setComparison(item)}>
+                  <strong>{item.recommendation.headline}</strong>
+                  <small>
+                    {Math.round(item.recommendation.confidence * 100)}% confidence · {item.variants.length} variants
+                  </small>
+                </button>
+              ))
+            )}
+          </div>
         </section>
 
         <section className="results-column">
-          {comparison ? <ComparisonView comparison={comparison} /> : <PreComparison selectedAssets={selectedAssets} />}
+          {comparison ? (
+            <ComparisonView comparison={comparison} onOutcomeSaved={refreshWorkspace} />
+          ) : (
+            <PreComparison selectedAssets={selectedAssets} />
+          )}
         </section>
       </section>
     </main>
@@ -290,9 +377,35 @@ function PreComparison({ selectedAssets }: { selectedAssets: Asset[] }) {
   );
 }
 
-function ComparisonView({ comparison }: { comparison: Comparison }) {
+function LearningSnapshot({ learning }: { learning: LearningSummary }) {
+  return (
+    <div className="learning-snapshot">
+      <span>
+        <Activity size={16} />
+        {learning.outcome_count} launches logged
+      </span>
+      <span>
+        <TrendingUp size={16} />
+        {Math.round(learning.average_ctr * 10000) / 100}% CTR
+      </span>
+      <span>${learning.total_revenue.toLocaleString()} revenue tracked</span>
+    </div>
+  );
+}
+
+function ComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const [reportBusy, setReportBusy] = useState(false);
+  const [outcomeBusy, setOutcomeBusy] = useState(false);
+  const [outcome, setOutcome] = useState<OutcomeCreate>({
+    asset_id: winner?.asset.id ?? comparison.variants[0]?.asset.id ?? "",
+    spend: 250,
+    impressions: 12000,
+    clicks: 360,
+    conversions: 24,
+    revenue: 1200,
+    notes: ""
+  });
 
   return (
     <div className="results-stack">
@@ -354,7 +467,64 @@ function ComparisonView({ comparison }: { comparison: Comparison }) {
           ))}
         </div>
       </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <Send size={19} />
+          <h2>Launch Learning</h2>
+        </div>
+        <div className="outcome-grid">
+          <label>
+            Variant
+            <select value={outcome.asset_id} onChange={(event) => setOutcome({ ...outcome, asset_id: event.target.value })}>
+              {comparison.variants.map((variant) => (
+                <option key={variant.asset.id} value={variant.asset.id}>
+                  {variant.asset.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <NumberField label="Spend" value={outcome.spend} onChange={(spend) => setOutcome({ ...outcome, spend })} />
+          <NumberField label="Impressions" value={outcome.impressions} onChange={(impressions) => setOutcome({ ...outcome, impressions })} />
+          <NumberField label="Clicks" value={outcome.clicks} onChange={(clicks) => setOutcome({ ...outcome, clicks })} />
+          <NumberField label="Conversions" value={outcome.conversions} onChange={(conversions) => setOutcome({ ...outcome, conversions })} />
+          <NumberField label="Revenue" value={outcome.revenue} onChange={(revenue) => setOutcome({ ...outcome, revenue })} />
+        </div>
+        <label>
+          Notes
+          <input
+            value={outcome.notes}
+            onChange={(event) => setOutcome({ ...outcome, notes: event.target.value })}
+            placeholder="Audience, channel, or launch context"
+          />
+        </label>
+        <button
+          className="button"
+          disabled={outcomeBusy}
+          onClick={async () => {
+            setOutcomeBusy(true);
+            try {
+              await createOutcome(comparison.id, outcome);
+              await onOutcomeSaved();
+            } finally {
+              setOutcomeBusy(false);
+            }
+          }}
+        >
+          {outcomeBusy ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+          Log outcome
+        </button>
+      </section>
     </div>
+  );
+}
+
+function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label>
+      {label}
+      <input value={String(value)} inputMode="decimal" onChange={(event) => onChange(Number(event.target.value) || 0)} />
+    </label>
   );
 }
 
@@ -435,4 +605,11 @@ function SuggestionCard({ suggestion, comparison }: { suggestion: Suggestion; co
       <small>{suggestion.expected_effect}</small>
     </article>
   );
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

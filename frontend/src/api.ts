@@ -1,4 +1,4 @@
-import type { Asset, AssetType, Comparison, Report } from "./types";
+import type { Asset, AssetType, Comparison, CreativeBrief, LearningSummary, Outcome, OutcomeCreate, Report } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
@@ -41,8 +41,36 @@ export async function createComparison(assetIds: string[], objective: string): P
   return parseResponse(response);
 }
 
+export async function createBriefComparison(assetIds: string[], objective: string, brief: CreativeBrief): Promise<Comparison> {
+  const response = await fetch(`${API_BASE}/comparisons`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ asset_ids: assetIds, objective, brief })
+  });
+  return parseResponse(response);
+}
+
+export async function listComparisons(): Promise<Comparison[]> {
+  const response = await fetch(`${API_BASE}/comparisons`);
+  return parseResponse(response);
+}
+
 export async function getReport(comparisonId: string): Promise<Report> {
   const response = await fetch(`${API_BASE}/reports/${comparisonId}`);
+  return parseResponse(response);
+}
+
+export async function createOutcome(comparisonId: string, outcome: OutcomeCreate): Promise<Outcome> {
+  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/outcomes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(outcome)
+  });
+  return parseResponse(response);
+}
+
+export async function getLearningSummary(): Promise<LearningSummary> {
+  const response = await fetch(`${API_BASE}/learning/summary`);
   return parseResponse(response);
 }
 

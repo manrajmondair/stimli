@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.models import Asset, Comparison
+from app.models import Asset, Comparison, Outcome
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -57,6 +57,17 @@ class Store:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS outcomes (
+                    id TEXT PRIMARY KEY,
+                    comparison_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
 
     def save_asset(self, asset: Asset) -> Asset:
         with self._connect() as conn:
@@ -89,6 +100,30 @@ class Store:
             row = conn.execute("SELECT payload FROM comparisons WHERE id = ?", (comparison_id,)).fetchone()
         return Comparison.model_validate_json(row["payload"]) if row else None
 
+    def list_comparisons(self) -> list[Comparison]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT payload FROM comparisons ORDER BY created_at DESC").fetchall()
+        return [Comparison.model_validate_json(row["payload"]) for row in rows]
+
+    def save_outcome(self, outcome: Outcome) -> Outcome:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO outcomes (id, comparison_id, asset_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+                (outcome.id, outcome.comparison_id, outcome.asset_id, outcome.model_dump_json(), outcome.created_at),
+            )
+        return outcome
+
+    def list_outcomes(self, comparison_id: str | None = None) -> list[Outcome]:
+        with self._connect() as conn:
+            if comparison_id:
+                rows = conn.execute(
+                    "SELECT payload FROM outcomes WHERE comparison_id = ? ORDER BY created_at DESC",
+                    (comparison_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT payload FROM outcomes ORDER BY created_at DESC").fetchall()
+        return [Outcome.model_validate_json(row["payload"]) for row in rows]
+
     def clear_demo_assets(self) -> None:
         with self._connect() as conn:
             rows = conn.execute("SELECT payload FROM assets").fetchall()
@@ -102,4 +137,3 @@ class Store:
                 asset = self.get_asset(asset_id)
                 if asset:
                     self.save_asset(asset)
-

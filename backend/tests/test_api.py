@@ -41,3 +41,49 @@ def test_text_asset_upload():
     assert payload["asset"]["type"] == "script"
     assert "Stop guessing" in payload["asset"]["extracted_text"]
 
+
+def test_brief_history_outcome_and_learning_summary():
+    seeded = client.post("/demo/seed").json()
+    response = client.post(
+        "/comparisons",
+        json={
+            "asset_ids": [seeded[0]["id"], seeded[1]["id"]],
+            "objective": "Pick the creative for paid social.",
+            "brief": {
+                "brand_name": "Lumina",
+                "audience": "busy women with dry skin",
+                "product_category": "skincare hydration system",
+                "primary_offer": "starter kit with free shipping",
+                "required_claims": ["24 hour hydration"],
+                "forbidden_terms": ["miracle cure"],
+            },
+        },
+    )
+    assert response.status_code == 200
+    comparison = response.json()
+    assert comparison["brief"]["brand_name"] == "Lumina"
+    assert "offer_strength" in comparison["variants"][0]["analysis"]["scores"]
+
+    history = client.get("/comparisons")
+    assert history.status_code == 200
+    assert any(item["id"] == comparison["id"] for item in history.json())
+
+    winner_id = comparison["recommendation"]["winner_asset_id"]
+    outcome = client.post(
+        f"/comparisons/{comparison['id']}/outcomes",
+        json={
+            "asset_id": winner_id,
+            "spend": 250,
+            "impressions": 10000,
+            "clicks": 300,
+            "conversions": 20,
+            "revenue": 1000,
+            "notes": "Test launch",
+        },
+    )
+    assert outcome.status_code == 200
+    assert outcome.json()["asset_id"] == winner_id
+
+    learning = client.get("/learning/summary")
+    assert learning.status_code == 200
+    assert learning.json()["outcome_count"] >= 1

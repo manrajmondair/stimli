@@ -39,6 +39,8 @@ class ScoreBreakdown(BaseModel):
     cta: float
     brand_cue: float
     pacing: float
+    offer_strength: float = 0
+    audience_fit: float = 0
     neural_attention: float
     memory: float
     cognitive_load: float
@@ -63,9 +65,19 @@ class AnalysisRun(BaseModel):
     summary: str
 
 
+class CreativeBrief(BaseModel):
+    brand_name: str = ""
+    audience: str = ""
+    product_category: str = ""
+    primary_offer: str = ""
+    required_claims: list[str] = Field(default_factory=list)
+    forbidden_terms: list[str] = Field(default_factory=list)
+
+
 class ComparisonCreate(BaseModel):
     asset_ids: list[str] = Field(min_length=2)
     objective: str = "Find the variant most likely to earn attention, build memory, and convert."
+    brief: CreativeBrief = Field(default_factory=CreativeBrief)
 
 
 class VariantResult(BaseModel):
@@ -86,11 +98,45 @@ class Recommendation(BaseModel):
 class Comparison(BaseModel):
     id: str
     objective: str
+    brief: CreativeBrief = Field(default_factory=CreativeBrief)
     status: Literal["complete"]
     variants: list[VariantResult]
     recommendation: Recommendation
     suggestions: list[Suggestion]
     created_at: str
+
+
+class OutcomeCreate(BaseModel):
+    asset_id: str
+    spend: float = 0
+    impressions: int = 0
+    clicks: int = 0
+    conversions: int = 0
+    revenue: float = 0
+    notes: str = ""
+
+
+class Outcome(BaseModel):
+    id: str
+    comparison_id: str
+    asset_id: str
+    spend: float
+    impressions: int
+    clicks: int
+    conversions: int
+    revenue: float
+    notes: str
+    created_at: str
+
+
+class LearningSummary(BaseModel):
+    outcome_count: int
+    total_spend: float
+    total_revenue: float
+    average_ctr: float
+    average_cvr: float
+    best_asset_id: str | None
+    insight: str
 
 
 class Report(BaseModel):
@@ -101,4 +147,5 @@ class Report(BaseModel):
     variants: list[VariantResult]
     suggestions: list[Suggestion]
     next_steps: list[str]
-
+    brief: CreativeBrief = Field(default_factory=CreativeBrief)
+    learning_summary: LearningSummary | None = None

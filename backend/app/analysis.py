@@ -4,7 +4,7 @@ import re
 from statistics import mean
 
 from app.brain import BrainResponseProvider, FixtureBrainResponseProvider
-from app.models import AnalysisRun, Asset, Comparison, Recommendation, ScoreBreakdown, Suggestion, VariantResult
+from app.models import AnalysisRun, Asset, Comparison, CreativeBrief, Recommendation, ScoreBreakdown, Suggestion, VariantResult
 
 
 CTA_WORDS = {"buy", "shop", "try", "start", "get", "claim", "book", "subscribe", "download", "order"}
@@ -18,7 +18,8 @@ class CreativeAnalyzer:
     def __init__(self, provider: BrainResponseProvider | None = None):
         self.provider = provider or FixtureBrainResponseProvider()
 
-    def analyze(self, asset: Asset) -> AnalysisRun:
+    def analyze(self, asset: Asset, brief: CreativeBrief | None = None) -> AnalysisRun:
+        brief = brief or CreativeBrief()
         words = _words(asset.extracted_text or asset.name or asset.source_url or "")
         timeline = self.provider.predict(asset)
         neural_attention = mean(point.attention for point in timeline)
@@ -29,8 +30,10 @@ class CreativeAnalyzer:
             hook=_hook_score(words),
             clarity=_clarity_score(asset.extracted_text, words),
             cta=_cta_score(words),
-            brand_cue=_brand_score(words, asset),
+            brand_cue=_brand_score(words, asset, brief),
             pacing=_pacing_score(asset, words),
+            offer_strength=_offer_score(words, brief),
+            audience_fit=_audience_score(words, brief),
             neural_attention=round(neural_attention * 100, 1),
             memory=round(memory * 100, 1),
             cognitive_load=round(cognitive_load * 100, 1),
@@ -52,8 +55,9 @@ class CreativeAnalyzer:
             summary=_summary(asset, scores),
         )
 
-    def compare(self, comparison_id: str, objective: str, assets: list[Asset], created_at: str) -> Comparison:
-        analyses = [self.analyze(asset) for asset in assets]
+    def compare(self, comparison_id: str, objective: str, assets: list[Asset], created_at: str, brief: CreativeBrief | None = None) -> Comparison:
+        brief = brief or CreativeBrief()
+        analyses = [self.analyze(asset, brief) for asset in assets]
         ranked = sorted(zip(assets, analyses), key=lambda pair: pair[1].scores.overall, reverse=True)
         best_score = ranked[0][1].scores.overall
         variants = [
@@ -63,11 +67,12 @@ class CreativeAnalyzer:
         recommendation = _recommendation(variants)
         suggestions = []
         for variant in variants:
-            suggestions.extend(_suggestions_for_variant(variant.asset, variant.analysis))
+            suggestions.extend(_suggestions_for_variant(variant.asset, variant.analysis, brief))
         suggestions = sorted(suggestions, key=lambda item: {"high": 0, "medium": 1, "low": 2}[item.severity])[:8]
         return Comparison(
             id=comparison_id,
             objective=objective,
+            brief=brief,
             status="complete",
             variants=variants,
             recommendation=recommendation,
@@ -107,9 +112,11 @@ def _cta_score(words: list[str]) -> float:
     return round(min(100, 42 + count * 18 + (8 if count and len(last) <= 35 else 0)), 1)
 
 
-def _brand_score(words: list[str], asset: Asset) -> float:
+def _brand_score(words: list[str], asset: Asset, brief: CreativeBrief) -> float:
     count = sum(word in BRAND_WORDS for word in words)
     named = any(token in words for token in _words(asset.name))
+    brand_terms = _words(brief.brand_name)
+    named = named or bool(brand_terms and all(term in words for term in brand_terms[:3]))
     score = 38 + min(count * 14, 42) + (14 if named else 0)
     return round(min(100, score), 1)
 
@@ -123,15 +130,39 @@ def _pacing_score(asset: Asset, words: list[str]) -> float:
     return round(max(35, min(100, 92 - abs(words_per_second - 2.5) * 13)), 1)
 
 
+def _offer_score(words: list[str], brief: CreativeBrief) -> float:
+    offer_terms = _words(brief.primary_offer)
+    offer_hits = sum(term in words for term in offer_terms)
+    proof_hits = sum(word in PROOF_WORDS for word in words)
+    number_hit = any(any(char.isdigit() for char in word) for word in words)
+    score = 44 + min(offer_hits * 11, 28) + min(proof_hits * 8, 20) + (10 if number_hit else 0)
+    return round(min(100, score), 1)
+
+
+def _audience_score(words: list[str], brief: CreativeBrief) -> float:
+    audience_terms = [term for term in _words(brief.audience) if len(term) > 2]
+    category_terms = [term for term in _words(brief.product_category) if len(term) > 2]
+    required_terms = [term for claim in brief.required_claims for term in _words(claim) if len(term) > 2]
+    forbidden_terms = [term for term in brief.forbidden_terms for term in _words(term)]
+    hits = sum(term in words for term in audience_terms + category_terms + required_terms)
+    misses = sum(term in words for term in forbidden_terms)
+    score = 58 + min(hits * 6, 32) - min(misses * 14, 36)
+    if not audience_terms and not category_terms and not required_terms:
+        score = 68
+    return round(max(25, min(100, score)), 1)
+
+
 def _overall(scores: ScoreBreakdown) -> float:
     value = (
-        scores.hook * 0.18
-        + scores.clarity * 0.14
-        + scores.cta * 0.13
-        + scores.brand_cue * 0.12
-        + scores.pacing * 0.12
-        + scores.neural_attention * 0.17
-        + scores.memory * 0.1
+        scores.hook * 0.16
+        + scores.clarity * 0.12
+        + scores.cta * 0.12
+        + scores.brand_cue * 0.1
+        + scores.pacing * 0.1
+        + scores.offer_strength * 0.11
+        + scores.audience_fit * 0.09
+        + scores.neural_attention * 0.14
+        + scores.memory * 0.09
         - max(0, scores.cognitive_load - 62) * 0.08
     )
     return round(max(0, min(100, value)), 1)
@@ -184,7 +215,7 @@ def _largest_advantage(best: VariantResult, other: VariantResult) -> str:
     return f"Biggest edge is {label}, ahead by {round(delta, 1)} points."
 
 
-def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun) -> list[Suggestion]:
+def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: CreativeBrief) -> list[Suggestion]:
     scores = analysis.scores
     suggestions = []
     if scores.hook < 70:
@@ -242,5 +273,26 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun) -> list[Sugges
                 expected_effect="Keeps attention from flattening after the hook.",
             )
         )
+    if scores.offer_strength < 68 and brief.primary_offer:
+        suggestions.append(
+            Suggestion(
+                asset_id=asset.id,
+                target="Offer beat",
+                severity="medium",
+                issue="The creative does not make the offer feel concrete enough.",
+                suggested_edit=f"Name the offer directly: {brief.primary_offer}. Pair it with one proof point or numeric benefit.",
+                expected_effect="Makes the value exchange easier to understand before the CTA.",
+            )
+        )
+    if scores.audience_fit < 68 and brief.audience:
+        suggestions.append(
+            Suggestion(
+                asset_id=asset.id,
+                target="Audience framing",
+                severity="medium",
+                issue="The message is not specific enough to the target audience.",
+                suggested_edit=f"Rewrite one early line so it directly addresses {brief.audience}.",
+                expected_effect="Improves relevance and reduces the feeling of a generic ad.",
+            )
+        )
     return suggestions
-

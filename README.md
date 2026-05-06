@@ -7,6 +7,9 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 - Compares creative variants side by side instead of burying the answer in charts.
 - Produces a ship / revise recommendation with confidence and evidence.
 - Converts attention, memory, cognitive load, hook, clarity, CTA, and brand-cue signals into concrete edit cards.
+- Scores against a campaign brief: brand, audience, category, offer, required claims, and forbidden terms.
+- Extracts landing-page text from URLs when available, with a reliable fallback when a site blocks automated fetches.
+- Persists comparison history and launch outcomes so future versions can calibrate prediction quality against spend results.
 - Works with a deterministic local brain-response provider for reproducible demos, with a clean adapter boundary for TRIBE-style model inference.
 - Exports a report payload suitable for a short project demo or client-style review.
 
@@ -42,6 +45,14 @@ npm run dev
 
 The app will be available at `http://localhost:5173`.
 
+### Docker
+
+```bash
+docker compose up --build
+```
+
+Then open `http://localhost:5173`.
+
 ## Demo Flow
 
 1. Start the backend and frontend.
@@ -57,6 +68,9 @@ The app will be available at `http://localhost:5173`.
 - `POST /comparisons` creates an A/B or multi-variant comparison.
 - `GET /comparisons/{id}` returns scores, timeline signals, recommendation, and edit suggestions.
 - `GET /reports/{id}` returns a shareable report payload.
+- `GET /comparisons` lists saved decisions.
+- `POST /comparisons/{id}/outcomes` records post-launch results.
+- `GET /learning/summary` summarizes logged launch outcomes.
 - `POST /demo/seed` loads sample creative variants.
 
 ## Notes On Model Use
@@ -80,4 +94,3 @@ npm run build
 ```
 
 <sub>Assisted by Codex.</sub>
-
