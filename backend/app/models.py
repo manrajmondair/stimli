@@ -53,6 +53,7 @@ class Suggestion(BaseModel):
     issue: str
     suggested_edit: str
     expected_effect: str
+    draft_revision: str = ""
 
 
 class AnalysisRun(BaseModel):
@@ -114,6 +115,17 @@ class OutcomeCreate(BaseModel):
     conversions: int = 0
     revenue: float = 0
     notes: str = ""
+
+
+class ChallengerCreate(BaseModel):
+    source_asset_id: str | None = None
+    focus: Literal["hook", "cta", "offer", "clarity"] = "hook"
+
+
+class ChallengerResponse(BaseModel):
+    asset: Asset
+    source_asset_id: str
+    focus: str
 
 
 class Outcome(BaseModel):

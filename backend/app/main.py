@@ -6,9 +6,21 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.analysis import CreativeAnalyzer
+from app.analysis import CreativeAnalyzer, build_challenger_text
 from app.extractor import extract_landing_page_text
-from app.models import Asset, AssetType, AssetUploadResponse, Comparison, ComparisonCreate, LearningSummary, Outcome, OutcomeCreate, Report
+from app.models import (
+    Asset,
+    AssetType,
+    AssetUploadResponse,
+    ChallengerCreate,
+    ChallengerResponse,
+    Comparison,
+    ComparisonCreate,
+    LearningSummary,
+    Outcome,
+    OutcomeCreate,
+    Report,
+)
 from app.storage import UPLOAD_DIR, Store, new_id, now_iso
 
 
@@ -132,6 +144,33 @@ def get_report(comparison_id: str) -> Report:
             "Launch the winner with a clean post-flight label so outcome data can calibrate future scoring.",
         ],
     )
+
+
+@app.post("/comparisons/{comparison_id}/challengers", response_model=ChallengerResponse)
+def create_challenger(comparison_id: str, payload: ChallengerCreate) -> ChallengerResponse:
+    comparison = get_comparison(comparison_id)
+    source_id = payload.source_asset_id or comparison.recommendation.winner_asset_id
+    source_variant = next((variant for variant in comparison.variants if variant.asset.id == source_id), None)
+    if source_variant is None:
+        raise HTTPException(status_code=400, detail="Source asset must belong to the comparison.")
+    text = build_challenger_text(source_variant.asset, comparison.brief, payload.focus)
+    asset = Asset(
+        id=new_id("asset"),
+        type=source_variant.asset.type,
+        name=f"{source_variant.asset.name} - {payload.focus.title()} Challenger",
+        source_url=source_variant.asset.source_url,
+        extracted_text=text,
+        duration_seconds=source_variant.asset.duration_seconds,
+        metadata={
+            "challenger": True,
+            "source_asset_id": source_variant.asset.id,
+            "comparison_id": comparison.id,
+            "focus": payload.focus,
+        },
+        created_at=now_iso(),
+    )
+    store.save_asset(asset)
+    return ChallengerResponse(asset=asset, source_asset_id=source_variant.asset.id, focus=payload.focus)
 
 
 @app.post("/comparisons/{comparison_id}/outcomes", response_model=Outcome)

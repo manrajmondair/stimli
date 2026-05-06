@@ -66,6 +66,7 @@ export type Suggestion = {
   issue: string;
   suggested_edit: string;
   expected_effect: string;
+  draft_revision: string;
 };
 
 export type CreativeBrief = {
@@ -102,6 +103,12 @@ export type Outcome = OutcomeCreate & {
   id: string;
   comparison_id: string;
   created_at: string;
+};
+
+export type ChallengerResponse = {
+  asset: Asset;
+  source_asset_id: string;
+  focus: "hook" | "cta" | "offer" | "clarity";
 };
 
 export type LearningSummary = {

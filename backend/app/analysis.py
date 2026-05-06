@@ -227,6 +227,7 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="The opening does not create enough immediate tension or curiosity.",
                 suggested_edit="Lead with the customer's painful before-state, a specific number, or a surprising claim before explaining the product.",
                 expected_effect="Higher early attention and a clearer reason to keep watching or reading.",
+                draft_revision=_draft_hook(asset, brief),
             )
         )
     if scores.cta < 66:
@@ -238,6 +239,7 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="The next step is too soft or missing.",
                 suggested_edit="End with one direct action such as 'Try the starter kit today' or 'Shop the routine now'.",
                 expected_effect="Reduces decision friction and improves conversion intent.",
+                draft_revision=_draft_cta(brief),
             )
         )
     if scores.brand_cue < 62:
@@ -249,6 +251,7 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="Brand ownership is weak.",
                 suggested_edit="Add the brand or product name near the first proof point and repeat it close to the CTA.",
                 expected_effect="Improves recall so attention compounds into brand memory.",
+                draft_revision=_draft_brand_line(brief),
             )
         )
     if scores.cognitive_load > 66 or scores.clarity < 68:
@@ -260,6 +263,7 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="The creative asks the audience to process too much at once.",
                 suggested_edit="Split long claims into one idea per beat and remove abstract filler words.",
                 expected_effect="Lowers processing load and makes the strongest claim easier to remember.",
+                draft_revision="Break this section into one claim, one proof point, and one next step.",
             )
         )
     if scores.pacing < 66:
@@ -271,6 +275,7 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="Pacing is likely to feel uneven for the format.",
                 suggested_edit="Shorten setup, move proof earlier, and reserve the final beat for a single CTA.",
                 expected_effect="Keeps attention from flattening after the hook.",
+                draft_revision="Move the strongest proof point into the first half and cut any setup that repeats the same idea.",
             )
         )
     if scores.offer_strength < 68 and brief.primary_offer:
@@ -282,6 +287,7 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="The creative does not make the offer feel concrete enough.",
                 suggested_edit=f"Name the offer directly: {brief.primary_offer}. Pair it with one proof point or numeric benefit.",
                 expected_effect="Makes the value exchange easier to understand before the CTA.",
+                draft_revision=f"{brief.primary_offer}: one simple way to get the benefit without rebuilding your routine.",
             )
         )
     if scores.audience_fit < 68 and brief.audience:
@@ -293,6 +299,40 @@ def _suggestions_for_variant(asset: Asset, analysis: AnalysisRun, brief: Creativ
                 issue="The message is not specific enough to the target audience.",
                 suggested_edit=f"Rewrite one early line so it directly addresses {brief.audience}.",
                 expected_effect="Improves relevance and reduces the feeling of a generic ad.",
+                draft_revision=f"For {brief.audience}, this should feel like the easiest next step.",
             )
         )
     return suggestions
+
+
+def build_challenger_text(asset: Asset, brief: CreativeBrief, focus: str) -> str:
+    original = asset.extracted_text.strip() or asset.name
+    brand = brief.brand_name or "the brand"
+    audience = brief.audience or "people with this problem"
+    offer = brief.primary_offer or "the offer"
+    proof = brief.required_claims[0] if brief.required_claims else "a clearer proof point"
+
+    if focus == "cta":
+        return f"{original}\n\nTry {offer} today from {brand}."
+    if focus == "offer":
+        return f"Stop guessing what will work for {audience}. {brand}'s {offer} gives you {proof}. Shop the starter option today."
+    if focus == "clarity":
+        return f"For {audience}: one problem, one proof point, one next step. {brand} gives you {proof}. Try {offer} today."
+    return f"Stop settling for a routine that does not work for {audience}. {brand} gives you {proof} with {offer}. Try it today."
+
+
+def _draft_hook(asset: Asset, brief: CreativeBrief) -> str:
+    audience = brief.audience or "your target customer"
+    brand = brief.brand_name or asset.name
+    return f"Stop making {audience} work this hard. {brand} gives them a faster path to the result."
+
+
+def _draft_cta(brief: CreativeBrief) -> str:
+    offer = brief.primary_offer or "the starter option"
+    return f"Try {offer} today."
+
+
+def _draft_brand_line(brief: CreativeBrief) -> str:
+    brand = brief.brand_name or "the product"
+    claim = brief.required_claims[0] if brief.required_claims else "the proof point"
+    return f"{brand} is the system behind {claim}."

@@ -1,4 +1,4 @@
-import type { Asset, AssetType, Comparison, CreativeBrief, LearningSummary, Outcome, OutcomeCreate, Report } from "./types";
+import type { Asset, AssetType, ChallengerResponse, Comparison, CreativeBrief, LearningSummary, Outcome, OutcomeCreate, Report } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
@@ -65,6 +65,18 @@ export async function createOutcome(comparisonId: string, outcome: OutcomeCreate
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(outcome)
+  });
+  return parseResponse(response);
+}
+
+export async function createChallenger(
+  comparisonId: string,
+  input: { source_asset_id?: string | null; focus: "hook" | "cta" | "offer" | "clarity" }
+): Promise<ChallengerResponse> {
+  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/challengers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input)
   });
   return parseResponse(response);
 }

@@ -20,7 +20,17 @@ import {
   TrendingUp,
   Upload
 } from "lucide-react";
-import { createBriefComparison, createOutcome, createTextAsset, getLearningSummary, getReport, listAssets, listComparisons, seedDemo } from "./api";
+import {
+  createBriefComparison,
+  createChallenger,
+  createOutcome,
+  createTextAsset,
+  getLearningSummary,
+  getReport,
+  listAssets,
+  listComparisons,
+  seedDemo
+} from "./api";
 import type {
   Asset,
   AssetType,
@@ -396,6 +406,8 @@ function LearningSnapshot({ learning }: { learning: LearningSummary }) {
 function ComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const [reportBusy, setReportBusy] = useState(false);
+  const [challengerBusy, setChallengerBusy] = useState(false);
+  const [challengerFocus, setChallengerFocus] = useState<"hook" | "cta" | "offer" | "clarity">("hook");
   const [outcomeBusy, setOutcomeBusy] = useState(false);
   const [outcome, setOutcome] = useState<OutcomeCreate>({
     asset_id: winner?.asset.id ?? comparison.variants[0]?.asset.id ?? "",
@@ -428,6 +440,43 @@ function ComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison
           {reportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
           Report
         </button>
+      </section>
+
+      <section className="panel challenger-panel">
+        <div className="panel-heading">
+          <Sparkles size={19} />
+          <h2>Create Challenger</h2>
+        </div>
+        <div className="challenger-controls">
+          <label>
+            Focus
+            <select value={challengerFocus} onChange={(event) => setChallengerFocus(event.target.value as typeof challengerFocus)}>
+              <option value="hook">Hook</option>
+              <option value="offer">Offer</option>
+              <option value="cta">CTA</option>
+              <option value="clarity">Clarity</option>
+            </select>
+          </label>
+          <button
+            className="button"
+            disabled={challengerBusy}
+            onClick={async () => {
+              setChallengerBusy(true);
+              try {
+                await createChallenger(comparison.id, {
+                  source_asset_id: comparison.recommendation.winner_asset_id,
+                  focus: challengerFocus
+                });
+                await onOutcomeSaved();
+              } finally {
+                setChallengerBusy(false);
+              }
+            }}
+          >
+            {challengerBusy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+            Draft next variant
+          </button>
+        </div>
       </section>
 
       <section className="panel">
@@ -602,6 +651,7 @@ function SuggestionCard({ suggestion, comparison }: { suggestion: Suggestion; co
       <h3>{suggestion.target}</h3>
       <p>{suggestion.issue}</p>
       <p className="edit">{suggestion.suggested_edit}</p>
+      {suggestion.draft_revision && <p className="draft">{suggestion.draft_revision}</p>}
       <small>{suggestion.expected_effect}</small>
     </article>
   );

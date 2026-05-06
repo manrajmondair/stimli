@@ -449,6 +449,13 @@ textarea:focus {
   padding: 12px;
 }
 
+.challenger-controls {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(180px, 260px) auto;
+}
+
 .variant-grid {
   display: grid;
   gap: 18px;
@@ -657,6 +664,15 @@ textarea:focus {
   font-weight: 800;
 }
 
+.suggestion .draft {
+  background: #eef8f1;
+  border: 1px solid #c7e4d0;
+  border-radius: 8px;
+  color: #174633;
+  font-weight: 800;
+  padding: 10px;
+}
+
 .suggestion small {
   color: #68736d;
   line-height: 1.35;
@@ -710,7 +726,8 @@ textarea:focus {
   .workspace-grid,
   .variant-grid,
   .suggestion-list,
-  .outcome-grid {
+  .outcome-grid,
+  .challenger-controls {
     grid-template-columns: 1fr;
   }
 

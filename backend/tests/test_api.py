@@ -84,6 +84,13 @@ def test_brief_history_outcome_and_learning_summary():
     assert outcome.status_code == 200
     assert outcome.json()["asset_id"] == winner_id
 
+    challenger = client.post(
+        f"/comparisons/{comparison['id']}/challengers",
+        json={"source_asset_id": winner_id, "focus": "hook"},
+    )
+    assert challenger.status_code == 200
+    assert challenger.json()["asset"]["metadata"]["challenger"] is True
+
     learning = client.get("/learning/summary")
     assert learning.status_code == 200
     assert learning.json()["outcome_count"] >= 1
