@@ -1,4 +1,15 @@
-import type { Asset, AssetType, ChallengerResponse, Comparison, CreativeBrief, LearningSummary, Outcome, OutcomeCreate, Report } from "./types";
+import type {
+  Asset,
+  AssetType,
+  BrainProviderHealth,
+  ChallengerResponse,
+  Comparison,
+  CreativeBrief,
+  LearningSummary,
+  Outcome,
+  OutcomeCreate,
+  Report
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
@@ -92,6 +103,11 @@ export async function createChallenger(
 
 export async function getLearningSummary(): Promise<LearningSummary> {
   const response = await fetch(`${API_BASE}/learning/summary`);
+  return parseResponse(response);
+}
+
+export async function getBrainProviders(): Promise<BrainProviderHealth[]> {
+  const response = await fetch(`${API_BASE}/brain/providers`);
   return parseResponse(response);
 }
 

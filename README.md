@@ -78,7 +78,31 @@ Sample text assets live in `backend/data/sample_assets/`.
 
 ## Notes On Model Use
 
-The default implementation uses a deterministic fixture provider so the project runs reliably on a laptop without GPU downloads. The provider interface is intentionally isolated so a research-only TRIBE-style adapter can be enabled later for academic experimentation, while a commercial version can swap in licensed or owned brain-response models.
+The default implementation uses a deterministic fixture provider so the project runs reliably on a laptop without GPU downloads. The app also includes a real TRIBE v2 provider that can run `facebook/tribev2` inference when its research dependencies and model checkpoint are installed.
+
+### Enable TRIBE v2
+
+TRIBE v2 is licensed CC BY-NC 4.0 by its upstream authors, so this mode is for academic/non-commercial experimentation unless separate commercial rights are secured.
+
+```bash
+cd backend
+source .venv/bin/activate
+pip install -r requirements-tribe.txt
+export STIMLI_BRAIN_PROVIDER=tribe
+export STIMLI_TRIBE_CACHE=.data/tribe-cache
+export HF_TOKEN=your_huggingface_token_with_required_model_access
+uvicorn app.main:app --reload --port 8000
+```
+
+Provider modes:
+
+- `STIMLI_BRAIN_PROVIDER=fixture`: deterministic local provider.
+- `STIMLI_BRAIN_PROVIDER=tribe`: real TRIBE v2 inference; fails loudly if dependencies/model loading fail.
+- `STIMLI_BRAIN_PROVIDER=auto`: tries TRIBE v2 first, then falls back to the deterministic provider.
+
+Use `GET /brain/providers` to inspect provider availability. The endpoint only checks package import by default; set `STIMLI_TRIBE_HEALTH_LOAD=1` to also verify checkpoint loading.
+
+Real script/text inference also requires Hugging Face access to TRIBE's configured text feature model, `meta-llama/Llama-3.2-3B`. Without an authenticated token that has access to that gated model, TRIBE model loading can succeed but inference will fail during text feature extraction.
 
 ## Testing
 

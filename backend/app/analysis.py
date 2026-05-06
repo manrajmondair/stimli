@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from statistics import mean
 
-from app.brain import BrainResponseProvider, FixtureBrainResponseProvider
+from app.brain import BrainResponseProvider, build_brain_provider
 from app.models import AnalysisRun, Asset, Comparison, CreativeBrief, Recommendation, ScoreBreakdown, Suggestion, VariantResult
 
 
@@ -16,7 +16,7 @@ JARGON_WORDS = {"synergy", "leverage", "paradigm", "holistic", "revolutionary", 
 
 class CreativeAnalyzer:
     def __init__(self, provider: BrainResponseProvider | None = None):
-        self.provider = provider or FixtureBrainResponseProvider()
+        self.provider = provider or build_brain_provider()
 
     def analyze(self, asset: Asset, brief: CreativeBrief | None = None) -> AnalysisRun:
         brief = brief or CreativeBrief()

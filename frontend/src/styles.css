@@ -93,6 +93,43 @@ h1 {
   padding: 8px 11px;
 }
 
+.provider-snapshot {
+  align-items: center;
+  background: #17211d;
+  border-radius: 8px;
+  color: white;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 10px;
+  max-width: 760px;
+  padding: 10px 12px;
+}
+
+.provider-snapshot strong,
+.provider-snapshot span {
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.provider-snapshot span {
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.provider-snapshot .available {
+  background: #087f5b;
+}
+
+.provider-snapshot .unavailable {
+  background: #c1462f;
+}
+
+.provider-snapshot small {
+  color: #d8eee1;
+  line-height: 1.35;
+}
+
 .hero-actions,
 .inline-title,
 .panel-heading,

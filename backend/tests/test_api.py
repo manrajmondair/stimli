@@ -7,6 +7,10 @@ client = TestClient(app)
 
 
 def test_demo_seed_and_compare():
+    providers = client.get("/brain/providers")
+    assert providers.status_code == 200
+    assert any(item["provider"] == "fixture-brain-response" for item in providers.json())
+
     seeded = client.post("/demo/seed")
     assert seeded.status_code == 200
     assets = seeded.json()

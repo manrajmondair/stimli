@@ -121,6 +121,13 @@ export type LearningSummary = {
   insight: string;
 };
 
+export type BrainProviderHealth = {
+  provider: string;
+  available: boolean;
+  active: boolean;
+  detail: string;
+};
+
 export type Report = {
   comparison_id: string;
   title: string;

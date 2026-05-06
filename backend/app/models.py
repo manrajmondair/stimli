@@ -32,6 +32,13 @@ class TimelinePoint(BaseModel):
     note: str
 
 
+class BrainProviderHealth(BaseModel):
+    provider: str
+    available: bool
+    active: bool
+    detail: str
+
+
 class ScoreBreakdown(BaseModel):
     overall: float
     hook: float

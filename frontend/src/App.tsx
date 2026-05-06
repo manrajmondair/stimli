@@ -25,6 +25,7 @@ import {
   createChallenger,
   createOutcome,
   createTextAsset,
+  getBrainProviders,
   getLearningSummary,
   getReport,
   getReportMarkdown,
@@ -35,6 +36,7 @@ import {
 import type {
   Asset,
   AssetType,
+  BrainProviderHealth,
   Comparison,
   CreativeBrief,
   LearningSummary,
@@ -72,6 +74,7 @@ export function App() {
   const [selected, setSelected] = useState<string[]>([]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [learning, setLearning] = useState<LearningSummary | null>(null);
+  const [providers, setProviders] = useState<BrainProviderHealth[]>([]);
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState<AssetType>("script");
   const [text, setText] = useState("");
@@ -107,10 +110,16 @@ export function App() {
 
   async function refreshWorkspace() {
     try {
-      const [assetList, comparisonList, learningSummary] = await Promise.all([listAssets(), listComparisons(), getLearningSummary()]);
+      const [assetList, comparisonList, learningSummary, providerList] = await Promise.all([
+        listAssets(),
+        listComparisons(),
+        getLearningSummary(),
+        getBrainProviders()
+      ]);
       setAssets(assetList);
       setComparisons(comparisonList);
       setLearning(learningSummary);
+      setProviders(providerList);
     } catch {
       setError("Backend is not reachable. Start the API on port 8000.");
     }
@@ -193,6 +202,7 @@ export function App() {
             Compare scripts, pages, static ads, audio, and video notes with predicted response signals and practical edit cards.
           </p>
           {learning && <LearningSnapshot learning={learning} />}
+          {providers.length > 0 && <ProviderSnapshot providers={providers} />}
         </div>
         <div className="hero-actions">
           <button className="button secondary" onClick={handleSeed} disabled={busy}>
@@ -400,6 +410,17 @@ function LearningSnapshot({ learning }: { learning: LearningSummary }) {
         {Math.round(learning.average_ctr * 10000) / 100}% CTR
       </span>
       <span>${learning.total_revenue.toLocaleString()} revenue tracked</span>
+    </div>
+  );
+}
+
+function ProviderSnapshot({ providers }: { providers: BrainProviderHealth[] }) {
+  const active = providers.find((provider) => provider.active) ?? providers[0];
+  return (
+    <div className="provider-snapshot">
+      <strong>{active.provider}</strong>
+      <span className={active.available ? "available" : "unavailable"}>{active.available ? "available" : "unavailable"}</span>
+      <small>{active.detail}</small>
     </div>
   );
 }

@@ -7,11 +7,13 @@ from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import CreativeAnalyzer, build_challenger_text
+from app.brain import provider_health
 from app.extractor import extract_landing_page_text
 from app.models import (
     Asset,
     AssetType,
     AssetUploadResponse,
+    BrainProviderHealth,
     ChallengerCreate,
     ChallengerResponse,
     Comparison,
@@ -40,6 +42,11 @@ analyzer = CreativeAnalyzer()
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/brain/providers", response_model=list[BrainProviderHealth])
+def brain_providers() -> list[BrainProviderHealth]:
+    return provider_health()
 
 
 @app.post("/assets", response_model=AssetUploadResponse)
