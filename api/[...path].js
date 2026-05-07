@@ -34,6 +34,7 @@ export default async function handler(request, response) {
     const { pathname } = new URL(request.url || "/", "http://stimli.local");
     const apiPath = pathname.replace(/^\/api/, "") || "/";
     const segments = apiPath.split("/").filter(Boolean);
+    const workspaceId = workspaceForRequest(request);
 
     if (request.method === "GET" && apiPath === "/health") {
       return sendJson(response, 200, { status: "ok", storage: storageHealth() });
@@ -44,23 +45,23 @@ export default async function handler(request, response) {
     }
 
     if (request.method === "POST" && apiPath === "/demo/seed") {
-      return sendJson(response, 200, await seedDemo());
+      return sendJson(response, 200, await seedDemo(workspaceId));
     }
 
     if (segments[0] === "assets") {
-      return handleAssets(request, response, segments);
+      return await handleAssets(request, response, segments, workspaceId);
     }
 
     if (segments[0] === "comparisons") {
-      return handleComparisons(request, response, segments);
+      return await handleComparisons(request, response, segments, workspaceId);
     }
 
     if (segments[0] === "reports") {
-      return handleReports(request, response, segments);
+      return await handleReports(request, response, segments, workspaceId);
     }
 
     if (request.method === "GET" && apiPath === "/learning/summary") {
-      return sendJson(response, 200, learningSummary(await listOutcomes()));
+      return sendJson(response, 200, learningSummary(await listOutcomes(null, workspaceId)));
     }
 
     return sendJson(response, 404, { detail: "Not found" });
@@ -74,9 +75,9 @@ export default async function handler(request, response) {
   }
 }
 
-async function handleAssets(request, response, segments) {
+async function handleAssets(request, response, segments, workspaceId) {
   if (request.method === "GET" && segments.length === 1) {
-    return sendJson(response, 200, (await listAssets()).map(publicAsset));
+    return sendJson(response, 200, (await listAssets(workspaceId)).map(publicAsset));
   }
 
   if (request.method === "POST" && segments.length === 1) {
@@ -133,6 +134,7 @@ async function handleAssets(request, response, segments) {
           : {}),
         ...extractionMetadata
       },
+      workspace_id: workspaceId,
       created_at: nowIso()
     };
     await saveAsset(asset);
@@ -142,9 +144,9 @@ async function handleAssets(request, response, segments) {
   return sendJson(response, 405, { detail: "Method not allowed" });
 }
 
-async function handleComparisons(request, response, segments) {
+async function handleComparisons(request, response, segments, workspaceId) {
   if (request.method === "GET" && segments.length === 1) {
-    return sendJson(response, 200, (await listComparisons()).map(publicComparison));
+    return sendJson(response, 200, (await listComparisons(workspaceId)).map(publicComparison));
   }
 
   if (request.method === "POST" && segments.length === 1) {
@@ -156,14 +158,16 @@ async function handleComparisons(request, response, segments) {
 
     const assets = [];
     for (const assetId of assetIds) {
-      const asset = await getAsset(assetId);
+      const asset = await getAsset(assetId, workspaceId);
       if (!asset) {
         throw httpError(404, `Asset not found: ${assetId}`);
       }
       assets.push(asset);
     }
 
-    const comparison = publicComparison(await compareAssets(newId("cmp"), payload.objective, assets, nowIso(), payload.brief));
+    const rawComparison = await compareAssets(newId("cmp"), payload.objective, assets, nowIso(), payload.brief);
+    rawComparison.workspace_id = workspaceId;
+    const comparison = publicComparison(rawComparison);
     await saveComparison(comparison);
     return sendJson(response, 200, comparison);
   }
@@ -174,11 +178,11 @@ async function handleComparisons(request, response, segments) {
   }
 
   if (request.method === "GET" && segments.length === 2) {
-    return sendJson(response, 200, await requireComparison(comparisonId));
+    return sendJson(response, 200, await requireComparison(comparisonId, workspaceId));
   }
 
   if (request.method === "POST" && segments[2] === "challengers") {
-    const comparison = await requireComparison(comparisonId);
+    const comparison = await requireComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
     const sourceVariant = comparison.variants.find((variant) => variant.asset.id === sourceId);
@@ -200,6 +204,7 @@ async function handleComparisons(request, response, segments) {
         comparison_id: comparison.id,
         focus
       },
+      workspace_id: workspaceId,
       created_at: nowIso()
     };
     await saveAsset(asset);
@@ -208,12 +213,12 @@ async function handleComparisons(request, response, segments) {
 
   if (segments[2] === "outcomes") {
     if (request.method === "GET") {
-      await requireComparison(comparisonId);
-      return sendJson(response, 200, await listOutcomes(comparisonId));
+      await requireComparison(comparisonId, workspaceId);
+      return sendJson(response, 200, await listOutcomes(comparisonId, workspaceId));
     }
 
     if (request.method === "POST") {
-      const comparison = await requireComparison(comparisonId);
+      const comparison = await requireComparison(comparisonId, workspaceId);
       const payload = await parseJson(request);
       const variantIds = new Set(comparison.variants.map((variant) => variant.asset.id));
       if (!variantIds.has(payload.asset_id)) {
@@ -229,6 +234,7 @@ async function handleComparisons(request, response, segments) {
         conversions: Number(payload.conversions || 0),
         revenue: Number(payload.revenue || 0),
         notes: payload.notes || "",
+        workspace_id: workspaceId,
         created_at: nowIso()
       };
       await saveOutcome(outcome);
@@ -239,20 +245,20 @@ async function handleComparisons(request, response, segments) {
   return sendJson(response, 405, { detail: "Method not allowed" });
 }
 
-async function handleReports(request, response, segments) {
+async function handleReports(request, response, segments, workspaceId) {
   if (request.method !== "GET" || !segments[1]) {
     return sendJson(response, 405, { detail: "Method not allowed" });
   }
-  const report = await buildReport(segments[1]);
+  const report = await buildReport(segments[1], workspaceId);
   if (segments[2] === "markdown") {
     return sendText(response, 200, reportToMarkdown(report), "text/markdown; charset=utf-8");
   }
   return sendJson(response, 200, report);
 }
 
-async function buildReport(comparisonId) {
-  const comparison = await requireComparison(comparisonId);
-  const outcomes = await listOutcomes(comparisonId);
+async function buildReport(comparisonId, workspaceId) {
+  const comparison = await requireComparison(comparisonId, workspaceId);
+  const outcomes = await listOutcomes(comparisonId, workspaceId);
   const learning = learningSummary(outcomes);
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const executiveSummary = winner
@@ -275,7 +281,7 @@ async function buildReport(comparisonId) {
   };
 }
 
-async function seedDemo() {
+async function seedDemo(workspaceId) {
   const samples = [
     {
       id: newId("asset"),
@@ -285,6 +291,7 @@ async function seedDemo() {
         "Stop wasting money on ten-step routines that still leave your skin dry. The Lumina barrier kit uses one proven morning system to lock in hydration for 24 hours. Thousands of customers switched after seeing calmer skin in seven days. Try the starter kit today.",
       duration_seconds: 28,
       metadata: { demo: true, channel: "paid social" },
+      workspace_id: workspaceId,
       created_at: nowIso()
     },
     {
@@ -295,6 +302,7 @@ async function seedDemo() {
         "Our skincare brand is a revolutionary ecosystem for modern self care. We combine quality ingredients with a holistic approach designed for everyone. It is simple, premium, and made to fit your lifestyle.",
       duration_seconds: 25,
       metadata: { demo: true, channel: "paid social" },
+      workspace_id: workspaceId,
       created_at: nowIso()
     },
     {
@@ -305,6 +313,7 @@ async function seedDemo() {
       extracted_text:
         "Lumina Hydration System. New customer bundle. Save 20 percent today. Dermatologist tested formula with ceramides, peptides, and daily SPF support. Shop the starter kit now and get free shipping.",
       metadata: { demo: true, channel: "landing page" },
+      workspace_id: workspaceId,
       created_at: nowIso()
     }
   ];
@@ -316,8 +325,8 @@ async function seedDemo() {
   return samples;
 }
 
-async function requireComparison(comparisonId) {
-  const comparison = await getComparison(comparisonId);
+async function requireComparison(comparisonId, workspaceId) {
+  const comparison = await getComparison(comparisonId, workspaceId);
   if (!comparison) {
     throw httpError(404, "Comparison not found");
   }
@@ -508,8 +517,31 @@ function textFromFilename(name) {
 function setBaseHeaders(response) {
   response.setHeader("Access-Control-Allow-Origin", "*");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Stimli-Workspace");
   response.setHeader("Cache-Control", "no-store");
+}
+
+function workspaceForRequest(request) {
+  const raw = getHeader(request, "x-stimli-workspace");
+  if (!raw) {
+    return "public";
+  }
+  const workspaceId = String(raw).trim();
+  if (!/^[A-Za-z0-9_-]{3,96}$/.test(workspaceId)) {
+    throw httpError(400, "Invalid workspace id.");
+  }
+  return workspaceId;
+}
+
+function getHeader(request, name) {
+  const headers = request.headers || {};
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      return Array.isArray(value) ? value[0] : value;
+    }
+  }
+  return "";
 }
 
 function sendJson(response, status, payload) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
 
@@ -33,12 +34,60 @@ test("seeds assets and creates a comparison", async () => {
   assert.ok(comparison.json.suggestions.length > 0);
 });
 
-async function call(method, url, body = null) {
+test("scopes persistent objects by workspace header", async () => {
+  const workspaceA = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const workspaceB = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headersA = { "x-stimli-workspace": workspaceA };
+  const headersB = { "x-stimli-workspace": workspaceB };
+
+  const first = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Scoped A", text: "Stop weak hooks before launch. Try the focused starter kit today." },
+    headersA
+  );
+  const second = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Scoped B", text: "Upload creative and review the variant before paid media spend." },
+    headersA
+  );
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+
+  const visibleToA = await call("GET", "/api/assets", null, headersA);
+  const visibleToB = await call("GET", "/api/assets", null, headersB);
+  assert.equal(visibleToA.json.some((asset) => asset.id === first.json.asset.id), true);
+  assert.equal(visibleToB.json.some((asset) => asset.id === first.json.asset.id), false);
+
+  const blockedComparison = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Should not cross workspaces." },
+    headersB
+  );
+  assert.equal(blockedComparison.statusCode, 404);
+
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Pick the stronger scoped creative." },
+    headersA
+  );
+  assert.equal(comparison.statusCode, 200);
+
+  const comparisonsA = await call("GET", "/api/comparisons", null, headersA);
+  const comparisonsB = await call("GET", "/api/comparisons", null, headersB);
+  assert.equal(comparisonsA.json.some((item) => item.id === comparison.json.id), true);
+  assert.equal(comparisonsB.json.some((item) => item.id === comparison.json.id), false);
+});
+
+async function call(method, url, body = null, headers = {}) {
   const requestBody = body ? JSON.stringify(body) : "";
   const request = Readable.from(requestBody ? [Buffer.from(requestBody)] : []);
   request.method = method;
   request.url = url;
-  request.headers = requestBody ? { "content-type": "application/json" } : {};
+  request.headers = requestBody ? { "content-type": "application/json", ...headers } : headers;
 
   const chunks = [];
   const response = new Writable({
