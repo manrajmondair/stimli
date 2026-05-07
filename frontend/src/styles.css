@@ -216,6 +216,57 @@ h1 {
   color: #17211d;
 }
 
+.billing-panel {
+  background: #fffaf2;
+  border: 1px solid #e0d3c3;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 250px;
+  padding: 12px;
+}
+
+.billing-panel div,
+.billing-panel span,
+.billing-panel strong {
+  display: grid;
+  gap: 5px;
+}
+
+.billing-panel span,
+.billing-panel strong {
+  align-items: center;
+  display: flex;
+  font-size: 0.82rem;
+}
+
+.billing-panel span {
+  border-radius: 999px;
+  font-weight: 900;
+  justify-content: center;
+  padding: 6px 8px;
+}
+
+.billing-panel .ready {
+  background: #edf8f0;
+  color: #174633;
+}
+
+.billing-panel .research {
+  background: #fff4df;
+  color: #7a3f12;
+}
+
+.billing-panel strong {
+  color: #17211d;
+}
+
+.billing-panel small {
+  color: #5a665f;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
 .button,
 .icon-button {
   border: 0;

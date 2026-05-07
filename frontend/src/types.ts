@@ -162,6 +162,27 @@ export type BrainProviderHealth = {
   detail: string;
 };
 
+export type Plan = {
+  id: "research" | "growth" | "scale";
+  name: string;
+  asset_limit_per_hour: number;
+  comparison_limit_per_hour: number;
+  commercial: boolean;
+  configured: boolean;
+};
+
+export type BillingStatus = {
+  current_plan: Plan;
+  billing_configured: boolean;
+  commercial_use_enabled: boolean;
+  license: {
+    provider: string;
+    tribe_commercial_license: boolean;
+    mode: "research-only" | "commercial-ready";
+  };
+  plans: Plan[];
+};
+
 export type Report = {
   comparison_id: string;
   title: string;

@@ -18,7 +18,8 @@
     "@simplewebauthn/server": "^13.3.0",
     "@vercel/blob": "^2.3.3",
     "busboy": "^1.6.0",
-    "postgres": "^3.4.5"
+    "postgres": "^3.4.5",
+    "stripe": "^22.1.1"
   },
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "^4.60.3"

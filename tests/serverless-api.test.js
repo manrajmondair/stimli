@@ -28,6 +28,16 @@ test("starts passkey registration without an authenticated session", async () =>
   assert.equal(options.json.options.rp.name, "Stimli");
 });
 
+test("exposes billing and license status", async () => {
+  const status = await call("GET", "/api/billing/status");
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.json.current_plan.id, "research");
+  assert.equal(status.json.plans.some((plan) => plan.id === "growth"), true);
+
+  const checkout = await call("POST", "/api/billing/checkout", { plan: "growth" });
+  assert.equal(checkout.statusCode, 401);
+});
+
 test("seeds assets and creates a comparison", async () => {
   const seeded = await call("POST", "/api/demo/seed");
   assert.equal(seeded.statusCode, 200);

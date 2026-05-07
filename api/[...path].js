@@ -27,6 +27,13 @@ import {
   verifyRegistration
 } from "./_lib/auth.js";
 import {
+  billingStatus,
+  createCheckoutSession,
+  createPortalSession,
+  handleBillingWebhook,
+  usageLimitsForWorkspace
+} from "./_lib/billing.js";
+import {
   getAsset,
   getComparison,
   getProject,
@@ -74,6 +81,10 @@ export default async function handler(request, response) {
 
     if (segments[0] === "auth") {
       return await handleAuth(request, response, segments);
+    }
+
+    if (segments[0] === "billing") {
+      return await handleBilling(request, response, segments, authContext, workspaceId);
     }
 
     if (segments[0] === "share") {
@@ -172,13 +183,32 @@ async function handleAuth(request, response, segments) {
   return sendJson(response, 404, { detail: "Not found" });
 }
 
+async function handleBilling(request, response, segments, authContext) {
+  if (request.method === "GET" && segments[1] === "status") {
+    return sendJson(response, 200, await billingStatus(authContext.team));
+  }
+  if (request.method === "POST" && segments[1] === "checkout") {
+    const payload = await parseJson(request);
+    return sendJson(response, 200, await createCheckoutSession(request, authContext.team, payload.plan));
+  }
+  if (request.method === "POST" && segments[1] === "portal") {
+    return sendJson(response, 200, await createPortalSession(request, authContext.team));
+  }
+  if (request.method === "POST" && segments[1] === "webhook") {
+    const raw = await readRaw(request);
+    return sendJson(response, 200, await handleBillingWebhook(getHeader(request, "stripe-signature"), raw));
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
 async function handleAssets(request, response, segments, workspaceId) {
   if (request.method === "GET" && segments.length === 1) {
     return sendJson(response, 200, (await listAssets(workspaceId)).map(publicAsset));
   }
 
   if (request.method === "POST" && segments.length === 1) {
-    await enforceUsageLimit(request, workspaceId, "asset", Number(process.env.STIMLI_ASSET_LIMIT_PER_HOUR || 80));
+    const limits = await usageLimitsForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", limits.asset);
     const { fields, files } = await parseForm(request);
     const assetType = fields.asset_type || fields.assetType;
     if (!assetTypes.has(assetType)) {
@@ -313,7 +343,8 @@ async function handleComparisons(request, response, segments, workspaceId) {
   }
 
   if (request.method === "POST" && segments.length === 1) {
-    await enforceUsageLimit(request, workspaceId, "comparison", Number(process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR || 24));
+    const limits = await usageLimitsForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "comparison", limits.comparison);
     const payload = await parseJson(request);
     const assetIds = Array.isArray(payload.asset_ids) ? payload.asset_ids : [];
     if (assetIds.length < 2) {

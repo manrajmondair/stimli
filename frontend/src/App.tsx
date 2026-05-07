@@ -5,6 +5,7 @@ import {
   Building2,
   Check,
   ClipboardList,
+  CreditCard,
   Download,
   FileText,
   Gauge,
@@ -19,6 +20,7 @@ import {
   RefreshCw,
   Send,
   Share2,
+  ShieldCheck,
   Sparkles,
   Target,
   TrendingUp,
@@ -33,6 +35,7 @@ import {
   createProject,
   createShareLink,
   createTextAsset,
+  getBillingStatus,
   getBrainProviders,
   getComparison,
   getLearningSummary,
@@ -45,13 +48,16 @@ import {
   logout,
   listAssets,
   listComparisons,
+  openBillingPortal,
   registerWithPasskey,
-  seedDemo
+  seedDemo,
+  startCheckout
 } from "./api";
 import type {
   Asset,
   AuthSession,
   AssetType,
+  BillingStatus,
   BrainProviderHealth,
   Comparison,
   CreativeBrief,
@@ -100,6 +106,7 @@ function WorkspaceApp() {
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [learning, setLearning] = useState<LearningSummary | null>(null);
   const [providers, setProviders] = useState<BrainProviderHealth[]>([]);
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState<AssetType>("script");
@@ -119,6 +126,7 @@ function WorkspaceApp() {
   const [busy, setBusy] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [billingBusy, setBillingBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -159,18 +167,20 @@ function WorkspaceApp() {
 
   async function refreshWorkspace() {
     try {
-      const [projectList, assetList, comparisonList, learningSummary, providerList] = await Promise.all([
+      const [projectList, assetList, comparisonList, learningSummary, providerList, billingState] = await Promise.all([
         listProjects(),
         listAssets(),
         listComparisons(),
         getLearningSummary(),
-        getBrainProviders()
+        getBrainProviders(),
+        getBillingStatus()
       ]);
       setProjects(projectList);
       setAssets(assetList);
       setComparisons(comparisonList);
       setLearning(learningSummary);
       setProviders(providerList);
+      setBilling(billingState);
     } catch {
       setError("Backend is not reachable. Start the API on port 8000.");
     }
@@ -243,6 +253,32 @@ function WorkspaceApp() {
       setError(err instanceof Error ? err.message : "Could not create project.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleUpgrade(plan: string) {
+    setBillingBusy(true);
+    setError(null);
+    try {
+      const checkout = await startCheckout(plan);
+      window.location.assign(checkout.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start checkout.");
+    } finally {
+      setBillingBusy(false);
+    }
+  }
+
+  async function handlePortal() {
+    setBillingBusy(true);
+    setError(null);
+    try {
+      const portal = await openBillingPortal();
+      window.location.assign(portal.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open billing.");
+    } finally {
+      setBillingBusy(false);
     }
   }
 
@@ -384,6 +420,9 @@ function WorkspaceApp() {
             onLogin={handleLogin}
             onLogout={handleLogout}
           />
+          {billing && (
+            <BillingPanel billing={billing} busy={billingBusy} onUpgrade={handleUpgrade} onPortal={handlePortal} />
+          )}
           <button className="button secondary" onClick={handleSeed} disabled={busy}>
             {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
             Demo assets
@@ -769,6 +808,43 @@ function AuthPanel({
       >
         {busy ? <Loader2 className="spin" size={18} /> : <KeyRound size={18} />}
         Passkey
+      </button>
+    </div>
+  );
+}
+
+function BillingPanel({
+  billing,
+  busy,
+  onUpgrade,
+  onPortal
+}: {
+  billing: BillingStatus;
+  busy: boolean;
+  onUpgrade: (plan: string) => Promise<void>;
+  onPortal: () => Promise<void>;
+}) {
+  const growth = billing.plans.find((plan) => plan.id === "growth");
+  const canUpgrade = billing.billing_configured && billing.commercial_use_enabled && Boolean(growth?.configured);
+  const isPaid = billing.current_plan.id !== "research";
+  return (
+    <div className="billing-panel">
+      <div>
+        <span className={billing.license.mode === "commercial-ready" ? "ready" : "research"}>
+          <ShieldCheck size={15} />
+          {billing.license.mode === "commercial-ready" ? "Commercial ready" : "Research only"}
+        </span>
+        <strong>
+          <CreditCard size={15} />
+          {billing.current_plan.name}
+        </strong>
+        <small>
+          {billing.current_plan.comparison_limit_per_hour}/hr decisions · {billing.current_plan.asset_limit_per_hour}/hr variants
+        </small>
+      </div>
+      <button className="button full" disabled={busy || (!canUpgrade && !isPaid)} onClick={() => (isPaid ? onPortal() : onUpgrade("growth"))}>
+        {busy ? <Loader2 className="spin" size={17} /> : <CreditCard size={17} />}
+        {isPaid ? "Billing" : "Upgrade"}
       </button>
     </div>
   );

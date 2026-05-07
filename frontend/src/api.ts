@@ -4,6 +4,7 @@ import type {
   Asset,
   AssetType,
   AuthSession,
+  BillingStatus,
   BrainProviderHealth,
   ChallengerResponse,
   Comparison,
@@ -203,6 +204,30 @@ export async function getLearningSummary(): Promise<LearningSummary> {
 
 export async function getBrainProviders(): Promise<BrainProviderHealth[]> {
   const response = await fetch(`${API_BASE}/brain/providers`);
+  return parseResponse(response);
+}
+
+export async function getBillingStatus(): Promise<BillingStatus> {
+  const response = await fetch(`${API_BASE}/billing/status`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function startCheckout(plan: string): Promise<{ url: string; id: string }> {
+  const response = await fetch(`${API_BASE}/billing/checkout`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    credentials: "include",
+    body: JSON.stringify({ plan })
+  });
+  return parseResponse(response);
+}
+
+export async function openBillingPortal(): Promise<{ url: string }> {
+  const response = await fetch(`${API_BASE}/billing/portal`, {
+    method: "POST",
+    headers: workspaceHeaders(),
+    credentials: "include"
+  });
   return parseResponse(response);
 }
 
