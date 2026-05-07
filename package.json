@@ -11,6 +11,8 @@
   },
   "scripts": {
     "build": "npm run build --workspace stimli-frontend",
+    "dev:vercel": "npx vercel dev --listen 5173",
+    "dev:frontend": "npm run dev --workspace stimli-frontend",
     "test": "npm run test:api && npm run build",
     "test:api": "node --test tests/**/*.test.js"
   },

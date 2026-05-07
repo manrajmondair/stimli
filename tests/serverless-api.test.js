@@ -14,6 +14,17 @@ test("serves health from the Vercel API", async () => {
   assert.equal(response.json.status, "ok");
 });
 
+test("allows credentialed local CORS without opening arbitrary origins", async () => {
+  const local = await call("OPTIONS", "/api/health", null, { origin: "http://localhost:5173" });
+  assert.equal(local.statusCode, 204);
+  assert.equal(local.headers["access-control-allow-origin"], "http://localhost:5173");
+  assert.equal(local.headers["access-control-allow-credentials"], "true");
+
+  const blocked = await call("OPTIONS", "/api/health", null, { origin: "https://example.invalid" });
+  assert.equal(blocked.statusCode, 204);
+  assert.equal(blocked.headers["access-control-allow-origin"], undefined);
+});
+
 test("starts passkey registration without an authenticated session", async () => {
   const session = await call("GET", "/api/auth/session");
   assert.equal(session.statusCode, 200);

@@ -1,6 +1,14 @@
 backend/.data
 backend/.venv
+backend/.pytest_cache
 frontend/dist
 frontend/node_modules
 node_modules
 .DS_Store
+.env
+.env.*
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+*.tsbuildinfo

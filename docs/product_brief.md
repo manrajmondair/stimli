@@ -24,9 +24,8 @@ The first customer is a DTC growth team or founder running paid social tests wit
 
 ## Near-Term Roadmap
 
-- Add transcript extraction for audio/video files.
-- Add screenshot/OCR extraction for static creative and landing pages.
-- Add user workspaces, saved brands, and client-ready dashboards.
-- Add outcome calibration that adjusts scoring weights by category, channel, and audience.
+- Improve extraction quality with stronger OCR, transcription diarization, and landing-page screenshot capture.
+- Add saved brand profiles, reusable campaign briefs, and team-level creative libraries.
+- Add outcome calibration that adjusts scoring weights by category, channel, audience, and placement.
 - Add ad-platform import/export for Meta, TikTok, YouTube, and creative libraries.
-
+- Add enterprise controls: SSO, audit logs, retention policies, role-based permissions, and admin analytics.

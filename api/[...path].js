@@ -62,7 +62,7 @@ const assetTypes = new Set(["script", "landing_page", "image", "audio", "video"]
 const maxInlineFileBytes = Number(process.env.STIMLI_MAX_INLINE_FILE_BYTES || 8 * 1024 * 1024);
 
 export default async function handler(request, response) {
-  setBaseHeaders(response);
+  setBaseHeaders(request, response);
   if (request.method === "OPTIONS") {
     response.statusCode = 204;
     response.end();
@@ -1141,11 +1141,50 @@ function textFromFilename(name) {
   return `Creative asset named ${String(name).replace(/\.[^.]+$/, "").replace(/[-_]/g, " ")}. Add transcript or visual notes for deeper scoring.`;
 }
 
-function setBaseHeaders(response) {
-  response.setHeader("Access-Control-Allow-Origin", "*");
+function setBaseHeaders(request, response) {
+  const allowedOrigin = allowedCorsOrigin(request);
+  if (allowedOrigin) {
+    response.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    response.setHeader("Vary", "Origin");
+    if (allowedOrigin !== "*") {
+      response.setHeader("Access-Control-Allow-Credentials", "true");
+    }
+  }
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Stimli-Workspace");
   response.setHeader("Cache-Control", "no-store");
+}
+
+function allowedCorsOrigin(request) {
+  const origin = getHeader(request, "origin");
+  if (!origin) {
+    return "*";
+  }
+  const configured = [
+    process.env.STIMLI_APP_URL,
+    process.env.STIMLI_ORIGIN,
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "",
+    "https://stimli.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+  ];
+  const extra = String(process.env.STIMLI_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if ([...configured, ...extra].filter(Boolean).includes(origin)) {
+    return origin;
+  }
+  try {
+    const parsed = new URL(origin);
+    const isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    if (isLocal && ["3000", "5173", "8000"].includes(parsed.port)) {
+      return origin;
+    }
+  } catch {
+    return "";
+  }
+  return "";
 }
 
 function workspaceForRequest(request) {

@@ -104,7 +104,20 @@ Production uploads use private Vercel Blob storage. Browser uploads go through t
 
 ## Local Development
 
-### Backend
+### Full Vercel Product
+
+Use this path when you want the same API surface as production: passkeys, teams, projects, private uploads, share links, billing guardrails, and serverless report routes.
+
+```bash
+npm install
+npm run dev:vercel
+```
+
+The app will be available at `http://localhost:5173`, with the Vercel API mounted at same-origin `/api/*`.
+
+### Python Research API
+
+The FastAPI service is still useful for model-provider experimentation and focused backend tests, but it is not the full production API surface.
 
 ```bash
 cd backend
@@ -124,7 +137,7 @@ npm install
 npm run dev
 ```
 
-The app will be available at `http://localhost:5173`.
+The standalone Vite app will be available at `http://localhost:5173`. For the complete product API, prefer the root `npm run dev:vercel` command above.
 
 ### Docker
 
@@ -190,17 +203,16 @@ Real script/text inference also requires Hugging Face access to TRIBE's configur
 ## Testing
 
 ```bash
+npm install
+npm run test
+```
+
+```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pytest
-```
-
-```bash
-cd frontend
-npm install
-npm run build
 ```
 
 <sub>Assisted by Codex.</sub>

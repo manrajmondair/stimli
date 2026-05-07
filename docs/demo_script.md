@@ -12,9 +12,9 @@ Select two or more variants and run the comparison. Stimli produces a direct dec
 
 ## 1:15-2:10 Architecture
 
-The backend is a FastAPI service with SQLite persistence, file storage, URL extraction, deterministic response fixtures, and an isolated provider interface for research brain-response models. The frontend is a React decision dashboard optimized around A/B comparison rather than generic analytics.
+The production product is a single Vercel app: a React/Vite interface with same-origin serverless API routes, Postgres persistence, private Blob uploads, passkey accounts, team workspaces, projects, share links, and billing/license guardrails. A separate FastAPI service remains available for local research-model experimentation.
 
-The analysis combines predicted response curves with creative heuristics: hook, clarity, CTA, brand cue, pacing, offer strength, audience fit, attention, memory, and cognitive load.
+The analysis combines hosted TRIBE-compatible response curves when configured with creative heuristics: hook, clarity, CTA, brand cue, pacing, offer strength, audience fit, attention, memory, and cognitive load. Modal handles GPU inference and extraction outside the Vercel request path.
 
 ## 2:10-2:45 Product Loop
 
@@ -23,4 +23,3 @@ After the recommendation, Stimli can draft a focused challenger variant. After l
 ## 2:45-3:00 Impact
 
 The goal is to help small teams make better creative decisions before wasting budget, giving one person the leverage of a creative strategist, testing analyst, and research team.
-

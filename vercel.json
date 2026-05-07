@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "installCommand": "npm install",
+  "devCommand": "npm run dev --workspace stimli-frontend -- --port $PORT",
   "buildCommand": "npm run build",
   "outputDirectory": "frontend/dist",
   "regions": ["sfo1"],
