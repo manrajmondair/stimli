@@ -445,6 +445,14 @@ textarea:focus {
   color: #7dd9a7;
 }
 
+.processing-band {
+  background: #26352f;
+}
+
+.failed-band {
+  background: #7f2d24;
+}
+
 .confidence {
   color: #d8eee1;
   gap: 8px;
@@ -484,6 +492,53 @@ textarea:focus {
   border-radius: 8px;
   margin: 0;
   padding: 12px;
+}
+
+.processing-list {
+  display: grid;
+  gap: 10px;
+}
+
+.processing-row {
+  align-items: center;
+  background: #fffcf7;
+  border: 1px solid #e4d8c9;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr auto;
+  padding: 12px;
+}
+
+.processing-row span {
+  color: #24302a;
+  font-weight: 800;
+  min-width: 0;
+}
+
+.processing-status {
+  border-radius: 999px;
+  color: white;
+  font-size: 0.74rem;
+  padding: 6px 9px;
+  text-transform: uppercase;
+}
+
+.processing-status.queued,
+.processing-status.processing {
+  background: #7c6a46;
+}
+
+.processing-status.running {
+  background: #386fa4;
+}
+
+.processing-status.complete {
+  background: #087f5b;
+}
+
+.processing-status.failed {
+  background: #c1462f;
 }
 
 .challenger-controls {

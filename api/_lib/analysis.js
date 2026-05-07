@@ -34,8 +34,12 @@ export async function providerHealth() {
 }
 
 export async function compareAssets(comparisonId, objective, assets, createdAt, brief = {}) {
+  return compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief);
+}
+
+export async function compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief = {}, brainByAssetId = {}) {
   const safeBrief = normalizeBrief(brief);
-  const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief)));
+  const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief, brainByAssetId[asset.id])));
   const ranked = assets
     .map((asset, index) => [asset, analyses[index]])
     .sort((left, right) => right[1].scores.overall - left[1].scores.overall);
@@ -63,11 +67,88 @@ export async function compareAssets(comparisonId, objective, assets, createdAt, 
   };
 }
 
-export async function analyzeAsset(asset, brief = {}) {
+export function shouldCreateAsyncComparison(payload = {}, assets = []) {
+  if (!process.env.TRIBE_CONTROL_URL) {
+    return false;
+  }
+  if (payload.async === true || payload.inference_mode === "async") {
+    return true;
+  }
+  if (process.env.STIMLI_BRAIN_PROVIDER === "tribe-remote" && process.env.STIMLI_SYNC_REMOTE !== "1") {
+    return true;
+  }
+  return assets.some((asset) => {
+    const size = Number(asset.metadata?.blob_size || asset.metadata?.file_size || 0);
+    return asset.type === "audio" || asset.type === "video" || size > Number(process.env.STIMLI_ASYNC_FILE_BYTES || 20 * 1024 * 1024);
+  });
+}
+
+export function createPendingComparison(comparisonId, objective, assets, createdAt, brief = {}, jobs = []) {
+  const safeBrief = normalizeBrief(brief);
+  const jobByAssetId = new Map(jobs.map((job) => [job.asset_id, job]));
+  return {
+    id: comparisonId,
+    objective: objective || "Find the variant most likely to earn attention, build memory, and convert.",
+    brief: safeBrief,
+    status: "processing",
+    variants: assets.map((asset, index) => ({
+      asset,
+      analysis: pendingAnalysis(asset, jobByAssetId.get(asset.id)),
+      rank: index + 1,
+      delta_from_best: 0
+    })),
+    recommendation: {
+      winner_asset_id: null,
+      verdict: "revise",
+      confidence: 0,
+      headline: "Analyzing variants with hosted TRIBE inference",
+      reasons: ["Stimli is processing media assets and will update this decision when the model results are ready."]
+    },
+    suggestions: [],
+    jobs,
+    created_at: createdAt
+  };
+}
+
+export async function startBrainJob(asset) {
+  const response = await fetch(process.env.TRIBE_CONTROL_URL, {
+    method: "POST",
+    headers: remoteHeaders(),
+    body: JSON.stringify({ action: "start", asset }),
+    signal: AbortSignal.timeout(Number(process.env.TRIBE_CONTROL_TIMEOUT_MS || 20000))
+  });
+  if (!response.ok) {
+    throw new Error(`Remote job provider returned ${response.status}`);
+  }
+  const payload = await response.json();
+  return {
+    job_id: payload.job_id,
+    asset_id: payload.asset_id || asset.id,
+    status: payload.status || "queued",
+    provider: payload.provider || "tribe-remote",
+    created_at: payload.created_at || nowIso(),
+    updated_at: payload.updated_at || nowIso()
+  };
+}
+
+export async function getBrainJob(jobId) {
+  const response = await fetch(process.env.TRIBE_CONTROL_URL, {
+    method: "POST",
+    headers: remoteHeaders(),
+    body: JSON.stringify({ action: "status", job_id: jobId }),
+    signal: AbortSignal.timeout(Number(process.env.TRIBE_CONTROL_TIMEOUT_MS || 20000))
+  });
+  if (!response.ok) {
+    throw new Error(`Remote job status returned ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function analyzeAsset(asset, brief = {}, brainOverride = null) {
   const safeBrief = normalizeBrief(brief);
   const text = asset.extracted_text || asset.name || asset.source_url || "";
   const words = tokenize(text);
-  const { provider, timeline } = await predictBrain(asset);
+  const { provider, timeline } = brainOverride ? normalizeBrainOverride(brainOverride) : await predictBrain(asset);
   const neuralAttention = average(timeline.map((point) => point.attention));
   const memory = average(timeline.map((point) => point.memory));
   const cognitiveLoad = average(timeline.map((point) => point.cognitive_load));
@@ -150,6 +231,52 @@ async function predictBrain(asset) {
     }
   }
   return { provider: "web-heuristic-brain", timeline: heuristicTimeline(asset) };
+}
+
+function remoteHeaders() {
+  return {
+    "Content-Type": "application/json",
+    ...(process.env.TRIBE_API_KEY ? { Authorization: `Bearer ${process.env.TRIBE_API_KEY}` } : {})
+  };
+}
+
+function normalizeBrainOverride(override) {
+  const timeline = normalizeTimeline(override.timeline || override.result?.timeline || []);
+  if (!timeline.length) {
+    throw new Error("Remote job returned no timeline.");
+  }
+  return {
+    provider: override.provider || override.result?.provider || "tribe-remote",
+    timeline
+  };
+}
+
+function pendingAnalysis(asset, job = {}) {
+  return {
+    asset_id: asset.id,
+    provider: job.provider || "tribe-remote",
+    status: job.status || "queued",
+    scores: emptyScores(),
+    timeline: [],
+    feature_vector: {},
+    summary: "Analysis is queued."
+  };
+}
+
+function emptyScores() {
+  return {
+    overall: 0,
+    hook: 0,
+    clarity: 0,
+    cta: 0,
+    brand_cue: 0,
+    pacing: 0,
+    offer_strength: 0,
+    audience_fit: 0,
+    neural_attention: 0,
+    memory: 0,
+    cognitive_load: 0
+  };
 }
 
 function heuristicTimeline(asset) {

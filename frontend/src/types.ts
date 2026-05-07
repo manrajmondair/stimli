@@ -37,7 +37,7 @@ export type ScoreBreakdown = {
 export type AnalysisRun = {
   asset_id: string;
   provider: string;
-  status: "complete";
+  status: "queued" | "running" | "processing" | "complete" | "failed";
   scores: ScoreBreakdown;
   timeline: TimelinePoint[];
   feature_vector: Record<string, number>;
@@ -82,11 +82,22 @@ export type Comparison = {
   id: string;
   objective: string;
   brief: CreativeBrief;
-  status: "complete";
+  status: "processing" | "complete" | "failed";
   variants: VariantResult[];
   recommendation: Recommendation;
   suggestions: Suggestion[];
+  jobs?: ComparisonJob[];
   created_at: string;
+};
+
+export type ComparisonJob = {
+  job_id: string;
+  asset_id: string;
+  status: "queued" | "running" | "processing" | "complete" | "failed";
+  provider: string;
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type OutcomeCreate = {

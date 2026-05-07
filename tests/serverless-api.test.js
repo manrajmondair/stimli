@@ -82,6 +82,86 @@ test("scopes persistent objects by workspace header", async () => {
   assert.equal(comparisonsB.json.some((item) => item.id === comparison.json.id), false);
 });
 
+test("creates async comparisons and finalizes completed remote jobs", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousControlUrl = process.env.TRIBE_CONTROL_URL;
+  const previousApiKey = process.env.TRIBE_API_KEY;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const jobs = new Map();
+  let jobIndex = 0;
+
+  process.env.TRIBE_CONTROL_URL = "https://modal.test/control";
+  process.env.TRIBE_API_KEY = "test-key";
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = {
+        job_id: `job_${jobIndex}`,
+        asset_id: body.asset.id,
+        status: "queued",
+        provider: "tribe-v2",
+        created_at: "2026-05-06T00:00:00Z",
+        updated_at: "2026-05-06T00:00:00Z"
+      };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      const job = jobs.get(body.job_id);
+      return jsonResponse({
+        ...job,
+        status: "complete",
+        result: {
+          provider: "tribe-v2",
+          timeline: [
+            { second: 0, attention: 0.62, memory: 0.55, cognitive_load: 0.38, note: "Opening response" },
+            { second: 3, attention: 0.78, memory: 0.71, cognitive_load: 0.44, note: "Strong middle response" },
+            { second: 6, attention: 0.66, memory: 0.74, cognitive_load: 0.4, note: "Stable close" }
+          ]
+        }
+      });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "audio", name: "Audio A", text: "Stop wasting paid media spend. Try the starter kit today." },
+      headers
+    );
+    const second = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "audio", name: "Audio B", text: "Our brand has a modern solution for everyone." },
+      headers
+    );
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Pick the stronger audio ad." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+    assert.equal(created.json.status, "processing");
+    assert.equal(created.json.jobs.length, 2);
+
+    const refreshed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(refreshed.statusCode, 200);
+    assert.equal(refreshed.json.status, "complete");
+    assert.equal(refreshed.json.variants.length, 2);
+    assert.equal(refreshed.json.variants[0].analysis.provider, "tribe-remote");
+    assert.ok(refreshed.json.recommendation.headline);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv("TRIBE_CONTROL_URL", previousControlUrl);
+    restoreEnv("TRIBE_API_KEY", previousApiKey);
+  }
+});
+
 async function call(method, url, body = null, headers = {}) {
   const requestBody = body ? JSON.stringify(body) : "";
   const request = Readable.from(requestBody ? [Buffer.from(requestBody)] : []);
@@ -116,4 +196,19 @@ async function call(method, url, body = null, headers = {}) {
     text,
     json: text ? JSON.parse(text) : null
   };
+}
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function restoreEnv(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
 }

@@ -26,6 +26,7 @@ import {
   createOutcome,
   createTextAsset,
   getBrainProviders,
+  getComparison,
   getLearningSummary,
   getReport,
   getReportMarkdown,
@@ -89,6 +90,7 @@ export function App() {
   const [requiredClaims, setRequiredClaims] = useState("24 hour hydration, dermatologist tested");
   const [forbiddenTerms, setForbiddenTerms] = useState("miracle cure, guaranteed");
   const [busy, setBusy] = useState(false);
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -181,10 +183,33 @@ export function App() {
       const nextComparison = await createBriefComparison(selected, objective, brief);
       setComparison(nextComparison);
       await refreshWorkspace();
+      if (nextComparison.status === "processing") {
+        void pollComparison(nextComparison.id);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create comparison.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function pollComparison(comparisonId: string) {
+    setProcessingId(comparisonId);
+    try {
+      for (let attempt = 0; attempt < 90; attempt += 1) {
+        await delay(Math.min(2500 + attempt * 250, 8000));
+        const fresh = await getComparison(comparisonId);
+        setComparison((current) => (current?.id === comparisonId ? fresh : current));
+        if (fresh.status === "complete" || fresh.status === "failed") {
+          await refreshWorkspace();
+          return;
+        }
+      }
+      setError("Analysis is taking longer than expected. You can refresh recent decisions in a moment.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not refresh comparison status.");
+    } finally {
+      setProcessingId((current) => (current === comparisonId ? null : current));
     }
   }
 
@@ -209,9 +234,9 @@ export function App() {
             {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
             Demo assets
           </button>
-          <button className="button primary" onClick={handleCompare} disabled={busy || selected.length < 2}>
-            {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            Compare
+          <button className="button primary" onClick={handleCompare} disabled={busy || Boolean(processingId) || selected.length < 2}>
+            {busy || processingId ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+            {processingId ? "Processing" : "Compare"}
           </button>
         </div>
       </section>
@@ -350,9 +375,12 @@ export function App() {
             ) : (
               comparisons.slice(0, 5).map((item) => (
                 <button className="history-row" key={item.id} onClick={() => setComparison(item)}>
-                  <strong>{item.recommendation.headline}</strong>
+                  <strong>{item.status === "processing" ? "Processing comparison" : item.recommendation.headline}</strong>
                   <small>
-                    {Math.round(item.recommendation.confidence * 100)}% confidence · {item.variants.length} variants
+                    {item.status === "complete"
+                      ? `${Math.round(item.recommendation.confidence * 100)}% confidence`
+                      : item.status}{" "}
+                    · {item.variants.length} variants
                   </small>
                 </button>
               ))
@@ -425,7 +453,74 @@ function ProviderSnapshot({ providers }: { providers: BrainProviderHealth[] }) {
   );
 }
 
-function ComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
+function ComparisonView(props: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
+  if (props.comparison.status === "processing") {
+    return <ProcessingComparison comparison={props.comparison} />;
+  }
+  if (props.comparison.status === "failed") {
+    return <FailedComparison comparison={props.comparison} />;
+  }
+  return <CompleteComparisonView {...props} />;
+}
+
+function ProcessingComparison({ comparison }: { comparison: Comparison }) {
+  const jobs = comparison.jobs ?? [];
+  return (
+    <div className="results-stack">
+      <section className="decision-band processing-band">
+        <div>
+          <p className="eyebrow">Analysis running</p>
+          <h2>{comparison.recommendation.headline}</h2>
+          <div className="confidence">
+            <Loader2 className="spin" size={18} />
+            {jobs.filter((job) => job.status === "complete").length}/{Math.max(jobs.length, comparison.variants.length)} variants ready
+          </div>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-heading">
+          <Activity size={19} />
+          <h2>Inference Jobs</h2>
+        </div>
+        <div className="processing-list">
+          {comparison.variants.map((variant) => {
+            const job = jobs.find((item) => item.asset_id === variant.asset.id);
+            return (
+              <div className="processing-row" key={variant.asset.id}>
+                <span>{variant.asset.name}</span>
+                <strong className={`processing-status ${job?.status ?? variant.analysis.status}`}>{job?.status ?? variant.analysis.status}</strong>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FailedComparison({ comparison }: { comparison: Comparison }) {
+  return (
+    <div className="results-stack">
+      <section className="decision-band failed-band">
+        <div>
+          <p className="eyebrow">Analysis failed</p>
+          <h2>{comparison.recommendation.headline}</h2>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="reason-list">
+          {comparison.recommendation.reasons.length ? (
+            comparison.recommendation.reasons.map((reason) => <p key={reason}>{reason}</p>)
+          ) : (
+            <p>The hosted inference job did not return a usable result.</p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const [reportBusy, setReportBusy] = useState(false);
   const [challengerBusy, setChallengerBusy] = useState(false);
@@ -704,4 +799,10 @@ function splitList(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
 }

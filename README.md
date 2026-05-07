@@ -46,6 +46,7 @@ Production environment variables:
 - `POSTGRES_URL` or `DATABASE_URL`: enables persistent production storage. Without it, Vercel uses warm-function memory only, which is useful for previews but not durable.
 - `BLOB_READ_WRITE_TOKEN`: enables private Vercel Blob storage for uploaded files. Without it, small files can still be inlined for local workflows, but production media uploads are not durable.
 - `TRIBE_INFERENCE_URL`: optional hosted TRIBE-compatible inference endpoint. The Vercel app calls this endpoint for brain-response timelines when configured.
+- `TRIBE_CONTROL_URL`: optional hosted job-control endpoint for async media inference. When configured, audio/video comparisons return quickly with `status=processing` and finalize as the hosted jobs complete.
 - `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
 - `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
 
@@ -68,7 +69,7 @@ modal secret create stimli-vercel-blob BLOB_READ_WRITE_TOKEN=...
 modal deploy tribe_modal.py
 ```
 
-After deploy, set the resulting Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel.
+After deploy, set the synchronous Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the control endpoint as `TRIBE_CONTROL_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel. The control endpoint is used for production media jobs so large audio/video files do not block the browser request while GPU inference runs.
 
 ### Production Media Uploads
 
@@ -121,8 +122,8 @@ Sample text assets live in `backend/data/sample_assets/`.
 
 - `POST /api/assets` uploads or registers an asset.
 - `GET /api/assets` lists assets.
-- `POST /api/comparisons` creates an A/B or multi-variant comparison.
-- `GET /api/comparisons/{id}` returns scores, timeline signals, recommendation, and edit suggestions.
+- `POST /api/comparisons` creates an A/B or multi-variant comparison. Text comparisons usually return `complete`; media comparisons may return `processing`.
+- `GET /api/comparisons/{id}` returns scores, timeline signals, recommendation, and edit suggestions. Processing comparisons are refreshed against the hosted job-control endpoint before returning.
 - `GET /api/reports/{id}` returns a shareable report payload.
 - `GET /api/comparisons` lists saved decisions.
 - `POST /api/comparisons/{id}/outcomes` records post-launch results.

@@ -5,9 +5,14 @@ import { handleUpload } from "@vercel/blob/client";
 import {
   buildChallengerText,
   compareAssets,
+  compareAssetsWithBrain,
+  createPendingComparison,
+  getBrainJob,
   newId,
   nowIso,
-  providerHealth
+  providerHealth,
+  shouldCreateAsyncComparison,
+  startBrainJob
 } from "./_lib/analysis.js";
 import {
   getAsset,
@@ -206,11 +211,15 @@ async function handleComparisons(request, response, segments, workspaceId) {
       assets.push(asset);
     }
 
-    const rawComparison = await compareAssets(newId("cmp"), payload.objective, assets, nowIso(), payload.brief);
+    const comparisonId = newId("cmp");
+    const createdAt = nowIso();
+    const rawComparison = shouldCreateAsyncComparison(payload, assets)
+      ? await createAsyncComparison(comparisonId, payload.objective, assets, createdAt, payload.brief)
+      : await compareAssets(comparisonId, payload.objective, assets, createdAt, payload.brief);
     rawComparison.workspace_id = workspaceId;
     const comparison = publicComparison(rawComparison);
     await saveComparison(comparison);
-    return sendJson(response, 200, comparison);
+    return sendJson(response, comparison.status === "processing" ? 202 : 200, comparison);
   }
 
   const comparisonId = segments[1];
@@ -223,7 +232,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
   }
 
   if (request.method === "POST" && segments[2] === "challengers") {
-    const comparison = await requireComparison(comparisonId, workspaceId);
+    const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
     const sourceVariant = comparison.variants.find((variant) => variant.asset.id === sourceId);
@@ -259,7 +268,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
     }
 
     if (request.method === "POST") {
-      const comparison = await requireComparison(comparisonId, workspaceId);
+      const comparison = await requireCompleteComparison(comparisonId, workspaceId);
       const payload = await parseJson(request);
       const variantIds = new Set(comparison.variants.map((variant) => variant.asset.id));
       if (!variantIds.has(payload.asset_id)) {
@@ -298,7 +307,7 @@ async function handleReports(request, response, segments, workspaceId) {
 }
 
 async function buildReport(comparisonId, workspaceId) {
-  const comparison = await requireComparison(comparisonId, workspaceId);
+  const comparison = await requireCompleteComparison(comparisonId, workspaceId);
   const outcomes = await listOutcomes(comparisonId, workspaceId);
   const learning = learningSummary(outcomes);
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
@@ -371,17 +380,135 @@ async function requireComparison(comparisonId, workspaceId) {
   if (!comparison) {
     throw httpError(404, "Comparison not found");
   }
-  return publicComparison(comparison);
+  return publicComparison(await refreshComparison(comparison, workspaceId));
+}
+
+async function requireCompleteComparison(comparisonId, workspaceId) {
+  const comparison = await requireComparison(comparisonId, workspaceId);
+  if (comparison.status !== "complete") {
+    throw httpError(409, "Comparison is still processing.");
+  }
+  return comparison;
+}
+
+async function createAsyncComparison(comparisonId, objective, assets, createdAt, brief) {
+  const jobs = await Promise.all(assets.map((asset) => startBrainJob(asset)));
+  return createPendingComparison(comparisonId, objective, assets, createdAt, brief, jobs);
+}
+
+async function refreshComparison(comparison, workspaceId) {
+  if (comparison.status !== "processing" || !Array.isArray(comparison.jobs) || !process.env.TRIBE_CONTROL_URL) {
+    return comparison;
+  }
+
+  const jobStatuses = await Promise.all(
+    comparison.jobs.map(async (job) => {
+      try {
+        return await getBrainJob(job.job_id);
+      } catch (error) {
+        return { ...job, status: job.status || "processing", polling_error: error.message };
+      }
+    })
+  );
+  const updatedJobs = jobStatuses.map(publicJobStatus);
+
+  if (jobStatuses.some((job) => job.status === "failed")) {
+    const failed = {
+      ...comparison,
+      status: "failed",
+      jobs: updatedJobs,
+      variants: withJobStatuses(comparison.variants, updatedJobs),
+      recommendation: {
+        winner_asset_id: null,
+        verdict: "revise",
+        confidence: 0,
+        headline: "Analysis failed before a shipping recommendation could be made",
+        reasons: jobStatuses.filter((job) => job.error).map((job) => job.error).slice(0, 3)
+      }
+    };
+    await saveComparison(publicComparison(failed));
+    return failed;
+  }
+
+  const completeJobs = jobStatuses.filter((job) => job.status === "complete");
+  if (completeJobs.length === comparison.jobs.length) {
+    const assets = [];
+    for (const variant of comparison.variants) {
+      const asset = await getAsset(variant.asset.id, workspaceId);
+      if (!asset) {
+        throw httpError(404, `Asset not found: ${variant.asset.id}`);
+      }
+      assets.push(asset);
+    }
+    const brainByAssetId = Object.fromEntries(
+      completeJobs.map((job) => [
+        job.asset_id,
+        {
+          provider: "tribe-remote",
+          timeline: job.timeline || job.result?.timeline || []
+        }
+      ])
+    );
+    const completed = await compareAssetsWithBrain(
+      comparison.id,
+      comparison.objective,
+      assets,
+      comparison.created_at,
+      comparison.brief,
+      brainByAssetId
+    );
+    completed.workspace_id = workspaceId;
+    completed.jobs = updatedJobs;
+    await saveComparison(publicComparison(completed));
+    return completed;
+  }
+
+  const processing = {
+    ...comparison,
+    jobs: updatedJobs,
+    variants: withJobStatuses(comparison.variants, updatedJobs)
+  };
+  await saveComparison(publicComparison(processing));
+  return processing;
 }
 
 function publicComparison(comparison) {
   return {
     ...comparison,
-    variants: comparison.variants.map((variant) => ({
+    variants: (comparison.variants || []).map((variant) => ({
       ...variant,
       asset: publicAsset(variant.asset)
     }))
   };
+}
+
+function publicJobStatus(job) {
+  return {
+    job_id: job.job_id,
+    asset_id: job.asset_id,
+    status: job.status || "processing",
+    provider: job.provider || "tribe-remote",
+    error: job.error || job.polling_error || null,
+    created_at: job.created_at || null,
+    updated_at: job.updated_at || nowIso()
+  };
+}
+
+function withJobStatuses(variants, jobs) {
+  const jobByAssetId = new Map(jobs.map((job) => [job.asset_id, job]));
+  return variants.map((variant) => {
+    const job = jobByAssetId.get(variant.asset.id);
+    return job
+      ? {
+          ...variant,
+          analysis: {
+            ...variant.analysis,
+            provider: job.provider || variant.analysis.provider,
+            status: job.status || variant.analysis.status
+          }
+        }
+      : variant;
+  });
 }
 
 function publicAsset(asset) {

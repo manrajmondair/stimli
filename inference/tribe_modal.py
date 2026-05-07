@@ -5,6 +5,8 @@ import math
 import os
 import re
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any
@@ -20,6 +22,7 @@ TRIBE_CHECKPOINT = os.getenv("STIMLI_TRIBE_CHECKPOINT", "facebook/tribev2")
 
 app = modal.App(APP_NAME)
 cache_volume = modal.Volume.from_name("stimli-tribe-cache", create_if_missing=True)
+jobs = modal.Dict.from_name("stimli-tribe-jobs", create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -35,6 +38,7 @@ image = (
         "tribev2 @ git+https://github.com/facebookresearch/tribev2.git@main",
     )
 )
+control_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi>=0.115.0")
 
 _model = None
 _transformers_auth_patched = False
@@ -56,16 +60,68 @@ _transformers_auth_patched = False
 @modal.fastapi_endpoint(method="POST", label="stimli-tribe", docs=True)
 def predict(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _check_auth(authorization)
-    _configure_hf_auth()
     asset = payload.get("asset") or {}
-    model = _load_model()
-    events = _events_for_asset(model, asset)
-    preds, segments = model.predict(events=events, verbose=False)
-    return {
-        "provider": "tribe-v2",
-        "asset_id": asset.get("id"),
-        "timeline": _predictions_to_timeline(asset, preds, segments),
-    }
+    return _predict_asset(asset)
+
+
+@app.function(
+    image=control_image,
+    timeout=60,
+    secrets=[modal.Secret.from_name("stimli-modal-auth")],
+)
+@modal.fastapi_endpoint(method="POST", label="stimli-tribe-control", docs=True)
+def control(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _check_auth(authorization)
+    action = payload.get("action")
+    if action == "start":
+        asset = payload.get("asset") or {}
+        if not asset.get("id"):
+            raise _http_error(400, "Asset id is required.")
+        job_id = payload.get("job_id") or f"job_{uuid.uuid4().hex[:12]}"
+        record = _job_record(job_id, asset, "queued")
+        jobs.put(job_id, record)
+        run_prediction_job.spawn(job_id, asset)
+        return record
+    if action == "status":
+        job_id = payload.get("job_id")
+        if not job_id:
+            raise _http_error(400, "job_id is required.")
+        record = jobs.get(job_id)
+        if not record:
+            raise _http_error(404, "Job not found.")
+        return record
+    raise _http_error(400, "Unsupported action.")
+
+
+@app.function(
+    image=image,
+    gpu=os.getenv("STIMLI_MODAL_GPU", "A10G"),
+    timeout=900,
+    scaledown_window=300,
+    max_containers=3,
+    volumes={CACHE_PATH: cache_volume},
+    secrets=[
+        modal.Secret.from_name("stimli-huggingface"),
+        modal.Secret.from_name("stimli-modal-auth"),
+        modal.Secret.from_name("stimli-vercel-blob"),
+    ],
+)
+def run_prediction_job(job_id: str, asset: dict[str, Any]) -> dict[str, Any]:
+    jobs.put(job_id, _job_record(job_id, asset, "running"))
+    try:
+        result = _predict_asset(asset)
+        record = {
+            **_job_record(job_id, asset, "complete"),
+            "result": result,
+            "timeline": result["timeline"],
+        }
+    except Exception as exc:
+        record = {
+            **_job_record(job_id, asset, "failed"),
+            "error": _error_message(exc),
+        }
+    jobs.put(job_id, record)
+    return record
 
 
 @app.function(
@@ -105,6 +161,42 @@ def secret_status() -> dict[str, Any]:
         "blob_token_present": bool(blob_token),
         **hub_status,
     }
+
+
+def _predict_asset(asset: dict[str, Any]) -> dict[str, Any]:
+    _configure_hf_auth()
+    model = _load_model()
+    events = _events_for_asset(model, asset)
+    preds, segments = model.predict(events=events, verbose=False)
+    return {
+        "provider": "tribe-v2",
+        "asset_id": asset.get("id"),
+        "timeline": _predictions_to_timeline(asset, preds, segments),
+    }
+
+
+def _job_record(job_id: str, asset: dict[str, Any], status: str) -> dict[str, Any]:
+    timestamp = _now()
+    existing = jobs.get(job_id) if job_id else None
+    return {
+        "job_id": job_id,
+        "asset_id": asset.get("id"),
+        "status": status,
+        "provider": "tribe-v2",
+        "created_at": (existing or {}).get("created_at") or timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _error_message(exc: Exception) -> str:
+    detail = getattr(exc, "detail", None)
+    if detail:
+        return str(detail)
+    return str(exc) or type(exc).__name__
 
 
 def _configure_hf_auth(validate: bool = True) -> None:
