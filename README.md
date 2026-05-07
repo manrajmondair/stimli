@@ -56,6 +56,28 @@ Production environment variables:
 
 The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
 
+### Free-Tier Deployment Profile
+
+The product is designed to run with free options by default:
+
+- Hosting/API: Vercel Hobby, same-origin Vite app plus serverless `/api/*`.
+- Database: Neon Free Postgres through the Vercel integration.
+- File storage: Vercel Blob on the Hobby allowance, with private URLs hidden from public payloads.
+- Auth: built-in passkeys, sessions, and team workspaces in Postgres; no paid auth provider required.
+- GPU inference: Modal Starter credits, with low default concurrency and short scale-down windows.
+- Billing: Stripe integration is optional and disabled unless Stripe env vars are provided. Stripe has transaction fees, so it should not be configured for a purely free deployment.
+
+Use `.env.example` as the free profile. The default direct-upload cap is 25 MB, public quota defaults are conservative, and Modal defaults to one GPU container so testing does not burn free credits unexpectedly. Raise those limits only after checking the provider dashboards.
+
+Free-first env controls:
+
+- `STIMLI_MAX_DIRECT_UPLOAD_BYTES=26214400`
+- `STIMLI_ASSET_LIMIT_PER_HOUR=40`
+- `STIMLI_COMPARISON_LIMIT_PER_HOUR=12`
+- `STIMLI_MODAL_MAX_CONTAINERS=1`
+- `STIMLI_MODAL_SCALEDOWN_WINDOW=60`
+- `STIMLI_EXTRACT_SCALEDOWN_WINDOW=30`
+
 ### Modal GPU Inference
 
 The Modal app in `inference/tribe_modal.py` exposes GPU endpoints for real TRIBE v2 inference and hosted media extraction. It uses a Modal Volume for model cache and three Modal Secrets:

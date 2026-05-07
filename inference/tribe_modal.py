@@ -20,6 +20,11 @@ APP_NAME = "stimli-tribe-inference"
 CACHE_PATH = "/model-cache"
 HF_HOME = f"{CACHE_PATH}/huggingface"
 TRIBE_CHECKPOINT = os.getenv("STIMLI_TRIBE_CHECKPOINT", "facebook/tribev2")
+TRIBE_GPU = os.getenv("STIMLI_MODAL_GPU", "A10G")
+EXTRACT_GPU = os.getenv("STIMLI_EXTRACT_GPU") or None
+GPU_SCALEDOWN_WINDOW = int(os.getenv("STIMLI_MODAL_SCALEDOWN_WINDOW", "60"))
+EXTRACT_SCALEDOWN_WINDOW = int(os.getenv("STIMLI_EXTRACT_SCALEDOWN_WINDOW", "30"))
+MAX_CONTAINERS = int(os.getenv("STIMLI_MODAL_MAX_CONTAINERS", "1"))
 
 app = modal.App(APP_NAME)
 cache_volume = modal.Volume.from_name("stimli-tribe-cache", create_if_missing=True)
@@ -58,10 +63,10 @@ _transformers_auth_patched = False
 
 @app.function(
     image=image,
-    gpu=os.getenv("STIMLI_MODAL_GPU", "A10G"),
+    gpu=TRIBE_GPU,
     timeout=900,
-    scaledown_window=300,
-    max_containers=3,
+    scaledown_window=GPU_SCALEDOWN_WINDOW,
+    max_containers=MAX_CONTAINERS,
     volumes={CACHE_PATH: cache_volume},
     secrets=[
         modal.Secret.from_name("stimli-huggingface"),
@@ -117,10 +122,10 @@ def control(payload: dict[str, Any], authorization: str | None = Header(default=
 
 @app.function(
     image=image,
-    gpu=os.getenv("STIMLI_MODAL_GPU", "A10G"),
+    gpu=TRIBE_GPU,
     timeout=900,
-    scaledown_window=300,
-    max_containers=3,
+    scaledown_window=GPU_SCALEDOWN_WINDOW,
+    max_containers=MAX_CONTAINERS,
     volumes={CACHE_PATH: cache_volume},
     secrets=[
         modal.Secret.from_name("stimli-huggingface"),
@@ -166,10 +171,10 @@ def run_prediction_job(job_id: str, asset: dict[str, Any], attempt: int = 0) -> 
 
 @app.function(
     image=extract_image,
-    gpu=os.getenv("STIMLI_EXTRACT_GPU", "A10G"),
+    gpu=EXTRACT_GPU,
     timeout=600,
-    scaledown_window=120,
-    max_containers=3,
+    scaledown_window=EXTRACT_SCALEDOWN_WINDOW,
+    max_containers=MAX_CONTAINERS,
     volumes={CACHE_PATH: cache_volume},
     secrets=[
         modal.Secret.from_name("stimli-modal-auth"),
@@ -185,7 +190,7 @@ def extract(payload: dict[str, Any], authorization: str | None = Header(default=
 
 @app.function(
     image=image,
-    gpu=os.getenv("STIMLI_MODAL_GPU", "A10G"),
+    gpu=TRIBE_GPU,
     timeout=900,
     volumes={CACHE_PATH: cache_volume},
     secrets=[modal.Secret.from_name("stimli-huggingface")],

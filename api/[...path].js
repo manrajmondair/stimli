@@ -328,7 +328,7 @@ async function handleBlobUpload(request, response, authContext) {
       return {
         addRandomSuffix: true,
         allowedContentTypes: ["text/*", "image/*", "audio/*", "video/*", "application/pdf", "application/octet-stream"],
-        maximumSizeInBytes: Number(process.env.STIMLI_MAX_DIRECT_UPLOAD_BYTES || 250 * 1024 * 1024),
+        maximumSizeInBytes: Number(process.env.STIMLI_MAX_DIRECT_UPLOAD_BYTES || 25 * 1024 * 1024),
         tokenPayload: JSON.stringify({ workspace_id: workspaceId })
       };
     },
