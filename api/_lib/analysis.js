@@ -35,10 +35,7 @@ export async function providerHealth() {
 
 export async function compareAssets(comparisonId, objective, assets, createdAt, brief = {}) {
   const safeBrief = normalizeBrief(brief);
-  const analyses = [];
-  for (const asset of assets) {
-    analyses.push(await analyzeAsset(asset, safeBrief));
-  }
+  const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief)));
   const ranked = assets
     .map((asset, index) => [asset, analyses[index]])
     .sort((left, right) => right[1].scores.overall - left[1].scores.overall);
