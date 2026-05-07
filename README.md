@@ -50,6 +50,7 @@ Production environment variables:
 - `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
 - `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
 - `STIMLI_ASSET_LIMIT_PER_HOUR` and `STIMLI_COMPARISON_LIMIT_PER_HOUR`: optional per-workspace/client quotas for the public API.
+- `STIMLI_RP_ID` and `STIMLI_ORIGIN`: optional passkey relying-party settings. For production, use the public app host and origin.
 
 The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
 

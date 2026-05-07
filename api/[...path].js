@@ -16,6 +16,15 @@ import {
   startBrainJob
 } from "./_lib/analysis.js";
 import {
+  authenticationOptions,
+  authSessionPayload,
+  getAuthContext,
+  logout,
+  registrationOptions,
+  verifyAuthentication,
+  verifyRegistration
+} from "./_lib/auth.js";
+import {
   getAsset,
   getComparison,
   countUsageEvents,
@@ -53,11 +62,16 @@ export default async function handler(request, response) {
       return sendJson(response, 200, await providerHealth());
     }
 
-    if (segments[0] === "blob" && segments[1] === "upload") {
-      return await handleBlobUpload(request, response);
+    const authContext = await getAuthContext(request);
+    const workspaceId = authContext.workspace_id || workspaceForRequest(request);
+
+    if (segments[0] === "auth") {
+      return await handleAuth(request, response, segments);
     }
 
-    const workspaceId = workspaceForRequest(request);
+    if (segments[0] === "blob" && segments[1] === "upload") {
+      return await handleBlobUpload(request, response, authContext);
+    }
 
     if (request.method === "POST" && apiPath === "/demo/seed") {
       return sendJson(response, 200, await seedDemo(workspaceId));
@@ -88,6 +102,30 @@ export default async function handler(request, response) {
     }
     return sendJson(response, status, { detail: message });
   }
+}
+
+async function handleAuth(request, response, segments) {
+  const payload = request.method === "POST" ? await parseJson(request) : {};
+
+  if (request.method === "GET" && segments[1] === "session") {
+    return sendJson(response, 200, await authSessionPayload(request));
+  }
+  if (request.method === "POST" && segments[1] === "register" && segments[2] === "options") {
+    return sendJson(response, 200, await registrationOptions(request, payload));
+  }
+  if (request.method === "POST" && segments[1] === "register" && segments[2] === "verify") {
+    return sendJson(response, 200, await verifyRegistration(request, response, payload));
+  }
+  if (request.method === "POST" && segments[1] === "login" && segments[2] === "options") {
+    return sendJson(response, 200, await authenticationOptions(request, payload));
+  }
+  if (request.method === "POST" && segments[1] === "login" && segments[2] === "verify") {
+    return sendJson(response, 200, await verifyAuthentication(request, response, payload));
+  }
+  if (request.method === "POST" && segments[1] === "logout") {
+    return sendJson(response, 200, await logout(request, response));
+  }
+  return sendJson(response, 404, { detail: "Not found" });
 }
 
 async function handleAssets(request, response, segments, workspaceId) {
@@ -164,7 +202,7 @@ async function handleAssets(request, response, segments, workspaceId) {
   return sendJson(response, 405, { detail: "Method not allowed" });
 }
 
-async function handleBlobUpload(request, response) {
+async function handleBlobUpload(request, response, authContext) {
   if (request.method !== "POST") {
     return sendJson(response, 405, { detail: "Method not allowed" });
   }
@@ -178,6 +216,9 @@ async function handleBlobUpload(request, response) {
     token: process.env.BLOB_READ_WRITE_TOKEN,
     onBeforeGenerateToken: async (pathname, clientPayload) => {
       const workspaceId = workspaceFromClientPayload(clientPayload);
+      if (authContext.authenticated && workspaceId !== authContext.workspace_id) {
+        throw httpError(400, "Upload path does not belong to this team.");
+      }
       const prefix = `workspaces/${workspaceId}/uploads/`;
       if (!String(pathname).startsWith(prefix)) {
         throw httpError(400, "Upload path does not belong to this workspace.");

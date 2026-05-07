@@ -12,6 +12,22 @@ test("serves health from the Vercel API", async () => {
   assert.equal(response.json.status, "ok");
 });
 
+test("starts passkey registration without an authenticated session", async () => {
+  const session = await call("GET", "/api/auth/session");
+  assert.equal(session.statusCode, 200);
+  assert.equal(session.json.authenticated, false);
+
+  const options = await call("POST", "/api/auth/register/options", {
+    email: `founder-${crypto.randomUUID().slice(0, 8)}@example.com`,
+    name: "Founder",
+    team_name: "Founding Team"
+  });
+  assert.equal(options.statusCode, 200);
+  assert.ok(options.json.challenge_id);
+  assert.ok(options.json.options.challenge);
+  assert.equal(options.json.options.rp.name, "Stimli");
+});
+
 test("seeds assets and creates a comparison", async () => {
   const seeded = await call("POST", "/api/demo/seed");
   assert.equal(seeded.statusCode, 200);

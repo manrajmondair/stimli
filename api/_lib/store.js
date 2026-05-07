@@ -4,7 +4,13 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
   assets: new Map(),
   comparisons: new Map(),
   outcomes: new Map(),
-  usageEvents: new Map()
+  usageEvents: new Map(),
+  users: new Map(),
+  teams: new Map(),
+  teamMembers: new Map(),
+  authenticators: new Map(),
+  authChallenges: new Map(),
+  sessions: new Map()
 });
 
 const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
@@ -198,6 +204,230 @@ export async function countUsageEvents({ kind, since, workspaceId = null, bucket
   return rows[0]?.count || 0;
 }
 
+export async function saveUser(user) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.users.set(user.id, user);
+    return user;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_users (id, email, name, payload, created_at)
+    values (${user.id}, ${user.email}, ${user.name}, ${sql.json(user)}, ${user.created_at})
+    on conflict (id) do update
+    set email = excluded.email,
+        name = excluded.name,
+        payload = excluded.payload
+  `;
+  return user;
+}
+
+export async function getUser(userId) {
+  const sql = getSql();
+  if (!sql) {
+    return memoryStore.users.get(userId) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_users where id = ${userId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function getUserByEmail(email) {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.users.values()].find((user) => user.email === email) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_users where email = ${email} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function saveTeam(team) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.teams.set(team.id, team);
+    return team;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_teams (id, name, payload, created_at)
+    values (${team.id}, ${team.name}, ${sql.json(team)}, ${team.created_at})
+    on conflict (id) do update
+    set name = excluded.name,
+        payload = excluded.payload
+  `;
+  return team;
+}
+
+export async function getTeam(teamId) {
+  const sql = getSql();
+  if (!sql) {
+    return memoryStore.teams.get(teamId) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_teams where id = ${teamId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function saveTeamMember(member) {
+  const sql = getSql();
+  const key = `${member.team_id}:${member.user_id}`;
+  if (!sql) {
+    memoryStore.teamMembers.set(key, member);
+    return member;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_team_members (team_id, user_id, role, payload, created_at)
+    values (${member.team_id}, ${member.user_id}, ${member.role}, ${sql.json(member)}, ${member.created_at})
+    on conflict (team_id, user_id) do update
+    set role = excluded.role,
+        payload = excluded.payload
+  `;
+  return member;
+}
+
+export async function listTeamsForUser(userId) {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.teamMembers.values()]
+      .filter((member) => member.user_id === userId)
+      .map((member) => memoryStore.teams.get(member.team_id))
+      .filter(Boolean);
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select t.payload from stimli_team_members m
+    join stimli_teams t on t.id = m.team_id
+    where m.user_id = ${userId}
+    order by m.created_at asc
+  `;
+  return rows.map((row) => row.payload);
+}
+
+export async function saveAuthenticator(authenticator) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.authenticators.set(authenticator.credential_id, authenticator);
+    return authenticator;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_authenticators (credential_id, user_id, payload, counter, created_at)
+    values (${authenticator.credential_id}, ${authenticator.user_id}, ${sql.json(authenticator)}, ${authenticator.counter}, ${authenticator.created_at})
+    on conflict (credential_id) do update
+    set payload = excluded.payload,
+        counter = excluded.counter
+  `;
+  return authenticator;
+}
+
+export async function getAuthenticatorByCredentialId(credentialId) {
+  const sql = getSql();
+  if (!sql) {
+    return memoryStore.authenticators.get(credentialId) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_authenticators where credential_id = ${credentialId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function listAuthenticatorsForUser(userId) {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.authenticators.values()].filter((authenticator) => authenticator.user_id === userId);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_authenticators where user_id = ${userId} order by created_at asc`;
+  return rows.map((row) => row.payload);
+}
+
+export async function updateAuthenticatorCounter(credentialId, counter) {
+  const authenticator = await getAuthenticatorByCredentialId(credentialId);
+  if (!authenticator) {
+    return null;
+  }
+  authenticator.counter = counter;
+  authenticator.last_used_at = new Date().toISOString();
+  await saveAuthenticator(authenticator);
+  return authenticator;
+}
+
+export async function saveAuthChallenge(challenge) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.authChallenges.set(challenge.id, challenge);
+    return challenge;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_auth_challenges (id, email, type, payload, expires_at, created_at)
+    values (${challenge.id}, ${challenge.email}, ${challenge.type}, ${sql.json(challenge)}, ${challenge.expires_at}, ${challenge.created_at})
+    on conflict (id) do update
+    set payload = excluded.payload,
+        expires_at = excluded.expires_at
+  `;
+  return challenge;
+}
+
+export async function getAuthChallenge(challengeId) {
+  const sql = getSql();
+  if (!sql) {
+    return memoryStore.authChallenges.get(challengeId) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_auth_challenges where id = ${challengeId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function deleteAuthChallenge(challengeId) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.authChallenges.delete(challengeId);
+    return;
+  }
+  await ensureTables(sql);
+  await sql`delete from stimli_auth_challenges where id = ${challengeId}`;
+}
+
+export async function saveSession(session) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.sessions.set(session.token_hash, session);
+    return session;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_sessions (token_hash, user_id, team_id, payload, expires_at, created_at)
+    values (${session.token_hash}, ${session.user_id}, ${session.team_id}, ${sql.json(session)}, ${session.expires_at}, ${session.created_at})
+    on conflict (token_hash) do update
+    set payload = excluded.payload,
+        expires_at = excluded.expires_at
+  `;
+  return session;
+}
+
+export async function getSessionByHash(tokenHash) {
+  const sql = getSql();
+  if (!sql) {
+    const session = memoryStore.sessions.get(tokenHash) || null;
+    return session && session.expires_at > new Date().toISOString() ? session : null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_sessions where token_hash = ${tokenHash} and expires_at > ${new Date().toISOString()} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function deleteSessionByHash(tokenHash) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.sessions.delete(tokenHash);
+    return;
+  }
+  await ensureTables(sql);
+  await sql`delete from stimli_sessions where token_hash = ${tokenHash}`;
+}
+
 function getSql() {
   if (!databaseUrl) {
     return null;
@@ -248,6 +478,62 @@ async function ensureTables(sql) {
         created_at text not null
       )
     `;
+    await tx`
+      create table if not exists stimli_users (
+        id text primary key,
+        email text not null unique,
+        name text not null,
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_teams (
+        id text primary key,
+        name text not null,
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_team_members (
+        team_id text not null,
+        user_id text not null,
+        role text not null,
+        payload jsonb not null,
+        created_at text not null,
+        primary key (team_id, user_id)
+      )
+    `;
+    await tx`
+      create table if not exists stimli_authenticators (
+        credential_id text primary key,
+        user_id text not null,
+        payload jsonb not null,
+        counter integer not null default 0,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_auth_challenges (
+        id text primary key,
+        email text not null,
+        type text not null,
+        payload jsonb not null,
+        expires_at text not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_sessions (
+        token_hash text primary key,
+        user_id text not null,
+        team_id text not null,
+        payload jsonb not null,
+        expires_at text not null,
+        created_at text not null
+      )
+    `;
     await tx`alter table stimli_assets add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_comparisons add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_outcomes add column if not exists workspace_id text not null default 'public'`;
@@ -258,6 +544,10 @@ async function ensureTables(sql) {
     await tx`create index if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`;
     await tx`create index if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`;
     await tx`create index if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`;
+    await tx`create index if not exists stimli_team_members_user_idx on stimli_team_members (user_id, created_at asc)`;
+    await tx`create index if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`;
+    await tx`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`;
+    await tx`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`;
   });
   return initPromise;
 }

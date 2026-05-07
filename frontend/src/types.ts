@@ -150,3 +150,23 @@ export type Report = {
   brief: CreativeBrief;
   learning_summary: LearningSummary | null;
 };
+
+export type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  created_at: string;
+};
+
+export type Team = {
+  id: string;
+  name: string;
+  created_at: string;
+};
+
+export type AuthSession = {
+  authenticated: boolean;
+  user: AuthUser | null;
+  team: Team | null;
+  teams: Team[];
+};

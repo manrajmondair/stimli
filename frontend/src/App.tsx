@@ -2,15 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
+  Building2,
   Check,
   ClipboardList,
   Download,
   FileText,
   Gauge,
   History,
+  KeyRound,
   Layers,
   Lightbulb,
   Loader2,
+  LogOut,
   Play,
   Plus,
   RefreshCw,
@@ -18,7 +21,8 @@ import {
   Sparkles,
   Target,
   TrendingUp,
-  Upload
+  Upload,
+  UserRound
 } from "lucide-react";
 import {
   createBriefComparison,
@@ -30,12 +34,17 @@ import {
   getLearningSummary,
   getReport,
   getReportMarkdown,
+  getSession,
+  loginWithPasskey,
+  logout,
   listAssets,
   listComparisons,
+  registerWithPasskey,
   seedDemo
 } from "./api";
 import type {
   Asset,
+  AuthSession,
   AssetType,
   BrainProviderHealth,
   Comparison,
@@ -76,6 +85,7 @@ export function App() {
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [learning, setLearning] = useState<LearningSummary | null>(null);
   const [providers, setProviders] = useState<BrainProviderHealth[]>([]);
+  const [session, setSession] = useState<AuthSession | null>(null);
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState<AssetType>("script");
   const [text, setText] = useState("");
@@ -91,10 +101,11 @@ export function App() {
   const [forbiddenTerms, setForbiddenTerms] = useState("miracle cure, guaranteed");
   const [busy, setBusy] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    refreshWorkspace();
+    initializeWorkspace();
   }, []);
 
   const selectedAssets = useMemo(() => assets.filter((asset) => selected.includes(asset.id)), [assets, selected]);
@@ -110,6 +121,16 @@ export function App() {
     [brandName, audience, productCategory, primaryOffer, requiredClaims, forbiddenTerms]
   );
 
+  async function initializeWorkspace() {
+    try {
+      const currentSession = await getSession();
+      setSession(currentSession);
+      await refreshWorkspace();
+    } catch {
+      setError("Backend is not reachable. Start the API on port 8000.");
+    }
+  }
+
   async function refreshWorkspace() {
     try {
       const [assetList, comparisonList, learningSummary, providerList] = await Promise.all([
@@ -124,6 +145,55 @@ export function App() {
       setProviders(providerList);
     } catch {
       setError("Backend is not reachable. Start the API on port 8000.");
+    }
+  }
+
+  async function handleRegister(input: { email: string; name: string; teamName: string }) {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      const nextSession = await registerWithPasskey(input);
+      setSession(nextSession);
+      setSelected([]);
+      setComparison(null);
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create account.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogin(email: string) {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      const nextSession = await loginWithPasskey(email);
+      setSession(nextSession);
+      setSelected([]);
+      setComparison(null);
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not sign in.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      await logout();
+      const nextSession = await getSession();
+      setSession(nextSession);
+      setSelected([]);
+      setComparison(null);
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not sign out.");
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -230,6 +300,13 @@ export function App() {
           {providers.length > 0 && <ProviderSnapshot providers={providers} />}
         </div>
         <div className="hero-actions">
+          <AuthPanel
+            session={session}
+            busy={authBusy}
+            onRegister={handleRegister}
+            onLogin={handleLogin}
+            onLogout={handleLogout}
+          />
           <button className="button secondary" onClick={handleSeed} disabled={busy}>
             {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
             Demo assets
@@ -397,6 +474,77 @@ export function App() {
         </section>
       </section>
     </main>
+  );
+}
+
+function AuthPanel({
+  session,
+  busy,
+  onRegister,
+  onLogin,
+  onLogout
+}: {
+  session: AuthSession | null;
+  busy: boolean;
+  onRegister: (input: { email: string; name: string; teamName: string }) => Promise<void>;
+  onLogin: (email: string) => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("register");
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [teamName, setTeamName] = useState("");
+
+  if (session?.authenticated && session.user && session.team) {
+    return (
+      <div className="auth-panel signed-in">
+        <div>
+          <span>
+            <UserRound size={15} />
+            {session.user.name}
+          </span>
+          <strong>
+            <Building2 size={15} />
+            {session.team.name}
+          </strong>
+        </div>
+        <button className="icon-button" onClick={onLogout} disabled={busy} aria-label="Sign out">
+          {busy ? <Loader2 className="spin" size={17} /> : <LogOut size={17} />}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="auth-panel">
+      <div className="auth-tabs">
+        <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} disabled={busy}>
+          Create
+        </button>
+        <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} disabled={busy}>
+          Sign in
+        </button>
+      </div>
+      <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email@company.com" />
+      {mode === "register" && (
+        <>
+          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name" />
+          <input value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="Team name" />
+        </>
+      )}
+      <button
+        className="button full"
+        disabled={busy || !email.trim()}
+        onClick={() =>
+          mode === "register"
+            ? onRegister({ email, name: displayName || email.split("@")[0], teamName: teamName || "Growth Team" })
+            : onLogin(email)
+        }
+      >
+        {busy ? <Loader2 className="spin" size={18} /> : <KeyRound size={18} />}
+        Passkey
+      </button>
+    </div>
   );
 }
 
