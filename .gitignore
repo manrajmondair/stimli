@@ -12,3 +12,4 @@ coverage/
 backend/.data/
 backend/app/__pycache__/
 frontend/.vite/
+.vercel
