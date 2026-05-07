@@ -604,11 +604,16 @@ textarea:focus {
   background: #386fa4;
 }
 
+.processing-status.retrying {
+  background: #8d6f20;
+}
+
 .processing-status.complete {
   background: #087f5b;
 }
 
-.processing-status.failed {
+.processing-status.failed,
+.processing-status.cancelled {
   background: #c1462f;
 }
 

@@ -92,7 +92,7 @@ def control(payload: dict[str, Any], authorization: str | None = Header(default=
         job_id = payload.get("job_id") or f"job_{uuid.uuid4().hex[:12]}"
         record = _job_record(job_id, asset, "queued")
         jobs.put(job_id, record)
-        run_prediction_job.spawn(job_id, asset)
+        run_prediction_job.spawn(job_id, asset, 0)
         return record
     if action == "status":
         job_id = payload.get("job_id")
@@ -102,6 +102,16 @@ def control(payload: dict[str, Any], authorization: str | None = Header(default=
         if not record:
             raise _http_error(404, "Job not found.")
         return record
+    if action == "cancel":
+        job_id = payload.get("job_id")
+        if not job_id:
+            raise _http_error(400, "job_id is required.")
+        record = jobs.get(job_id)
+        if not record:
+            raise _http_error(404, "Job not found.")
+        cancelled = {**record, "status": "cancelled", "updated_at": _now()}
+        jobs.put(job_id, cancelled)
+        return cancelled
     raise _http_error(400, "Unsupported action.")
 
 
@@ -118,19 +128,37 @@ def control(payload: dict[str, Any], authorization: str | None = Header(default=
         modal.Secret.from_name("stimli-vercel-blob"),
     ],
 )
-def run_prediction_job(job_id: str, asset: dict[str, Any]) -> dict[str, Any]:
-    jobs.put(job_id, _job_record(job_id, asset, "running"))
+def run_prediction_job(job_id: str, asset: dict[str, Any], attempt: int = 0) -> dict[str, Any]:
+    existing = jobs.get(job_id) or {}
+    if existing.get("status") == "cancelled":
+        return existing
+    jobs.put(job_id, {**_job_record(job_id, asset, "running"), "attempt": attempt})
     try:
         result = _predict_asset(asset)
+        if (jobs.get(job_id) or {}).get("status") == "cancelled":
+            return jobs.get(job_id)
         record = {
             **_job_record(job_id, asset, "complete"),
             "result": result,
             "timeline": result["timeline"],
+            "attempt": attempt,
         }
     except Exception as exc:
+        max_retries = int(os.getenv("STIMLI_MODAL_JOB_RETRIES", "1"))
+        if attempt < max_retries and (jobs.get(job_id) or {}).get("status") != "cancelled":
+            record = {
+                **_job_record(job_id, asset, "retrying"),
+                "attempt": attempt,
+                "next_attempt": attempt + 1,
+                "error": _error_message(exc),
+            }
+            jobs.put(job_id, record)
+            run_prediction_job.spawn(job_id, asset, attempt + 1)
+            return record
         record = {
             **_job_record(job_id, asset, "failed"),
             "error": _error_message(exc),
+            "attempt": attempt,
         }
     jobs.put(job_id, record)
     return record

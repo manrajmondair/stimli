@@ -106,6 +106,14 @@ export async function getComparison(comparisonId: string): Promise<Comparison> {
   return parseResponse(response);
 }
 
+export async function cancelComparison(comparisonId: string): Promise<Comparison> {
+  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/cancel`, {
+    method: "POST",
+    headers: workspaceHeaders()
+  });
+  return parseResponse(response);
+}
+
 export async function getReport(comparisonId: string): Promise<Report> {
   const response = await fetch(`${API_BASE}/reports/${comparisonId}`, { headers: workspaceHeaders() });
   return parseResponse(response);

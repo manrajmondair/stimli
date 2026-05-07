@@ -144,6 +144,19 @@ export async function getBrainJob(jobId) {
   return response.json();
 }
 
+export async function cancelBrainJob(jobId) {
+  const response = await fetch(process.env.TRIBE_CONTROL_URL, {
+    method: "POST",
+    headers: remoteHeaders(),
+    body: JSON.stringify({ action: "cancel", job_id: jobId }),
+    signal: AbortSignal.timeout(Number(process.env.TRIBE_CONTROL_TIMEOUT_MS || 20000))
+  });
+  if (!response.ok) {
+    throw new Error(`Remote job cancel returned ${response.status}`);
+  }
+  return response.json();
+}
+
 export async function extractAssetText(asset) {
   const extractUrl = process.env.STIMLI_EXTRACT_URL || "";
   if (!extractUrl) {

@@ -25,6 +25,7 @@ import {
   UserRound
 } from "lucide-react";
 import {
+  cancelComparison,
   createBriefComparison,
   createChallenger,
   createOutcome,
@@ -270,7 +271,7 @@ export function App() {
         await delay(Math.min(2500 + attempt * 250, 8000));
         const fresh = await getComparison(comparisonId);
         setComparison((current) => (current?.id === comparisonId ? fresh : current));
-        if (fresh.status === "complete" || fresh.status === "failed") {
+        if (fresh.status === "complete" || fresh.status === "failed" || fresh.status === "cancelled") {
           await refreshWorkspace();
           return;
         }
@@ -280,6 +281,21 @@ export function App() {
       setError(err instanceof Error ? err.message : "Could not refresh comparison status.");
     } finally {
       setProcessingId((current) => (current === comparisonId ? null : current));
+    }
+  }
+
+  async function handleCancelComparison(comparisonId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const cancelled = await cancelComparison(comparisonId);
+      setComparison(cancelled);
+      setProcessingId((current) => (current === comparisonId ? null : current));
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel analysis.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -467,7 +483,7 @@ export function App() {
 
         <section className="results-column">
           {comparison ? (
-            <ComparisonView comparison={comparison} onOutcomeSaved={refreshWorkspace} />
+            <ComparisonView comparison={comparison} onOutcomeSaved={refreshWorkspace} onCancel={handleCancelComparison} />
           ) : (
             <PreComparison selectedAssets={selectedAssets} />
           )}
@@ -601,18 +617,19 @@ function ProviderSnapshot({ providers }: { providers: BrainProviderHealth[] }) {
   );
 }
 
-function ComparisonView(props: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
+function ComparisonView(props: { comparison: Comparison; onOutcomeSaved: () => Promise<void>; onCancel: (comparisonId: string) => Promise<void> }) {
   if (props.comparison.status === "processing") {
-    return <ProcessingComparison comparison={props.comparison} />;
+    return <ProcessingComparison comparison={props.comparison} onCancel={props.onCancel} />;
   }
-  if (props.comparison.status === "failed") {
+  if (props.comparison.status === "failed" || props.comparison.status === "cancelled") {
     return <FailedComparison comparison={props.comparison} />;
   }
-  return <CompleteComparisonView {...props} />;
+  return <CompleteComparisonView comparison={props.comparison} onOutcomeSaved={props.onOutcomeSaved} />;
 }
 
-function ProcessingComparison({ comparison }: { comparison: Comparison }) {
+function ProcessingComparison({ comparison, onCancel }: { comparison: Comparison; onCancel: (comparisonId: string) => Promise<void> }) {
   const jobs = comparison.jobs ?? [];
+  const [cancelBusy, setCancelBusy] = useState(false);
   return (
     <div className="results-stack">
       <section className="decision-band processing-band">
@@ -626,9 +643,23 @@ function ProcessingComparison({ comparison }: { comparison: Comparison }) {
         </div>
       </section>
       <section className="panel">
-        <div className="panel-heading">
-          <Activity size={19} />
-          <h2>Inference Jobs</h2>
+        <div className="panel-heading spread">
+          <div className="inline-title">
+            <Activity size={19} />
+            <h2>Inference Jobs</h2>
+          </div>
+          <button
+            className="button secondary"
+            disabled={cancelBusy}
+            onClick={async () => {
+              setCancelBusy(true);
+              await onCancel(comparison.id);
+              setCancelBusy(false);
+            }}
+          >
+            {cancelBusy ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+            Cancel
+          </button>
         </div>
         <div className="processing-list">
           {comparison.variants.map((variant) => {
@@ -651,7 +682,7 @@ function FailedComparison({ comparison }: { comparison: Comparison }) {
     <div className="results-stack">
       <section className="decision-band failed-band">
         <div>
-          <p className="eyebrow">Analysis failed</p>
+          <p className="eyebrow">{comparison.status === "cancelled" ? "Analysis cancelled" : "Analysis failed"}</p>
           <h2>{comparison.recommendation.headline}</h2>
         </div>
       </section>

@@ -178,6 +178,54 @@ test("creates async comparisons and finalizes completed remote jobs", async () =
   }
 });
 
+test("cancels processing comparisons and remote jobs", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousControlUrl = process.env.TRIBE_CONTROL_URL;
+  const previousApiKey = process.env.TRIBE_API_KEY;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const jobs = new Map();
+  let jobIndex = 0;
+
+  process.env.TRIBE_CONTROL_URL = "https://modal.test/control";
+  process.env.TRIBE_API_KEY = "test-key";
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `cancel_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "cancel") {
+      const job = { ...jobs.get(body.job_id), status: "cancelled" };
+      jobs.set(body.job_id, job);
+      return jsonResponse(job);
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Cancel A", text: "Try the starter kit today." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Cancel B", text: "A soft generic message." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Cancel this comparison." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+    const cancelled = await call("POST", `/api/comparisons/${created.json.id}/cancel`, null, headers);
+    assert.equal(cancelled.statusCode, 200);
+    assert.equal(cancelled.json.status, "cancelled");
+    assert.equal(cancelled.json.jobs.every((job) => job.status === "cancelled"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv("TRIBE_CONTROL_URL", previousControlUrl);
+    restoreEnv("TRIBE_API_KEY", previousApiKey);
+  }
+});
+
 test("rate limits comparison creation per workspace and client", async () => {
   const previousLimit = process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR;
   process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR = "1";

@@ -5,6 +5,7 @@ import { handleUpload } from "@vercel/blob/client";
 
 import {
   buildChallengerText,
+  cancelBrainJob,
   compareAssets,
   compareAssetsWithBrain,
   createPendingComparison,
@@ -304,6 +305,10 @@ async function handleComparisons(request, response, segments, workspaceId) {
     return sendJson(response, 200, await requireComparison(comparisonId, workspaceId));
   }
 
+  if (request.method === "POST" && segments[2] === "cancel") {
+    return sendJson(response, 200, await cancelComparison(comparisonId, workspaceId));
+  }
+
   if (request.method === "POST" && segments[2] === "challengers") {
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
@@ -473,6 +478,9 @@ async function refreshComparison(comparison, workspaceId) {
   if (comparison.status !== "processing" || !Array.isArray(comparison.jobs) || !process.env.TRIBE_CONTROL_URL) {
     return comparison;
   }
+  if (comparisonExpired(comparison)) {
+    return await cancelComparison(comparison.id, workspaceId, "Analysis timed out before every model job finished.");
+  }
 
   const jobStatuses = await Promise.all(
     comparison.jobs.map(async (job) => {
@@ -484,6 +492,12 @@ async function refreshComparison(comparison, workspaceId) {
     })
   );
   const updatedJobs = jobStatuses.map(publicJobStatus);
+
+  if (jobStatuses.some((job) => job.status === "cancelled")) {
+    const cancelled = cancelledComparison(comparison, updatedJobs, "Analysis was cancelled.");
+    await saveComparison(publicComparison(cancelled));
+    return cancelled;
+  }
 
   if (jobStatuses.some((job) => job.status === "failed")) {
     const failed = {
@@ -545,6 +559,45 @@ async function refreshComparison(comparison, workspaceId) {
   return processing;
 }
 
+async function cancelComparison(comparisonId, workspaceId, reason = "Analysis was cancelled.") {
+  const comparison = await getComparison(comparisonId, workspaceId);
+  if (!comparison) {
+    throw httpError(404, "Comparison not found");
+  }
+  const jobs = Array.isArray(comparison.jobs) ? comparison.jobs : [];
+  const updatedJobs = await Promise.all(
+    jobs.map(async (job) => {
+      if (!process.env.TRIBE_CONTROL_URL || ["complete", "failed", "cancelled"].includes(job.status)) {
+        return job;
+      }
+      try {
+        return publicJobStatus(await cancelBrainJob(job.job_id));
+      } catch (error) {
+        return { ...job, status: "cancelled", error: error.message, updated_at: nowIso() };
+      }
+    })
+  );
+  const cancelled = cancelledComparison(comparison, updatedJobs, reason);
+  await saveComparison(publicComparison(cancelled));
+  return publicComparison(cancelled);
+}
+
+function cancelledComparison(comparison, jobs, reason) {
+  return {
+    ...comparison,
+    status: "cancelled",
+    jobs,
+    variants: withJobStatuses(comparison.variants || [], jobs),
+    recommendation: {
+      winner_asset_id: null,
+      verdict: "revise",
+      confidence: 0,
+      headline: "Analysis cancelled before a shipping recommendation could be made",
+      reasons: [reason]
+    }
+  };
+}
+
 function publicComparison(comparison) {
   return {
     ...comparison,
@@ -562,6 +615,7 @@ function publicJobStatus(job) {
     status: job.status || "processing",
     provider: job.provider || "tribe-remote",
     error: job.error || job.polling_error || null,
+    attempt: Number.isFinite(Number(job.attempt)) ? Number(job.attempt) : null,
     created_at: job.created_at || null,
     updated_at: job.updated_at || nowIso()
   };
@@ -582,6 +636,12 @@ function withJobStatuses(variants, jobs) {
         }
       : variant;
   });
+}
+
+function comparisonExpired(comparison) {
+  const maxAgeMs = Number(process.env.STIMLI_COMPARISON_JOB_TIMEOUT_MS || 20 * 60 * 1000);
+  const created = Date.parse(comparison.created_at || "");
+  return Number.isFinite(created) && Date.now() - created > maxAgeMs;
 }
 
 function publicAsset(asset) {
