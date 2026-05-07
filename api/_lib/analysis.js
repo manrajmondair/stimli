@@ -144,6 +144,41 @@ export async function getBrainJob(jobId) {
   return response.json();
 }
 
+export async function extractAssetText(asset) {
+  const extractUrl = process.env.STIMLI_EXTRACT_URL || "";
+  if (!extractUrl) {
+    return null;
+  }
+  try {
+    const response = await fetch(extractUrl, {
+      method: "POST",
+      headers: remoteHeaders(),
+      body: JSON.stringify({ asset }),
+      signal: AbortSignal.timeout(Number(process.env.STIMLI_EXTRACT_TIMEOUT_MS || 25000))
+    });
+    if (!response.ok) {
+      throw new Error(`Extractor returned ${response.status}`);
+    }
+    const payload = await response.json();
+    return {
+      text: String(payload.text || "").trim(),
+      provider: payload.provider || "stimli-extractor",
+      segments: Array.isArray(payload.segments) ? payload.segments : [],
+      metadata: payload.metadata || {}
+    };
+  } catch (error) {
+    return {
+      text: "",
+      provider: "stimli-extractor",
+      segments: [],
+      metadata: {
+        extraction_status: "error",
+        extraction_error: error.message
+      }
+    };
+  }
+}
+
 export async function analyzeAsset(asset, brief = {}, brainOverride = null) {
   const safeBrief = normalizeBrief(brief);
   const text = asset.extracted_text || asset.name || asset.source_url || "";

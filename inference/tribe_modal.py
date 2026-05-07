@@ -4,6 +4,7 @@ import base64
 import math
 import os
 import re
+import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -39,8 +40,19 @@ image = (
     )
 )
 control_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi>=0.115.0")
+extract_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg", "libsndfile1", "tesseract-ocr")
+    .pip_install(
+        "fastapi>=0.115.0",
+        "faster-whisper>=1.1.0",
+        "pillow>=11.0.0",
+        "pytesseract>=0.3.13",
+    )
+)
 
 _model = None
+_whisper_model = None
 _transformers_auth_patched = False
 
 
@@ -125,6 +137,25 @@ def run_prediction_job(job_id: str, asset: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.function(
+    image=extract_image,
+    gpu=os.getenv("STIMLI_EXTRACT_GPU", "A10G"),
+    timeout=600,
+    scaledown_window=120,
+    max_containers=3,
+    volumes={CACHE_PATH: cache_volume},
+    secrets=[
+        modal.Secret.from_name("stimli-modal-auth"),
+        modal.Secret.from_name("stimli-vercel-blob"),
+    ],
+)
+@modal.fastapi_endpoint(method="POST", label="stimli-extract", docs=True)
+def extract(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _check_auth(authorization)
+    asset = payload.get("asset") or {}
+    return _extract_asset(asset)
+
+
+@app.function(
     image=image,
     gpu=os.getenv("STIMLI_MODAL_GPU", "A10G"),
     timeout=900,
@@ -175,6 +206,53 @@ def _predict_asset(asset: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_asset(asset: dict[str, Any]) -> dict[str, Any]:
+    asset_type = asset.get("type")
+    file_path = _asset_file(asset)
+    text_parts = []
+    segments = []
+
+    if asset.get("extracted_text"):
+        text_parts.append(asset["extracted_text"])
+
+    if file_path and asset_type == "image":
+        ocr_text = _ocr_image(file_path)
+        if ocr_text:
+            text_parts.append(ocr_text)
+            segments.append({"type": "ocr", "start": 0, "end": 0, "text": ocr_text})
+
+    if file_path and asset_type == "audio":
+        transcript, transcript_segments = _transcribe_audio(file_path)
+        if transcript:
+            text_parts.append(transcript)
+            segments.extend(transcript_segments)
+
+    if file_path and asset_type == "video":
+        audio_path = _video_audio(file_path)
+        if audio_path:
+            transcript, transcript_segments = _transcribe_audio(audio_path)
+            if transcript:
+                text_parts.append(transcript)
+                segments.extend(transcript_segments)
+        for frame in _video_frames(file_path):
+            ocr_text = _ocr_image(frame["path"])
+            if ocr_text:
+                text_parts.append(ocr_text)
+                segments.append({"type": "ocr", "start": frame["second"], "end": frame["second"], "text": ocr_text})
+
+    text = _dedupe_text(" ".join(part.strip() for part in text_parts if part and part.strip()))
+    return {
+        "provider": "stimli-extractor",
+        "asset_id": asset.get("id"),
+        "text": text,
+        "segments": segments[:80],
+        "metadata": {
+            "extraction_status": "success" if text else "empty",
+            "segment_count": len(segments),
+        },
+    }
+
+
 def _job_record(job_id: str, asset: dict[str, Any], status: str) -> dict[str, Any]:
     timestamp = _now()
     existing = jobs.get(job_id) if job_id else None
@@ -197,6 +275,111 @@ def _error_message(exc: Exception) -> str:
     if detail:
         return str(detail)
     return str(exc) or type(exc).__name__
+
+
+def _transcribe_audio(file_path: Path) -> tuple[str, list[dict[str, Any]]]:
+    model = _load_whisper_model()
+    segments, _info = model.transcribe(str(file_path), beam_size=1, vad_filter=True)
+    rows = []
+    for segment in segments:
+        text = segment.text.strip()
+        if text:
+            rows.append(
+                {
+                    "type": "transcript",
+                    "start": round(float(segment.start), 2),
+                    "end": round(float(segment.end), 2),
+                    "text": text,
+                }
+            )
+    return _dedupe_text(" ".join(row["text"] for row in rows)), rows
+
+
+def _load_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        import torch
+        from faster_whisper import WhisperModel
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        _whisper_model = WhisperModel(
+            os.getenv("STIMLI_WHISPER_CHECKPOINT", "Systran/faster-whisper-small.en"),
+            device=device,
+            compute_type=compute_type,
+            download_root=f"{CACHE_PATH}/whisper",
+        )
+        try:
+            cache_volume.commit()
+        except Exception:
+            pass
+    return _whisper_model
+
+
+def _ocr_image(file_path: Path) -> str:
+    try:
+        from PIL import Image
+        import pytesseract
+
+        image = Image.open(file_path).convert("RGB")
+        return _dedupe_text(pytesseract.image_to_string(image, config="--psm 6"))
+    except Exception:
+        return ""
+
+
+def _video_audio(file_path: Path) -> Path | None:
+    output = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name)
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(file_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        str(output),
+    ]
+    if _run(command):
+        return output
+    output.unlink(missing_ok=True)
+    return None
+
+
+def _video_frames(file_path: Path) -> list[dict[str, Any]]:
+    directory = Path(tempfile.mkdtemp())
+    pattern = directory / "frame_%03d.jpg"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(file_path),
+        "-vf",
+        "fps=1/4,scale=960:-1",
+        "-frames:v",
+        "6",
+        str(pattern),
+    ]
+    if not _run(command):
+        return []
+    return [{"second": float(index * 4), "path": path} for index, path in enumerate(sorted(directory.glob("frame_*.jpg")))]
+
+
+def _run(command: list[str]) -> bool:
+    try:
+        completed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180, check=False)
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _dedupe_text(text: str) -> str:
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'%-]*", text or "")
+    if not words:
+        return ""
+    compact = " ".join(words)
+    return re.sub(r"\s+", " ", compact).strip()[:12000]
 
 
 def _configure_hf_auth(validate: bool = True) -> None:

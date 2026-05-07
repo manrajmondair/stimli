@@ -8,6 +8,7 @@ import {
   compareAssets,
   compareAssetsWithBrain,
   createPendingComparison,
+  extractAssetText,
   getBrainJob,
   newId,
   nowIso,
@@ -158,12 +159,56 @@ async function handleAssets(request, response, segments, workspaceId) {
       extractionMetadata = extracted.metadata;
     }
 
-    if (["image", "audio", "video"].includes(assetType) && !extractedText) {
-      extractedText = textFromFilename(finalName);
-    }
     const registeredBlob = normalizeRegisteredBlob(fields.blob || fields.blob_metadata, workspaceId);
     const blobMetadata = file ? await storeUploadedFile(file, workspaceId, assetId) : registeredBlob;
     const shouldInlineFile = file?.buffer?.length && !blobMetadata.blob_url && file.buffer.length <= maxInlineFileBytes;
+    const baseMetadata = {
+      original_filename: file?.filename || blobMetadata.original_filename || null,
+      file_size: file?.buffer?.length || blobMetadata.blob_size || blobMetadata.file_size || null,
+      content_type: file?.mimeType || blobMetadata.blob_content_type || blobMetadata.content_type || null,
+      ...(shouldInlineFile
+        ? {
+            file_base64: file.buffer.toString("base64"),
+            file_encoding: "base64"
+          }
+        : {}),
+      ...(file?.buffer?.length && !blobMetadata.blob_url && file.buffer.length > maxInlineFileBytes
+        ? {
+            file_omitted: true,
+            file_limit_bytes: maxInlineFileBytes
+          }
+        : {}),
+      ...blobMetadata,
+      ...extractionMetadata
+    };
+
+    if (["image", "audio", "video"].includes(assetType) && !extractedText) {
+      const extracted = await extractAssetText({
+        id: assetId,
+        type: assetType,
+        name: finalName,
+        source_url: url || null,
+        extracted_text: "",
+        duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
+        metadata: baseMetadata
+      });
+      if (extracted?.text) {
+        extractedText = extracted.text;
+      }
+      if (extracted?.metadata) {
+        extractionMetadata = {
+          ...extractionMetadata,
+          ...extracted.metadata,
+          extractor_provider: extracted.provider,
+          extraction_segments: extracted.segments
+        };
+      }
+    }
+
+    if (["image", "audio", "video"].includes(assetType) && !extractedText) {
+      extractedText = textFromFilename(finalName);
+      extractionMetadata.extraction_status ||= "fallback";
+    }
 
     const asset = {
       id: assetId,
@@ -173,25 +218,7 @@ async function handleAssets(request, response, segments, workspaceId) {
       file_path: null,
       extracted_text: extractedText.trim(),
       duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
-      metadata: {
-        original_filename: file?.filename || null,
-        file_size: file?.buffer?.length || blobMetadata.blob_size || null,
-        content_type: file?.mimeType || blobMetadata.blob_content_type || null,
-        ...(shouldInlineFile
-          ? {
-              file_base64: file.buffer.toString("base64"),
-              file_encoding: "base64"
-            }
-          : {}),
-        ...(file?.buffer?.length && !blobMetadata.blob_url && file.buffer.length > maxInlineFileBytes
-          ? {
-              file_omitted: true,
-              file_limit_bytes: maxInlineFileBytes
-            }
-          : {}),
-        ...blobMetadata,
-        ...extractionMetadata
-      },
+      metadata: { ...baseMetadata, ...extractionMetadata },
       workspace_id: workspaceId,
       created_at: nowIso()
     };
@@ -581,7 +608,8 @@ function normalizeRegisteredBlob(blob, workspaceId) {
     blob_pathname: pathname,
     blob_content_type: String(blob.contentType || blob.content_type || blob.contentType || "application/octet-stream"),
     blob_size: Number(blob.size || blob.file_size || 0) || null,
-    blob_etag: blob.etag ? String(blob.etag) : null
+    blob_etag: blob.etag ? String(blob.etag) : null,
+    original_filename: blob.original_filename ? String(blob.original_filename) : null
   };
 }
 

@@ -223,6 +223,53 @@ test("rate limits comparison creation per workspace and client", async () => {
   }
 });
 
+test("uses hosted extraction for media assets before filename fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousExtractUrl = process.env.STIMLI_EXTRACT_URL;
+  const previousApiKey = process.env.TRIBE_API_KEY;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  process.env.STIMLI_EXTRACT_URL = "https://extract.test/run";
+  process.env.TRIBE_API_KEY = "test-key";
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    assert.equal(body.asset.type, "image");
+    return jsonResponse({
+      provider: "stimli-extractor",
+      text: "Save 20 percent today. Shop the starter kit.",
+      segments: [{ type: "ocr", start: 0, end: 0, text: "Save 20 percent today." }],
+      metadata: { extraction_status: "success", segment_count: 1 }
+    });
+  };
+
+  try {
+    const created = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "image",
+        name: "Offer Screenshot",
+        blob: {
+          pathname: `workspaces/${workspace}/uploads/offer.png`,
+          url: "https://blob.test/offer.png",
+          downloadUrl: "https://blob.test/offer.png?download=1",
+          contentType: "image/png",
+          size: 1234,
+          original_filename: "offer.png"
+        }
+      },
+      { "x-stimli-workspace": workspace }
+    );
+    assert.equal(created.statusCode, 200);
+    assert.equal(created.json.asset.extracted_text, "Save 20 percent today. Shop the starter kit.");
+    assert.equal(created.json.asset.metadata.extraction_status, "success");
+    assert.equal(created.json.asset.metadata.extractor_provider, "stimli-extractor");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv("STIMLI_EXTRACT_URL", previousExtractUrl);
+    restoreEnv("TRIBE_API_KEY", previousApiKey);
+  }
+});
+
 async function call(method, url, body = null, headers = {}) {
   const requestBody = body ? JSON.stringify(body) : "";
   const request = Readable.from(requestBody ? [Buffer.from(requestBody)] : []);

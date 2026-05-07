@@ -47,6 +47,7 @@ Production environment variables:
 - `BLOB_READ_WRITE_TOKEN`: enables private Vercel Blob storage for uploaded files. Without it, small files can still be inlined for local workflows, but production media uploads are not durable.
 - `TRIBE_INFERENCE_URL`: optional hosted TRIBE-compatible inference endpoint. The Vercel app calls this endpoint for brain-response timelines when configured.
 - `TRIBE_CONTROL_URL`: optional hosted job-control endpoint for async media inference. When configured, audio/video comparisons return quickly with `status=processing` and finalize as the hosted jobs complete.
+- `STIMLI_EXTRACT_URL`: optional hosted media-extraction endpoint for OCR and transcript text on image, audio, and video uploads.
 - `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
 - `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
 - `STIMLI_ASSET_LIMIT_PER_HOUR` and `STIMLI_COMPARISON_LIMIT_PER_HOUR`: optional per-workspace/client quotas for the public API.
@@ -56,7 +57,7 @@ The full local TRIBE model is too large and slow for a normal Vercel serverless 
 
 ### Modal GPU Inference
 
-The Modal app in `inference/tribe_modal.py` exposes a GPU endpoint for real TRIBE v2 inference. It uses a Modal Volume for model cache and three Modal Secrets:
+The Modal app in `inference/tribe_modal.py` exposes GPU endpoints for real TRIBE v2 inference and hosted media extraction. It uses a Modal Volume for model cache and three Modal Secrets:
 
 - `stimli-huggingface` with `HF_TOKEN`
 - `stimli-modal-auth` with `STIMLI_MODAL_API_KEY`
@@ -71,11 +72,11 @@ modal secret create stimli-vercel-blob BLOB_READ_WRITE_TOKEN=...
 modal deploy tribe_modal.py
 ```
 
-After deploy, set the synchronous Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the control endpoint as `TRIBE_CONTROL_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel. The control endpoint is used for production media jobs so large audio/video files do not block the browser request while GPU inference runs.
+After deploy, set the synchronous Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the control endpoint as `TRIBE_CONTROL_URL`, set the extraction endpoint as `STIMLI_EXTRACT_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel. The control endpoint is used for production media jobs so large audio/video files do not block the browser request while GPU inference runs.
 
 ### Production Media Uploads
 
-Production uploads use private Vercel Blob storage. Browser uploads go through the `/api/blob/upload` token route, then assets are registered in Postgres with blob metadata. Private blob URLs are kept out of public API responses; Modal receives the private URL server-to-server and downloads it with the `stimli-vercel-blob` secret.
+Production uploads use private Vercel Blob storage. Browser uploads go through the `/api/blob/upload` token route, then assets are registered in Postgres with blob metadata. Private blob URLs are kept out of public API responses; Modal receives the private URL server-to-server and downloads it with the `stimli-vercel-blob` secret. When `STIMLI_EXTRACT_URL` is configured, image uploads receive OCR text, audio uploads receive transcript text, and video uploads receive transcript plus sampled-frame OCR before scoring.
 
 ## Local Development
 
