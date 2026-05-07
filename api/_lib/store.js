@@ -10,7 +10,8 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
   teamMembers: new Map(),
   authenticators: new Map(),
   authChallenges: new Map(),
-  sessions: new Map()
+  sessions: new Map(),
+  shareLinks: new Map()
 });
 
 const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
@@ -428,6 +429,34 @@ export async function deleteSessionByHash(tokenHash) {
   await sql`delete from stimli_sessions where token_hash = ${tokenHash}`;
 }
 
+export async function saveShareLink(link) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.shareLinks.set(link.token, link);
+    return link;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_share_links (token, workspace_id, comparison_id, payload, expires_at, created_at)
+    values (${link.token}, ${link.workspace_id}, ${link.comparison_id}, ${sql.json(link)}, ${link.expires_at}, ${link.created_at})
+    on conflict (token) do update
+    set payload = excluded.payload,
+        expires_at = excluded.expires_at
+  `;
+  return link;
+}
+
+export async function getShareLink(token) {
+  const sql = getSql();
+  if (!sql) {
+    const link = memoryStore.shareLinks.get(token) || null;
+    return link && link.expires_at > new Date().toISOString() ? link : null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_share_links where token = ${token} and expires_at > ${new Date().toISOString()} limit 1`;
+  return rows[0]?.payload || null;
+}
+
 function getSql() {
   if (!databaseUrl) {
     return null;
@@ -534,6 +563,16 @@ async function ensureTables(sql) {
         created_at text not null
       )
     `;
+    await tx`
+      create table if not exists stimli_share_links (
+        token text primary key,
+        workspace_id text not null,
+        comparison_id text not null,
+        payload jsonb not null,
+        expires_at text not null,
+        created_at text not null
+      )
+    `;
     await tx`alter table stimli_assets add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_comparisons add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_outcomes add column if not exists workspace_id text not null default 'public'`;
@@ -548,6 +587,7 @@ async function ensureTables(sql) {
     await tx`create index if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`;
     await tx`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`;
     await tx`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`;
+    await tx`create index if not exists stimli_share_links_comparison_idx on stimli_share_links (comparison_id, created_at desc)`;
   });
   return initPromise;
 }

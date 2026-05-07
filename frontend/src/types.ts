@@ -164,6 +164,14 @@ export type Report = {
   learning_summary: LearningSummary | null;
 };
 
+export type ShareLink = {
+  token: string;
+  path: string;
+  api_path: string;
+  url: string;
+  expires_at: string;
+};
+
 export type AuthUser = {
   id: string;
   email: string;

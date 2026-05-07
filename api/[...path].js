@@ -33,9 +33,11 @@ import {
   listAssets,
   listComparisons,
   listOutcomes,
+  getShareLink,
   saveAsset,
   saveComparison,
   saveOutcome,
+  saveShareLink,
   saveUsageEvent,
   storageHealth
 } from "./_lib/store.js";
@@ -69,6 +71,10 @@ export default async function handler(request, response) {
 
     if (segments[0] === "auth") {
       return await handleAuth(request, response, segments);
+    }
+
+    if (segments[0] === "share") {
+      return await handleSharedReport(request, response, segments);
     }
 
     if (segments[0] === "blob" && segments[1] === "upload") {
@@ -375,6 +381,10 @@ async function handleComparisons(request, response, segments, workspaceId) {
 }
 
 async function handleReports(request, response, segments, workspaceId) {
+  if (request.method === "POST" && segments[1] && segments[2] === "share") {
+    return sendJson(response, 200, await createShareLink(request, segments[1], workspaceId));
+  }
+
   if (request.method !== "GET" || !segments[1]) {
     return sendJson(response, 405, { detail: "Method not allowed" });
   }
@@ -383,6 +393,38 @@ async function handleReports(request, response, segments, workspaceId) {
     return sendText(response, 200, reportToMarkdown(report), "text/markdown; charset=utf-8");
   }
   return sendJson(response, 200, report);
+}
+
+async function handleSharedReport(request, response, segments) {
+  if (request.method !== "GET" || !segments[1]) {
+    return sendJson(response, 405, { detail: "Method not allowed" });
+  }
+  const link = await getShareLink(segments[1]);
+  if (!link) {
+    throw httpError(404, "Shared report not found");
+  }
+  return sendJson(response, 200, await buildReport(link.comparison_id, link.workspace_id));
+}
+
+async function createShareLink(request, comparisonId, workspaceId) {
+  await requireCompleteComparison(comparisonId, workspaceId);
+  const token = crypto.randomBytes(18).toString("base64url");
+  const link = {
+    token,
+    workspace_id: workspaceId,
+    comparison_id: comparisonId,
+    expires_at: new Date(Date.now() + Number(process.env.STIMLI_SHARE_LINK_TTL_DAYS || 14) * 24 * 60 * 60 * 1000).toISOString(),
+    created_at: nowIso()
+  };
+  await saveShareLink(link);
+  const origin = requestOrigin(request);
+  return {
+    token,
+    path: `/share/${token}`,
+    api_path: `/api/share/${token}`,
+    url: `${origin}/share/${token}`,
+    expires_at: link.expires_at
+  };
 }
 
 async function buildReport(comparisonId, workspaceId) {
@@ -997,6 +1039,12 @@ function getHeader(request, name) {
     }
   }
   return "";
+}
+
+function requestOrigin(request) {
+  const host = getHeader(request, "x-forwarded-host") || getHeader(request, "host") || "stimli.vercel.app";
+  const protocol = getHeader(request, "x-forwarded-proto") || (host.includes("localhost") || host.startsWith("127.") ? "http" : "https");
+  return `${protocol}://${host.split(",")[0].trim()}`;
 }
 
 function sendJson(response, status, payload) {

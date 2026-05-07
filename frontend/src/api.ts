@@ -11,7 +11,8 @@ import type {
   LearningSummary,
   Outcome,
   OutcomeCreate,
-  Report
+  Report,
+  ShareLink
 } from "./types";
 
 const localViteApi = import.meta.env.DEV && globalThis.location?.port === "5173" ? "http://localhost:8000" : "/api";
@@ -126,6 +127,19 @@ export async function getReportMarkdown(comparisonId: string): Promise<string> {
     throw new Error(message || `Request failed with ${response.status}`);
   }
   return response.text();
+}
+
+export async function createShareLink(comparisonId: string): Promise<ShareLink> {
+  const response = await fetch(`${API_BASE}/reports/${comparisonId}/share`, {
+    method: "POST",
+    headers: workspaceHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function getSharedReport(token: string): Promise<Report> {
+  const response = await fetch(`${API_BASE}/share/${encodeURIComponent(token)}`);
+  return parseResponse(response);
 }
 
 export async function createOutcome(comparisonId: string, outcome: OutcomeCreate): Promise<Outcome> {

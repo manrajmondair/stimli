@@ -85,6 +85,27 @@ test("calibrates predicted winners against logged outcomes", async () => {
   assert.equal(summary.json.calibration.alignment_rate, 1);
 });
 
+test("creates public share links for completed reports", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, host: "stimli.test", "x-forwarded-proto": "https" };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id), objective: "Share this report." },
+    headers
+  );
+  const share = await call("POST", `/api/reports/${comparison.json.id}/share`, null, headers);
+  assert.equal(share.statusCode, 200);
+  assert.match(share.json.url, /^https:\/\/stimli\.test\/share\//);
+  assert.match(share.json.api_path, /^\/api\/share\//);
+
+  const report = await call("GET", share.json.api_path);
+  assert.equal(report.statusCode, 200);
+  assert.equal(report.json.comparison_id, comparison.json.id);
+  assert.equal(report.json.title, "Stimli Creative Decision Report");
+});
+
 test("scopes persistent objects by workspace header", async () => {
   const workspaceA = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const workspaceB = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;

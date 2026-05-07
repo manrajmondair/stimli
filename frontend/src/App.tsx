@@ -18,6 +18,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Share2,
   Sparkles,
   Target,
   TrendingUp,
@@ -29,12 +30,14 @@ import {
   createBriefComparison,
   createChallenger,
   createOutcome,
+  createShareLink,
   createTextAsset,
   getBrainProviders,
   getComparison,
   getLearningSummary,
   getReport,
   getReportMarkdown,
+  getSharedReport,
   getSession,
   loginWithPasskey,
   logout,
@@ -52,6 +55,7 @@ import type {
   CreativeBrief,
   LearningSummary,
   OutcomeCreate,
+  Report,
   ScoreBreakdown,
   Suggestion,
   TimelinePoint,
@@ -80,6 +84,11 @@ const scoreLabels: { key: keyof ScoreBreakdown; label: string }[] = [
 ];
 
 export function App() {
+  const shareToken = getShareToken();
+  return shareToken ? <SharedReportPage token={shareToken} /> : <WorkspaceApp />;
+}
+
+function WorkspaceApp() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [comparisons, setComparisons] = useState<Comparison[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -493,6 +502,123 @@ export function App() {
   );
 }
 
+function SharedReportPage({ token }: { token: string }) {
+  const [report, setReport] = useState<Report | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSharedReport(token)
+      .then(setReport)
+      .catch((err) => setError(err instanceof Error ? err.message : "Shared report is unavailable."));
+  }, [token]);
+
+  if (error) {
+    return (
+      <main className="app-shell share-shell">
+        <section className="panel shared-empty">
+          <FileText size={34} />
+          <h1>Report unavailable</h1>
+          <p>{error}</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!report) {
+    return (
+      <main className="app-shell share-shell">
+        <section className="panel shared-empty">
+          <Loader2 className="spin" size={34} />
+          <h1>Loading report</h1>
+        </section>
+      </main>
+    );
+  }
+
+  const winner = report.variants.find((variant) => variant.asset.id === report.recommendation.winner_asset_id);
+
+  return (
+    <main className="app-shell share-shell">
+      <section className="share-hero">
+        <div>
+          <p className="eyebrow">Stimli Decision Report</p>
+          <h1>{report.recommendation.headline}</h1>
+          <p className="subhead">{report.executive_summary}</p>
+          <div className="confidence share-confidence">
+            <Gauge size={18} />
+            {Math.round(report.recommendation.confidence * 100)}% confidence
+          </div>
+        </div>
+        {winner && (
+          <div className="share-winner">
+            <span>Recommended variant</span>
+            <strong>{winner.asset.name}</strong>
+            <b>{winner.analysis.scores.overall}</b>
+          </div>
+        )}
+      </section>
+
+      <section className="share-layout">
+        <div className="panel">
+          <div className="panel-heading">
+            <ClipboardList size={19} />
+            <h2>Decision Rationale</h2>
+          </div>
+          <div className="reason-list">
+            {report.recommendation.reasons.map((reason) => (
+              <p key={reason}>{reason}</p>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-heading">
+            <Target size={19} />
+            <h2>Next Steps</h2>
+          </div>
+          <div className="reason-list">
+            {report.next_steps.map((step) => (
+              <p key={step}>{step}</p>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="variant-grid share-section">
+        {report.variants.map((variant) => (
+          <VariantCard key={variant.asset.id} variant={variant} />
+        ))}
+      </section>
+
+      {winner && (
+        <section className="panel share-section">
+          <div className="panel-heading">
+            <BarChart3 size={19} />
+            <h2>Timeline Evidence</h2>
+          </div>
+          <Timeline timeline={winner.analysis.timeline} />
+        </section>
+      )}
+
+      <section className="panel share-section">
+        <div className="panel-heading">
+          <Lightbulb size={19} />
+          <h2>Recommended Edits</h2>
+        </div>
+        <div className="suggestion-list">
+          {report.suggestions.map((suggestion, index) => (
+            <ShareSuggestionCard
+              key={`${suggestion.asset_id}-${suggestion.target}-${index}`}
+              suggestion={suggestion}
+              variants={report.variants}
+            />
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function AuthPanel({
   session,
   busy,
@@ -708,6 +834,8 @@ function FailedComparison({ comparison }: { comparison: Comparison }) {
 function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const [reportBusy, setReportBusy] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
   const [challengerBusy, setChallengerBusy] = useState(false);
   const [challengerFocus, setChallengerFocus] = useState<"hook" | "cta" | "offer" | "clarity">("hook");
   const [outcomeBusy, setOutcomeBusy] = useState(false);
@@ -746,6 +874,19 @@ function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Co
           {reportBusy ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
           Markdown
         </button>
+        <button
+          className="button report-button"
+          onClick={async () => setShareUrl(await shareReport(comparison.id, setShareBusy))}
+          disabled={shareBusy}
+        >
+          {shareBusy ? <Loader2 className="spin" size={18} /> : <Share2 size={18} />}
+          Share
+        </button>
+        {shareUrl && (
+          <a className="share-copy" href={shareUrl} target="_blank" rel="noreferrer">
+            Link copied
+          </a>
+        )}
       </section>
 
       <section className="panel challenger-panel">
@@ -915,6 +1056,17 @@ async function exportMarkdownReport(comparisonId: string, setBusy: (value: boole
   }
 }
 
+async function shareReport(comparisonId: string, setBusy: (value: boolean) => void): Promise<string> {
+  setBusy(true);
+  try {
+    const link = await createShareLink(comparisonId);
+    await navigator.clipboard?.writeText(link.url);
+    return link.url;
+  } finally {
+    setBusy(false);
+  }
+}
+
 function VariantCard({ variant }: { variant: VariantResult }) {
   return (
     <article className="panel variant-card">
@@ -977,6 +1129,28 @@ function SuggestionCard({ suggestion, comparison }: { suggestion: Suggestion; co
       <small>{suggestion.expected_effect}</small>
     </article>
   );
+}
+
+function ShareSuggestionCard({ suggestion, variants }: { suggestion: Suggestion; variants: VariantResult[] }) {
+  const asset = variants.find((variant) => variant.asset.id === suggestion.asset_id)?.asset;
+  return (
+    <article className={`suggestion ${suggestion.severity}`}>
+      <div>
+        <span>{suggestion.severity}</span>
+        <strong>{asset?.name ?? "Variant"}</strong>
+      </div>
+      <h3>{suggestion.target}</h3>
+      <p>{suggestion.issue}</p>
+      <p className="edit">{suggestion.suggested_edit}</p>
+      {suggestion.draft_revision && <p className="draft">{suggestion.draft_revision}</p>}
+      <small>{suggestion.expected_effect}</small>
+    </article>
+  );
+}
+
+function getShareToken(): string | null {
+  const match = window.location.pathname.match(/^\/share\/([^/]+)$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
 function splitList(value: string): string[] {
