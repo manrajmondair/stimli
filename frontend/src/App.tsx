@@ -94,6 +94,9 @@ const scoreLabels: { key: keyof ScoreBreakdown; label: string }[] = [
 
 export function App() {
   const shareToken = getShareToken();
+  if (window.location.pathname === "/legal") {
+    return <LegalPage />;
+  }
   return shareToken ? <SharedReportPage token={shareToken} /> : <WorkspaceApp />;
 }
 
@@ -620,6 +623,68 @@ function WorkspaceApp() {
             <PreComparison selectedAssets={selectedAssets} />
           )}
         </section>
+      </section>
+
+      <footer className="app-footer">
+        <a href="/legal">Legal & license</a>
+      </footer>
+    </main>
+  );
+}
+
+function LegalPage() {
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+
+  useEffect(() => {
+    getBillingStatus().then(setBilling).catch(() => setBilling(null));
+  }, []);
+
+  return (
+    <main className="app-shell legal-shell">
+      <section className="legal-hero">
+        <p className="eyebrow">Legal & license</p>
+        <h1>Stimli production controls</h1>
+        <p className="subhead">
+          The app separates research-only brain-response inference from commercial plan access, billing, and team data controls.
+        </p>
+      </section>
+
+      <section className="legal-grid">
+        <article className="panel">
+          <div className="panel-heading">
+            <ShieldCheck size={19} />
+            <h2>Inference License</h2>
+          </div>
+          <div className="reason-list">
+            <p>Current provider: {billing?.license.provider ?? "checking"}</p>
+            <p>Mode: {billing?.license.mode ?? "checking"}</p>
+            <p>Commercial plan checkout is blocked unless a commercial brain-response provider or commercial TRIBE rights are configured.</p>
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-heading">
+            <CreditCard size={19} />
+            <h2>Billing Controls</h2>
+          </div>
+          <div className="reason-list">
+            <p>Billing configured: {billing?.billing_configured ? "yes" : "no"}</p>
+            <p>Research plan limits remain active until Stripe price IDs and webhook signing are configured.</p>
+            <p>Subscription webhooks update team plan, billing status, customer ID, and subscription ID server-side.</p>
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-heading">
+            <KeyRound size={19} />
+            <h2>Accounts & Data</h2>
+          </div>
+          <div className="reason-list">
+            <p>Passkey sessions use HTTP-only cookies. Team workspaces scope assets, projects, comparisons, outcomes, and private uploads.</p>
+            <p>Anonymous trial workspaces are rate-limited and identified by a local workspace key.</p>
+            <p>Private creative files are uploaded to Vercel Blob and are not exposed in public API payloads.</p>
+          </div>
+        </article>
       </section>
     </main>
   );

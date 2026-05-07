@@ -1058,6 +1058,39 @@ textarea:focus {
   margin-bottom: 8px;
 }
 
+.app-footer {
+  margin: 22px auto 0;
+  max-width: 1480px;
+  text-align: right;
+}
+
+.app-footer a {
+  color: #4f5c54;
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.legal-shell {
+  margin: 0 auto;
+  max-width: 1180px;
+}
+
+.legal-hero {
+  margin-bottom: 18px;
+  padding: 18px 0;
+}
+
+.legal-hero h1 {
+  font-size: clamp(2.1rem, 4vw, 4.4rem);
+}
+
+.legal-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1096,6 +1129,7 @@ textarea:focus {
 
   .workspace-grid,
   .project-bar,
+  .legal-grid,
   .variant-grid,
   .suggestion-list,
   .outcome-grid,
