@@ -1,5 +1,6 @@
 import Busboy from "busboy";
 import { put } from "@vercel/blob";
+import { handleUpload } from "@vercel/blob/client";
 
 import {
   buildChallengerText,
@@ -35,7 +36,6 @@ export default async function handler(request, response) {
     const { pathname } = new URL(request.url || "/", "http://stimli.local");
     const apiPath = pathname.replace(/^\/api/, "") || "/";
     const segments = apiPath.split("/").filter(Boolean);
-    const workspaceId = workspaceForRequest(request);
 
     if (request.method === "GET" && apiPath === "/health") {
       return sendJson(response, 200, { status: "ok", storage: storageHealth() });
@@ -44,6 +44,12 @@ export default async function handler(request, response) {
     if (request.method === "GET" && apiPath === "/brain/providers") {
       return sendJson(response, 200, await providerHealth());
     }
+
+    if (segments[0] === "blob" && segments[1] === "upload") {
+      return await handleBlobUpload(request, response);
+    }
+
+    const workspaceId = workspaceForRequest(request);
 
     if (request.method === "POST" && apiPath === "/demo/seed") {
       return sendJson(response, 200, await seedDemo(workspaceId));
@@ -108,7 +114,8 @@ async function handleAssets(request, response, segments, workspaceId) {
     if (["image", "audio", "video"].includes(assetType) && !extractedText) {
       extractedText = textFromFilename(finalName);
     }
-    const blobMetadata = file ? await storeUploadedFile(file, workspaceId, assetId) : {};
+    const registeredBlob = normalizeRegisteredBlob(fields.blob || fields.blob_metadata, workspaceId);
+    const blobMetadata = file ? await storeUploadedFile(file, workspaceId, assetId) : registeredBlob;
     const shouldInlineFile = file?.buffer?.length && !blobMetadata.blob_url && file.buffer.length <= maxInlineFileBytes;
 
     const asset = {
@@ -121,8 +128,8 @@ async function handleAssets(request, response, segments, workspaceId) {
       duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
       metadata: {
         original_filename: file?.filename || null,
-        file_size: file?.buffer?.length || null,
-        content_type: file?.mimeType || null,
+        file_size: file?.buffer?.length || blobMetadata.blob_size || null,
+        content_type: file?.mimeType || blobMetadata.blob_content_type || null,
         ...(shouldInlineFile
           ? {
               file_base64: file.buffer.toString("base64"),
@@ -146,6 +153,36 @@ async function handleAssets(request, response, segments, workspaceId) {
   }
 
   return sendJson(response, 405, { detail: "Method not allowed" });
+}
+
+async function handleBlobUpload(request, response) {
+  if (request.method !== "POST") {
+    return sendJson(response, 405, { detail: "Method not allowed" });
+  }
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    throw httpError(503, "Blob storage is not configured.");
+  }
+  const body = await parseJson(request);
+  const result = await handleUpload({
+    body,
+    request,
+    token: process.env.BLOB_READ_WRITE_TOKEN,
+    onBeforeGenerateToken: async (pathname, clientPayload) => {
+      const workspaceId = workspaceFromClientPayload(clientPayload);
+      const prefix = `workspaces/${workspaceId}/uploads/`;
+      if (!String(pathname).startsWith(prefix)) {
+        throw httpError(400, "Upload path does not belong to this workspace.");
+      }
+      return {
+        addRandomSuffix: true,
+        allowedContentTypes: ["text/*", "image/*", "audio/*", "video/*", "application/pdf", "application/octet-stream"],
+        maximumSizeInBytes: Number(process.env.STIMLI_MAX_DIRECT_UPLOAD_BYTES || 250 * 1024 * 1024),
+        tokenPayload: JSON.stringify({ workspace_id: workspaceId })
+      };
+    },
+    onUploadCompleted: async () => undefined
+  });
+  return sendJson(response, 200, result);
 }
 
 async function handleComparisons(request, response, segments, workspaceId) {
@@ -356,6 +393,25 @@ function publicAsset(asset) {
   return { ...asset, metadata };
 }
 
+function normalizeRegisteredBlob(blob, workspaceId) {
+  if (!blob || typeof blob !== "object") {
+    return {};
+  }
+  const pathname = String(blob.pathname || "");
+  if (!pathname.startsWith(`workspaces/${workspaceId}/`)) {
+    throw httpError(400, "Blob asset does not belong to this workspace.");
+  }
+  return {
+    blob_access: "private",
+    blob_url: String(blob.url || ""),
+    blob_download_url: String(blob.downloadUrl || blob.download_url || ""),
+    blob_pathname: pathname,
+    blob_content_type: String(blob.contentType || blob.content_type || blob.contentType || "application/octet-stream"),
+    blob_size: Number(blob.size || blob.file_size || 0) || null,
+    blob_etag: blob.etag ? String(blob.etag) : null
+  };
+}
+
 async function storeUploadedFile(file, workspaceId, assetId) {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     return {};
@@ -383,6 +439,20 @@ function safeBlobName(name) {
   const basename = String(name).split(/[\\/]/).pop() || "upload.bin";
   const safe = basename.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return safe || "upload.bin";
+}
+
+function workspaceFromClientPayload(clientPayload) {
+  let payload = {};
+  try {
+    payload = clientPayload ? JSON.parse(clientPayload) : {};
+  } catch {
+    throw httpError(400, "Invalid upload payload.");
+  }
+  const workspaceId = String(payload.workspace_id || "").trim();
+  if (!/^[A-Za-z0-9_-]{3,96}$/.test(workspaceId)) {
+    throw httpError(400, "Invalid workspace id.");
+  }
+  return workspaceId;
 }
 
 function learningSummary(outcomes) {

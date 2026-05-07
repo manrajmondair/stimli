@@ -70,6 +70,10 @@ modal deploy tribe_modal.py
 
 After deploy, set the resulting Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel.
 
+### Production Media Uploads
+
+Production uploads use private Vercel Blob storage. Browser uploads go through the `/api/blob/upload` token route, then assets are registered in Postgres with blob metadata. Private blob URLs are kept out of public API responses; Modal receives the private URL server-to-server and downloads it with the `stimli-vercel-blob` secret.
+
 ## Local Development
 
 ### Backend

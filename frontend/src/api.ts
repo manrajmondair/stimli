@@ -1,3 +1,4 @@
+import { upload } from "@vercel/blob/client";
 import type {
   Asset,
   AssetType,
@@ -40,6 +41,35 @@ export async function createTextAsset(input: {
   if (input.url) form.append("url", input.url);
   if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
   if (input.file) form.append("file", input.file);
+  if (input.file && shouldUseDirectBlobUpload()) {
+    const blob = await upload(blobPath(input.file.name), input.file, {
+      access: "private",
+      handleUploadUrl: `${API_BASE}/blob/upload`,
+      clientPayload: JSON.stringify({ workspace_id: getWorkspaceId() }),
+      contentType: input.file.type || undefined,
+      multipart: input.file.size > 8 * 1024 * 1024
+    });
+    const fileText = input.text || (input.assetType === "script" ? await input.file.text() : "");
+    const response = await fetch(`${API_BASE}/assets`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        asset_type: input.assetType,
+        name: input.name,
+        text: fileText,
+        url: input.url,
+        duration_seconds: input.durationSeconds,
+        blob: {
+          ...blob,
+          original_filename: input.file.name,
+          file_size: input.file.size,
+          content_type: input.file.type || "application/octet-stream"
+        }
+      })
+    });
+    const payload = await parseResponse<{ asset: Asset }>(response);
+    return payload.asset;
+  }
   const response = await fetch(`${API_BASE}/assets`, { method: "POST", headers: workspaceHeaders(), body: form });
   const payload = await parseResponse<{ asset: Asset }>(response);
   return payload.asset;
@@ -144,4 +174,17 @@ function getWorkspaceId(): string {
   const workspaceId = `ws_${random.slice(0, 32)}`;
   window.localStorage.setItem(WORKSPACE_KEY, workspaceId);
   return workspaceId;
+}
+
+function shouldUseDirectBlobUpload(): boolean {
+  return API_BASE.startsWith("/api") || API_BASE.includes("stimli.vercel.app");
+}
+
+function blobPath(filename: string): string {
+  return `workspaces/${getWorkspaceId()}/uploads/${Date.now()}-${safeUploadName(filename)}`;
+}
+
+function safeUploadName(filename: string): string {
+  const basename = filename.split(/[\\/]/).pop() || "upload.bin";
+  return basename.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "upload.bin";
 }
