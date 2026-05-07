@@ -12,6 +12,7 @@
     "@simplewebauthn/browser": "^13.3.0",
     "@vercel/blob": "^2.3.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "geist": "^1.7.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

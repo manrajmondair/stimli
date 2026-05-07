@@ -30,8 +30,7 @@ import type {
   WorkspaceExport
 } from "./types";
 
-const localViteApi = import.meta.env.DEV && globalThis.location?.port === "5173" ? "http://localhost:8000" : "/api";
-const API_BASE = import.meta.env.VITE_API_BASE ?? localViteApi;
+const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const WORKSPACE_KEY = "stimli.workspace";
 const TEAM_WORKSPACE_KEY = "stimli.team_workspace";
 

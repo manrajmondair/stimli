@@ -150,97 +150,147 @@ function LandingPage() {
           Stimli
         </a>
         <div>
-          <a href="#product">Product</a>
+          <a href="#why">Why pretest</a>
+          <a href="#signal-engine">Signals</a>
           <a href="#inputs">Inputs</a>
-          <a href="#sample-report">Sample report</a>
+          <a href="#sample-report">Report</a>
           <a href="/legal">Trust</a>
         </div>
         <a className="nav-cta" href="/app">
-          Start free
+          Run a comparison
         </a>
       </nav>
 
       <section className="landing-hero">
         <div className="hero-copy">
-          <h1>Creative testing before ad spend.</h1>
+          <p className="hero-kicker">Creative pretesting for teams buying media</p>
+          <h1>Stimli predicts which creative deserves budget.</h1>
           <p>
-            Compare scripts, landing pages, images, audio, and video. Stimli gives you a winner, the evidence, and the
-            edits to make before a campaign burns budget.
+            Upload scripts, landing pages, images, audio, or video. Get the winning variant, the evidence behind it, and
+            the edits to make before spend goes live.
           </p>
           <div className="landing-actions">
             <a className="button primary" href="/app">
               <Play size={18} />
-              Start free
+              Run a comparison
             </a>
             <a className="button ghost" href="#sample-report">
               <FileText size={18} />
-              Sample report
+              View sample report
             </a>
+          </div>
+          <div className="hero-signals" aria-label="Stimli trust details">
+            <span>Real TRIBE inference</span>
+            <span>Private uploads</span>
+            <span>Passkey accounts</span>
+            <span>Free to start</span>
           </div>
         </div>
         <LandingProductScene />
       </section>
 
-      <section className="landing-section proof-strip" aria-label="Stimli product details">
-        <p>Free to start</p>
-        <p>TRIBE-backed signals</p>
-        <p>Private uploads</p>
-        <p>Passkey accounts</p>
+      <section className="landing-section proof-strip" id="why" aria-label="Why creative teams pretest">
+        <p>
+          <strong>$8.4k</strong>
+          avoidable budget risk flagged before launch
+        </p>
+        <p>
+          <strong>14 pts</strong>
+          average winner delta in the sample benchmark
+        </p>
+        <p>
+          <strong>0:03</strong>
+          first hook window scored separately
+        </p>
+        <p>
+          <strong>5 modes</strong>
+          script, page, image, audio, and video
+        </p>
       </section>
 
       <section className="landing-section product-section" id="product">
-        <div>
+        <div className="section-copy">
+          <span>01</span>
           <h2>One answer. Then the edit list.</h2>
+          <p>
+            Stimli is built for the moment before money leaves the account: when a team needs to know which creative to
+            ship, what still feels weak, and how to fix it.
+          </p>
         </div>
         <div className="workflow-grid" id="how-it-works">
           <article>
+            <b>Upload</b>
             <h3>Upload variants</h3>
             <p>Bring scripts, landing pages, static creative, audio, or short video into one comparison set.</p>
           </article>
           <article>
+            <b>Predict</b>
             <h3>Predict response</h3>
             <p>Blend brain-response timelines with hook, pacing, CTA, brand cue, offer, and clarity scoring.</p>
           </article>
           <article>
+            <b>Decide</b>
             <h3>Ship or edit</h3>
             <p>Get the winner, the confidence, and concrete edits your team can apply before buying media.</p>
           </article>
         </div>
       </section>
 
-      <section className="landing-section multimodal-section" id="inputs">
-        <div>
-          <h2>Not just video. Not just copy.</h2>
+      <section className="landing-section signal-section" id="signal-engine">
+        <div className="section-copy">
+          <span>02</span>
+          <h2>The evidence layer for creative decisions.</h2>
+          <p>
+            Every score has a job. Hook, clarity, CTA, brand cue, attention, memory, and cognitive load are shown as a
+            decision trail instead of a decorative dashboard.
+          </p>
         </div>
-        <div className="input-matrix">
-          {["Script", "Landing page", "Static creative", "Audio", "Video"].map((item) => (
-            <p key={item}>{item}</p>
+        <div className="signal-ledger">
+          {[
+            ["Hook", "First three seconds create enough pressure to keep watching.", 86],
+            ["Brand cue", "Logo and product promise arrive before the proof claim.", 78],
+            ["Memory", "Distinctive phrase and visual proof repeat at the close.", 82],
+            ["Load", "Variant B overloads copy density during the offer reveal.", 41]
+          ].map(([label, detail, value]) => (
+            <article key={label}>
+              <div>
+                <strong>{label}</strong>
+                <p>{detail}</p>
+              </div>
+              <span>{value}</span>
+            </article>
           ))}
         </div>
       </section>
 
-      <section className="landing-section trust-section">
-        <div>
-          <h2>Built to be used, not watched in a demo.</h2>
+      <section className="landing-section multimodal-section" id="inputs">
+        <div className="section-copy">
+          <span>03</span>
+          <h2>Not just video. Not just copy.</h2>
+          <p>
+            The workbench accepts the messy inputs growth teams actually use: a founder script, a landing page, a static
+            ad, a voiceover, or a rough cut.
+          </p>
         </div>
-        <div className="trust-grid">
-          <article>
-            <strong>Passkey accounts</strong>
-            <p>No paid auth provider required. Sessions and teams live in Postgres.</p>
-          </article>
-          <article>
-            <strong>Private uploads</strong>
-            <p>Media goes to private Blob storage and is hidden from public report payloads.</p>
-          </article>
-          <article>
-            <strong>Free-tier controls</strong>
-            <p>Conservative quotas, one Modal container, and billing disabled until deliberately configured.</p>
-          </article>
+        <div className="input-matrix">
+          {[
+            ["Script", "Hook, claim order, offer clarity"],
+            ["Landing page", "CTA, proof density, page promise"],
+            ["Static creative", "Brand cue, visual density, CTA"],
+            ["Audio", "Pacing, memory, cognitive load"],
+            ["Video", "Timeline, attention, edit moments"]
+          ].map(([item, detail]) => (
+            <article key={item}>
+              <strong>{item}</strong>
+              <p>{detail}</p>
+            </article>
+          ))}
         </div>
       </section>
 
       <section className="landing-section report-preview" id="sample-report">
-        <div>
+        <div className="section-copy">
+          <span>04</span>
           <h2>Reports your team can actually act on.</h2>
           <p>
             Reports package the winner, score deltas, timeline evidence, and edit cards into a shareable artifact for
@@ -251,11 +301,11 @@ function LandingPage() {
           </a>
         </div>
         <div className="report-card">
-          <p>Recommendation</p>
-          <h3>Ship Variant A with one CTA edit</h3>
+          <p>Decision report</p>
+          <h3>Ship Variant A. Tighten the CTA before launch.</h3>
           <div className="report-score-row">
             <b>84</b>
-            <p>Variant A wins on hook strength, memory, and offer clarity. CTA is late by 4 seconds.</p>
+            <p>Variant A wins on hook strength, memory, and offer clarity. CTA is late by four seconds.</p>
           </div>
           <div className="report-edits">
             <p>Move offer into first 3 seconds.</p>
@@ -265,10 +315,35 @@ function LandingPage() {
         </div>
       </section>
 
+      <section className="landing-section trust-section">
+        <div className="section-copy">
+          <span>05</span>
+          <h2>Built for private creative work.</h2>
+          <p>
+            Uploads, teams, share links, and report access are treated as product surfaces, not afterthoughts.
+          </p>
+        </div>
+        <div className="trust-grid">
+          <article>
+            <strong>Private uploads</strong>
+            <p>Media is stored privately and excluded from public report payloads.</p>
+          </article>
+          <article>
+            <strong>Team control</strong>
+            <p>Passkey accounts, invites, workspace ownership, and scoped project history.</p>
+          </article>
+          <article>
+            <strong>Governance ready</strong>
+            <p>Retention, export, deletion review, audit activity, and license posture are visible in-app.</p>
+          </article>
+        </div>
+      </section>
+
       <section className="landing-final">
-        <h2>Know what deserves budget.</h2>
+        <p>Creative pretesting before the spend goes live.</p>
+        <h2>Know before you spend.</h2>
         <a className="button primary" href="/app">
-          Start free
+          Run a comparison
         </a>
       </section>
     </main>
@@ -288,29 +363,43 @@ function LandingProductScene() {
     <div className="product-scene" role="img" aria-label="Stimli creative comparison preview">
       <div className="scene-window">
         <div className="scene-toolbar">
-          <p>Stimli</p>
+          <p>Stimli workbench</p>
           <strong>Decision ready</strong>
         </div>
         <div className="scene-decision">
-          <h2>Ship Variant A</h2>
           <div>
-            <b>84</b>
-            <p>92% confidence</p>
+            <span>Winner</span>
+            <h2>Ship Variant A</h2>
+            <p>Pain-led hook keeps attention without increasing load.</p>
+          </div>
+          <div className="scene-confidence">
+            <b>92%</b>
+            <p>confidence</p>
           </div>
         </div>
         <div className="scene-grid">
           <article className="scene-variant winner">
             <p>Variant A</p>
             <strong>Pain-led hook</strong>
-            <em>+14 pts ahead</em>
+            <em>84 overall, +14 pts</em>
           </article>
           <article className="scene-variant">
             <p>Variant B</p>
             <strong>Generic product story</strong>
-            <em>Revise hook</em>
+            <em>70 overall, revise hook</em>
           </article>
         </div>
+        <div className="scene-risk">
+          <span>Budget risk avoided</span>
+          <strong>$8,400</strong>
+          <p>based on media plan estimate</p>
+        </div>
         <div className="scene-timeline">
+          <header>
+            <span>Attention</span>
+            <span>Memory</span>
+            <span>Load</span>
+          </header>
           {bars.map(([attention, memory, load], index) => (
             <div key={index}>
               <i style={{ height: `${attention}%` }} />
@@ -320,6 +409,7 @@ function LandingProductScene() {
           ))}
         </div>
         <div className="scene-edits">
+          <strong>Edit queue</strong>
           <p>Move the offer into the first 3 seconds.</p>
           <p>Add brand cue before the proof claim.</p>
         </div>
@@ -840,24 +930,28 @@ function WorkspaceApp() {
     setComparison(null);
   }
 
+  const activeBrandProfileName = selectedBrandProfileId
+    ? brandProfiles.find((profile) => profile.id === selectedBrandProfileId)?.name ?? "Saved profile"
+    : "Manual brief";
+
   return (
     <main className="app-shell">
-      <AppHeader session={session} projectName={activeProjectName} />
       <EnterpriseNav view={view} onChange={setView} />
+      <section className="app-main">
+        <AppTopbar
+          session={session}
+          projectName={activeProjectName}
+          brandProfileName={activeBrandProfileName}
+          providers={providers}
+          processingId={processingId}
+          selectedCount={selected.length}
+          onSeed={handleSeed}
+          onCompare={handleCompare}
+          busy={busy}
+          compareDisabled={busy || Boolean(processingId) || selected.length < 2}
+        />
 
-      {view === "workbench" ? (
-        <>
-      <section className="top-band app-intro">
-        <div>
-          <p className="eyebrow">Creative command center</p>
-          <h1>Compare variants, pick the winner, and ship the edit list.</h1>
-          <p className="subhead">
-            A compact workspace for multimodal uploads, TRIBE-backed response signals, project history, and shareable decision reports.
-          </p>
-          {learning && <LearningSnapshot learning={learning} />}
-          {providers.length > 0 && <ProviderSnapshot providers={providers} />}
-        </div>
-        <div className="hero-actions">
+        <div className="account-strip">
           <AuthPanel
             session={session}
             busy={authBusy}
@@ -867,263 +961,338 @@ function WorkspaceApp() {
             onSwitchTeam={handleSwitchTeam}
             onInvite={handleCreateInvite}
           />
-          {billing && (
-            <BillingPanel billing={billing} busy={billingBusy} onUpgrade={handleUpgrade} onPortal={handlePortal} />
-          )}
-          <button className="button secondary" onClick={handleSeed} disabled={busy}>
-            {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
-            Demo assets
-          </button>
-          <button className="button primary" onClick={handleCompare} disabled={busy || Boolean(processingId) || selected.length < 2}>
-            {busy || processingId ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            {processingId ? "Processing" : "Compare"}
-          </button>
+          {billing && <BillingPanel billing={billing} busy={billingBusy} onUpgrade={handleUpgrade} onPortal={handlePortal} />}
         </div>
-      </section>
 
-      {error && (
-        <div className="notice" role="alert" aria-live="polite">
-          {error}
-        </div>
-      )}
-
-      <section className="project-bar">
-        <label>
-          Project
-          <select value={selectedProjectId} onChange={(event) => handleProjectChange(event.target.value)}>
-            <option value="all">All projects</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          New project
-          <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Q3 hydration launch" />
-        </label>
-        <button className="button secondary" onClick={handleCreateProject} disabled={busy || !projectName.trim()}>
-          <Plus size={18} />
-          Create
-        </button>
-        <div className="project-stats">
-          <span>{visibleAssets.length} variants</span>
-          <span>{visibleComparisons.length} decisions</span>
-        </div>
-      </section>
-
-      <section className="workspace-grid">
-        <aside className="panel intake-panel">
-          <div className="panel-heading">
-            <Upload size={19} />
-            <h2>Add Variant</h2>
+        {error && (
+          <div className="notice" role="alert" aria-live="polite">
+            {error}
           </div>
-          <label>
-            Type
-            <select value={assetType} onChange={(event) => setAssetType(event.target.value as AssetType)}>
-              {assetTypes.map((type) => (
-                <option key={type.value} value={type.value}>
-                  {type.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Name
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Variant C - proof-led hook" />
-          </label>
-          <label>
-            URL
-            <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://brand.com/offer" />
-          </label>
-          <label>
-            Duration seconds
-            <input
-              value={durationSeconds}
-              inputMode="decimal"
-              onChange={(event) => setDurationSeconds(event.target.value)}
-              placeholder="30"
-            />
-          </label>
-          <label>
-            File
-            <input
-              type="file"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              accept=".txt,.md,.png,.jpg,.jpeg,.webp,.mp3,.wav,.mp4,.mov"
-            />
-          </label>
-          <label>
-            Creative text, transcript, URL notes, or visual notes
-            <textarea
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder="Paste the script, landing page copy, transcript, or visual description here."
-            />
-          </label>
-          <button className="button full" onClick={handleCreateAsset} disabled={busy}>
-            <Plus size={18} />
-            Add to comparison
-          </button>
-          {uploadProgress !== null && (
-            <div className="upload-progress">
-              <span>Uploading {uploadProgress}%</span>
-              <i style={{ width: `${uploadProgress}%` }} />
-            </div>
-          )}
+        )}
 
-          <div className="objective-box">
-            <label>
-              Decision objective
-              <textarea value={objective} onChange={(event) => setObjective(event.target.value)} />
-            </label>
-            <label>
-              Brand
-              <input value={brandName} onChange={(event) => setBrandName(event.target.value)} />
-            </label>
-            <label>
-              Saved profile
-              <select value={selectedBrandProfileId} onChange={(event) => setSelectedBrandProfileId(event.target.value)}>
-                <option value="">Use manual brief</option>
-                {brandProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Audience
-              <input value={audience} onChange={(event) => setAudience(event.target.value)} />
-            </label>
-            <label>
-              Category
-              <input value={productCategory} onChange={(event) => setProductCategory(event.target.value)} />
-            </label>
-            <label>
-              Primary offer
-              <input value={primaryOffer} onChange={(event) => setPrimaryOffer(event.target.value)} />
-            </label>
-            <label>
-              Required claims
-              <input value={requiredClaims} onChange={(event) => setRequiredClaims(event.target.value)} />
-            </label>
-            <label>
-              Forbidden terms
-              <input value={forbiddenTerms} onChange={(event) => setForbiddenTerms(event.target.value)} />
-            </label>
-          </div>
-        </aside>
-
-        <section className="panel asset-panel">
-          <div className="panel-heading spread">
-            <div>
-              <div className="inline-title">
-                <Layers size={19} />
-                <h2>Variants</h2>
-              </div>
-              <p>{selected.length} selected for comparison</p>
-            </div>
-            <button className="icon-button" onClick={refreshWorkspace} aria-label="Refresh assets">
-              <RefreshCw size={18} />
-            </button>
-          </div>
-
-          <div className="asset-list">
-            {visibleAssets.length === 0 ? (
-              <EmptyState onSeed={handleSeed} busy={busy} />
-            ) : (
-              visibleAssets.map((asset) => (
-                <button
-                  className={`asset-row ${selected.includes(asset.id) ? "selected" : ""}`}
-                  key={asset.id}
-                  onClick={() => toggleSelected(asset.id)}
-                >
-                  <span className="select-dot">{selected.includes(asset.id) && <Check size={13} />}</span>
-                  <span>
-                    <strong>{asset.name}</strong>
-                    <small>
-                      {asset.type.replace("_", " ")} · {asset.extracted_text.slice(0, 92)}
-                    </small>
-                  </span>
+        {view === "workbench" ? (
+          <section className="workbench-view">
+            <div className="workbench-context">
+              <section className="project-bar">
+                <label>
+                  Project
+                  <select value={selectedProjectId} onChange={(event) => handleProjectChange(event.target.value)}>
+                    <option value="all">All projects</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  New project
+                  <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Q3 hydration launch" />
+                </label>
+                <button className="button secondary" onClick={handleCreateProject} disabled={busy || !projectName.trim()}>
+                  <Plus size={18} />
+                  Create
                 </button>
-              ))
-            )}
-          </div>
-
-          <div className="history-block">
-            <div className="inline-title history-title">
-              <History size={17} />
-              <h2>Recent Decisions</h2>
+                <div className="project-stats">
+                  <span>{visibleAssets.length} variants</span>
+                  <span>{visibleComparisons.length} decisions</span>
+                </div>
+              </section>
+              <section className="context-strip">
+                <div>
+                  <span>Objective</span>
+                  <p>{objective}</p>
+                </div>
+                <div>
+                  <span>Brand</span>
+                  <p>{brandName || "Unassigned"} · {primaryOffer || "No offer set"}</p>
+                </div>
+                {learning && <LearningSnapshot learning={learning} />}
+              </section>
             </div>
-            {visibleComparisons.length === 0 ? (
-              <p className="muted">No comparisons yet.</p>
-            ) : (
-              visibleComparisons.slice(0, 5).map((item) => (
-                <button className="history-row" key={item.id} onClick={() => setComparison(item)}>
-                  <strong>{item.status === "processing" ? "Processing comparison" : item.recommendation.headline}</strong>
-                  <small>
-                    {item.status === "complete"
-                      ? `${Math.round(item.recommendation.confidence * 100)}% confidence`
-                      : item.status}{" "}
-                    · {item.variants.length} variants
-                  </small>
+
+            <section className="workspace-grid">
+              <aside className="panel intake-panel">
+                <div className="panel-heading">
+                  <Upload size={19} />
+                  <h2>Add Variant</h2>
+                </div>
+                <div className="form-section">
+                  <span>Variant</span>
+                  <label>
+                    Type
+                    <select value={assetType} onChange={(event) => setAssetType(event.target.value as AssetType)}>
+                      {assetTypes.map((type) => (
+                        <option key={type.value} value={type.value}>
+                          {type.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Name
+                    <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Variant C - proof-led hook" />
+                  </label>
+                </div>
+                <div className="form-section">
+                  <span>Source</span>
+                  <label>
+                    URL
+                    <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://brand.com/offer" />
+                  </label>
+                  <label>
+                    Duration seconds
+                    <input
+                      value={durationSeconds}
+                      inputMode="decimal"
+                      onChange={(event) => setDurationSeconds(event.target.value)}
+                      placeholder="30"
+                    />
+                  </label>
+                  <label>
+                    File
+                    <input
+                      type="file"
+                      onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                      accept=".txt,.md,.png,.jpg,.jpeg,.webp,.mp3,.wav,.mp4,.mov"
+                    />
+                  </label>
+                  <label>
+                    Creative text, transcript, URL notes, or visual notes
+                    <textarea
+                      value={text}
+                      onChange={(event) => setText(event.target.value)}
+                      placeholder="Paste the script, landing page copy, transcript, or visual description here."
+                    />
+                  </label>
+                </div>
+                <button className="button full" onClick={handleCreateAsset} disabled={busy}>
+                  <Plus size={18} />
+                  Add to comparison
                 </button>
-              ))
-            )}
-          </div>
-        </section>
+                {uploadProgress !== null && (
+                  <div className="upload-progress">
+                    <span>Uploading {uploadProgress}%</span>
+                    <i style={{ width: `${uploadProgress}%` }} />
+                  </div>
+                )}
 
-        <section className="results-column">
-          {comparison ? (
-            <ComparisonView comparison={comparison} onOutcomeSaved={refreshWorkspace} onCancel={handleCancelComparison} />
-          ) : (
-            <PreComparison selectedAssets={selectedAssets} />
-          )}
-        </section>
+                <div className="objective-box form-section">
+                  <span>Decision brief</span>
+                  <label>
+                    Decision objective
+                    <textarea value={objective} onChange={(event) => setObjective(event.target.value)} />
+                  </label>
+                  <label>
+                    Brand
+                    <input value={brandName} onChange={(event) => setBrandName(event.target.value)} />
+                  </label>
+                  <label>
+                    Saved profile
+                    <select value={selectedBrandProfileId} onChange={(event) => setSelectedBrandProfileId(event.target.value)}>
+                      <option value="">Use manual brief</option>
+                      {brandProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Audience
+                    <input value={audience} onChange={(event) => setAudience(event.target.value)} />
+                  </label>
+                  <label>
+                    Category
+                    <input value={productCategory} onChange={(event) => setProductCategory(event.target.value)} />
+                  </label>
+                  <label>
+                    Primary offer
+                    <input value={primaryOffer} onChange={(event) => setPrimaryOffer(event.target.value)} />
+                  </label>
+                  <label>
+                    Required claims
+                    <input value={requiredClaims} onChange={(event) => setRequiredClaims(event.target.value)} />
+                  </label>
+                  <label>
+                    Forbidden terms
+                    <input value={forbiddenTerms} onChange={(event) => setForbiddenTerms(event.target.value)} />
+                  </label>
+                </div>
+              </aside>
+
+              <section className="panel asset-panel">
+                <div className="panel-heading spread">
+                  <div>
+                    <div className="inline-title">
+                      <Layers size={19} />
+                      <h2>Variant Inventory</h2>
+                    </div>
+                    <p>{selected.length} selected for comparison</p>
+                  </div>
+                  <button className="icon-button" onClick={refreshWorkspace} aria-label="Refresh assets">
+                    <RefreshCw size={18} />
+                  </button>
+                </div>
+
+                <div className="selected-tray">
+                  <strong>{selected.length >= 2 ? "Ready to compare" : "Select two variants"}</strong>
+                  <p>{selectedAssets.map((asset) => asset.name).join(" / ") || "No variants selected yet."}</p>
+                </div>
+
+                <div className="asset-list">
+                  {visibleAssets.length === 0 ? (
+                    <EmptyState onSeed={handleSeed} busy={busy} />
+                  ) : (
+                    visibleAssets.map((asset) => (
+                      <button
+                        className={`asset-row ${selected.includes(asset.id) ? "selected" : ""}`}
+                        key={asset.id}
+                        onClick={() => toggleSelected(asset.id)}
+                      >
+                        <span className="select-dot">{selected.includes(asset.id) && <Check size={13} />}</span>
+                        <span>
+                          <strong>{asset.name}</strong>
+                          <small>
+                            {asset.type.replace("_", " ")} · {asset.extracted_text.slice(0, 92)}
+                          </small>
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                <div className="history-block">
+                  <div className="inline-title history-title">
+                    <History size={17} />
+                    <h2>Recent Decisions</h2>
+                  </div>
+                  {visibleComparisons.length === 0 ? (
+                    <p className="muted">No comparisons yet.</p>
+                  ) : (
+                    visibleComparisons.slice(0, 5).map((item) => (
+                      <button className="history-row" key={item.id} onClick={() => setComparison(item)}>
+                        <strong>{item.status === "processing" ? "Analyzing comparison" : item.recommendation.headline}</strong>
+                        <small>
+                          {item.status === "complete"
+                            ? `${Math.round(item.recommendation.confidence * 100)}% confidence`
+                            : statusLabel(item.status)}{" "}
+                          · {item.variants.length} variants
+                        </small>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="results-column">
+                {comparison ? (
+                  <ComparisonView comparison={comparison} onOutcomeSaved={refreshWorkspace} onCancel={handleCancelComparison} />
+                ) : (
+                  <PreComparison selectedAssets={selectedAssets} />
+                )}
+              </section>
+            </section>
+          </section>
+        ) : (
+          <EnterpriseView
+            view={view}
+            session={session}
+            adminSummary={adminSummary}
+            adminJobs={adminJobs}
+            auditEvents={auditEvents}
+            teamMembers={teamMembers}
+            brandProfiles={brandProfiles}
+            selectedBrandProfileId={selectedBrandProfileId}
+            onSelectBrandProfile={setSelectedBrandProfileId}
+            governancePolicy={governancePolicy}
+            governanceRequests={governanceRequests}
+            validation={validation}
+            benchmarkRuns={benchmarkRuns}
+            libraryAssets={libraryAssets}
+            importJobs={importJobs}
+            profileName={profileName}
+            setProfileName={setProfileName}
+            profileVoiceRules={profileVoiceRules}
+            setProfileVoiceRules={setProfileVoiceRules}
+            importText={importText}
+            setImportText={setImportText}
+            deletionTarget={deletionTarget}
+            setDeletionTarget={setDeletionTarget}
+            busy={busy}
+            onSaveBrandProfile={handleSaveBrandProfile}
+            onImportRows={handleImportRows}
+            onDeletionRequest={handleDeletionRequest}
+            onRunBenchmark={handleRunBenchmark}
+            onRetryJob={handleRetryJob}
+            onExportWorkspace={handleExportWorkspace}
+            onRefresh={refreshWorkspace}
+          />
+        )}
+
+        <footer className="app-footer">
+          <a href="/legal">Legal & license</a>
+        </footer>
       </section>
-        </>
-      ) : (
-        <EnterpriseView
-          view={view}
-          session={session}
-          adminSummary={adminSummary}
-          adminJobs={adminJobs}
-          auditEvents={auditEvents}
-          teamMembers={teamMembers}
-          brandProfiles={brandProfiles}
-          selectedBrandProfileId={selectedBrandProfileId}
-          onSelectBrandProfile={setSelectedBrandProfileId}
-          governancePolicy={governancePolicy}
-          governanceRequests={governanceRequests}
-          validation={validation}
-          benchmarkRuns={benchmarkRuns}
-          libraryAssets={libraryAssets}
-          importJobs={importJobs}
-          profileName={profileName}
-          setProfileName={setProfileName}
-          profileVoiceRules={profileVoiceRules}
-          setProfileVoiceRules={setProfileVoiceRules}
-          importText={importText}
-          setImportText={setImportText}
-          deletionTarget={deletionTarget}
-          setDeletionTarget={setDeletionTarget}
-          busy={busy}
-          onSaveBrandProfile={handleSaveBrandProfile}
-          onImportRows={handleImportRows}
-          onDeletionRequest={handleDeletionRequest}
-          onRunBenchmark={handleRunBenchmark}
-          onRetryJob={handleRetryJob}
-          onExportWorkspace={handleExportWorkspace}
-          onRefresh={refreshWorkspace}
-        />
-      )}
-
-      <footer className="app-footer">
-        <a href="/legal">Legal & license</a>
-      </footer>
     </main>
+  );
+}
+
+function AppTopbar({
+  session,
+  projectName,
+  brandProfileName,
+  providers,
+  processingId,
+  selectedCount,
+  onSeed,
+  onCompare,
+  busy,
+  compareDisabled
+}: {
+  session: AuthSession | null;
+  projectName: string;
+  brandProfileName: string;
+  providers: BrainProviderHealth[];
+  processingId: string | null;
+  selectedCount: number;
+  onSeed: () => Promise<void>;
+  onCompare: () => Promise<void>;
+  busy: boolean;
+  compareDisabled: boolean;
+}) {
+  const activeProvider = providers.find((provider) => provider.active) ?? providers[0];
+  return (
+    <header className="app-topbar">
+      <div className="topbar-context">
+        <span>
+          Team
+          <strong>{session?.team?.name ?? "Trial workspace"}</strong>
+        </span>
+        <span>
+          Project
+          <strong>{projectName}</strong>
+        </span>
+        <span>
+          Brand
+          <strong>{brandProfileName}</strong>
+        </span>
+        <span>
+          Inference
+          <strong>{processingId ? "Analyzing" : activeProvider?.available ? "Ready" : "Fallback"}</strong>
+        </span>
+      </div>
+      <div className="topbar-actions">
+        <button className="button secondary" onClick={onSeed} disabled={busy}>
+          {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+          Demo assets
+        </button>
+        <button className="button primary" onClick={onCompare} disabled={compareDisabled}>
+          {busy || processingId ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+          {processingId ? "Analyzing" : selectedCount >= 2 ? "Compare selected" : "Select two"}
+        </button>
+      </div>
+    </header>
   );
 }
 
@@ -1134,24 +1303,54 @@ function EnterpriseNav({
   view: "workbench" | "observability" | "governance" | "validation" | "brands" | "library" | "imports";
   onChange: (view: "workbench" | "observability" | "governance" | "validation" | "brands" | "library" | "imports") => void;
 }) {
-  const items = [
-    ["workbench", Layers, "Workbench"],
-    ["observability", Activity, "Observability"],
-    ["governance", ShieldCheck, "Governance"],
-    ["validation", BarChart3, "Validation"],
-    ["brands", ClipboardList, "Brands"],
-    ["library", Database, "Library"],
-    ["imports", Upload, "Imports"]
+  const groups = [
+    {
+      label: "Create",
+      items: [
+        ["workbench", Layers, "Workbench"],
+        ["imports", Upload, "Imports"],
+        ["library", Database, "Library"]
+      ]
+    },
+    {
+      label: "Control",
+      items: [
+        ["brands", ClipboardList, "Brands"],
+        ["validation", BarChart3, "Validation"]
+      ]
+    },
+    {
+      label: "Admin",
+      items: [
+        ["observability", Activity, "Observability"],
+        ["governance", ShieldCheck, "Governance"]
+      ]
+    }
   ] as const;
   return (
-    <nav className="enterprise-nav" aria-label="Workspace sections">
-      {items.map(([id, Icon, label]) => (
-        <button key={id} className={view === id ? "active" : ""} onClick={() => onChange(id)}>
-          <Icon size={16} />
-          {label}
-        </button>
-      ))}
-    </nav>
+    <aside className="app-sidebar">
+      <a className="brand-mark app-brand" href="/">
+        <span>St</span>
+        Stimli
+      </a>
+      <nav className="enterprise-nav" aria-label="Workspace sections">
+        {groups.map((group) => (
+          <div className="nav-group" key={group.label}>
+            <p>{group.label}</p>
+            {group.items.map(([id, Icon, label]) => (
+              <button key={id} className={view === id ? "active" : ""} onClick={() => onChange(id)} aria-current={view === id ? "page" : undefined}>
+                <Icon size={16} />
+                {label}
+              </button>
+            ))}
+          </div>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <a href="/">Landing</a>
+        <a href="/legal">Trust</a>
+      </div>
+    </aside>
   );
 }
 
@@ -2133,7 +2332,9 @@ function ProcessingComparison({ comparison, onCancel }: { comparison: Comparison
             return (
               <div className="processing-row" key={variant.asset.id}>
                 <span>{variant.asset.name}</span>
-                <strong className={`processing-status ${job?.status ?? variant.analysis.status}`}>{job?.status ?? variant.analysis.status}</strong>
+                <strong className={`processing-status ${job?.status ?? variant.analysis.status}`}>
+                  {statusLabel(job?.status ?? variant.analysis.status)}
+                </strong>
               </div>
             );
           })}
@@ -2183,6 +2384,7 @@ function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Co
     revenue: 1200,
     notes: ""
   });
+  const [activeTab, setActiveTab] = useState<"decision" | "scorecard" | "timeline" | "edits" | "learning">("decision");
 
   return (
     <div className="results-stack">
@@ -2242,128 +2444,154 @@ function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Co
         {reportNotice && <span className="report-notice">{reportNotice}</span>}
       </section>
 
-      <section className="panel challenger-panel">
-        <div className="panel-heading">
-          <Sparkles size={19} />
-          <h2>Create Challenger</h2>
+      <nav className="result-tabs" aria-label="Comparison result sections">
+        {[
+          ["decision", "Decision"],
+          ["scorecard", "Scorecard"],
+          ["timeline", "Timeline"],
+          ["edits", "Edits"],
+          ["learning", "Learning"]
+        ].map(([id, label]) => (
+          <button key={id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id as typeof activeTab)}>
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {activeTab === "decision" && (
+        <div className="tab-panel">
+          <section className="panel">
+            <div className="panel-heading">
+              <ClipboardList size={19} />
+              <h2>Decision Evidence</h2>
+            </div>
+            <div className="reason-list">
+              {comparison.recommendation.reasons.map((reason) => (
+                <p key={reason}>{reason}</p>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel challenger-panel">
+            <div className="panel-heading">
+              <Sparkles size={19} />
+              <h2>Create Challenger</h2>
+            </div>
+            <div className="challenger-controls">
+              <label>
+                Focus
+                <select value={challengerFocus} onChange={(event) => setChallengerFocus(event.target.value as typeof challengerFocus)}>
+                  <option value="hook">Hook</option>
+                  <option value="offer">Offer</option>
+                  <option value="cta">CTA</option>
+                  <option value="clarity">Clarity</option>
+                </select>
+              </label>
+              <button
+                className="button"
+                disabled={challengerBusy}
+                onClick={async () => {
+                  setChallengerBusy(true);
+                  try {
+                    await createChallenger(comparison.id, {
+                      source_asset_id: comparison.recommendation.winner_asset_id,
+                      focus: challengerFocus
+                    });
+                    await onOutcomeSaved();
+                  } finally {
+                    setChallengerBusy(false);
+                  }
+                }}
+              >
+                {challengerBusy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+                Draft next variant
+              </button>
+            </div>
+          </section>
         </div>
-        <div className="challenger-controls">
+      )}
+
+      {activeTab === "scorecard" && (
+        <section className="variant-grid tab-panel">
+          {comparison.variants.map((variant) => (
+            <VariantCard key={variant.asset.id} variant={variant} />
+          ))}
+        </section>
+      )}
+
+      {activeTab === "timeline" && (
+        <section className="panel tab-panel">
+          <div className="panel-heading">
+            <BarChart3 size={19} />
+            <h2>Timeline Evidence</h2>
+          </div>
+          {winner && <Timeline timeline={winner.analysis.timeline} />}
+        </section>
+      )}
+
+      {activeTab === "edits" && (
+        <section className="panel tab-panel">
+          <div className="panel-heading">
+            <Lightbulb size={19} />
+            <h2>Edit Cards</h2>
+          </div>
+          <div className="suggestion-list">
+            {comparison.suggestions.map((suggestion, index) => (
+              <SuggestionCard key={`${suggestion.asset_id}-${suggestion.target}-${index}`} suggestion={suggestion} comparison={comparison} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {activeTab === "learning" && (
+        <section className="panel tab-panel">
+          <div className="panel-heading">
+            <Send size={19} />
+            <h2>Launch Learning</h2>
+          </div>
+          <div className="outcome-grid">
+            <label>
+              Variant
+              <select value={outcome.asset_id} onChange={(event) => setOutcome({ ...outcome, asset_id: event.target.value })}>
+                {comparison.variants.map((variant) => (
+                  <option key={variant.asset.id} value={variant.asset.id}>
+                    {variant.asset.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <NumberField label="Spend" value={outcome.spend} onChange={(spend) => setOutcome({ ...outcome, spend })} />
+            <NumberField label="Impressions" value={outcome.impressions} onChange={(impressions) => setOutcome({ ...outcome, impressions })} />
+            <NumberField label="Clicks" value={outcome.clicks} onChange={(clicks) => setOutcome({ ...outcome, clicks })} />
+            <NumberField label="Conversions" value={outcome.conversions} onChange={(conversions) => setOutcome({ ...outcome, conversions })} />
+            <NumberField label="Revenue" value={outcome.revenue} onChange={(revenue) => setOutcome({ ...outcome, revenue })} />
+          </div>
           <label>
-            Focus
-            <select value={challengerFocus} onChange={(event) => setChallengerFocus(event.target.value as typeof challengerFocus)}>
-              <option value="hook">Hook</option>
-              <option value="offer">Offer</option>
-              <option value="cta">CTA</option>
-              <option value="clarity">Clarity</option>
-            </select>
+            Notes
+            <input
+              value={outcome.notes}
+              onChange={(event) => setOutcome({ ...outcome, notes: event.target.value })}
+              placeholder="Audience, channel, or launch context"
+            />
           </label>
           <button
             className="button"
-            disabled={challengerBusy}
+            disabled={outcomeBusy}
             onClick={async () => {
-              setChallengerBusy(true);
+              setOutcomeBusy(true);
               try {
-                await createChallenger(comparison.id, {
-                  source_asset_id: comparison.recommendation.winner_asset_id,
-                  focus: challengerFocus
-                });
+                await createOutcome(comparison.id, outcome);
                 await onOutcomeSaved();
               } finally {
-                setChallengerBusy(false);
+                setOutcomeBusy(false);
               }
             }}
           >
-            {challengerBusy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
-            Draft next variant
+            {outcomeBusy ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+            Log outcome
           </button>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <ClipboardList size={19} />
-          <h2>Why</h2>
-        </div>
-        <div className="reason-list">
-          {comparison.recommendation.reasons.map((reason) => (
-            <p key={reason}>{reason}</p>
-          ))}
-        </div>
-      </section>
-
-      <section className="variant-grid">
-        {comparison.variants.map((variant) => (
-          <VariantCard key={variant.asset.id} variant={variant} />
-        ))}
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <BarChart3 size={19} />
-          <h2>Timeline Evidence</h2>
-        </div>
-        {winner && <Timeline timeline={winner.analysis.timeline} />}
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <Lightbulb size={19} />
-          <h2>Edit Cards</h2>
-        </div>
-        <div className="suggestion-list">
-          {comparison.suggestions.map((suggestion, index) => (
-            <SuggestionCard key={`${suggestion.asset_id}-${suggestion.target}-${index}`} suggestion={suggestion} comparison={comparison} />
-          ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <Send size={19} />
-          <h2>Launch Learning</h2>
-        </div>
-        <div className="outcome-grid">
-          <label>
-            Variant
-            <select value={outcome.asset_id} onChange={(event) => setOutcome({ ...outcome, asset_id: event.target.value })}>
-              {comparison.variants.map((variant) => (
-                <option key={variant.asset.id} value={variant.asset.id}>
-                  {variant.asset.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <NumberField label="Spend" value={outcome.spend} onChange={(spend) => setOutcome({ ...outcome, spend })} />
-          <NumberField label="Impressions" value={outcome.impressions} onChange={(impressions) => setOutcome({ ...outcome, impressions })} />
-          <NumberField label="Clicks" value={outcome.clicks} onChange={(clicks) => setOutcome({ ...outcome, clicks })} />
-          <NumberField label="Conversions" value={outcome.conversions} onChange={(conversions) => setOutcome({ ...outcome, conversions })} />
-          <NumberField label="Revenue" value={outcome.revenue} onChange={(revenue) => setOutcome({ ...outcome, revenue })} />
-        </div>
-        <label>
-          Notes
-          <input
-            value={outcome.notes}
-            onChange={(event) => setOutcome({ ...outcome, notes: event.target.value })}
-            placeholder="Audience, channel, or launch context"
-          />
-        </label>
-        <button
-          className="button"
-          disabled={outcomeBusy}
-          onClick={async () => {
-            setOutcomeBusy(true);
-            try {
-              await createOutcome(comparison.id, outcome);
-              await onOutcomeSaved();
-            } finally {
-              setOutcomeBusy(false);
-            }
-          }}
-        >
-          {outcomeBusy ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-          Log outcome
-        </button>
-      </section>
+        </section>
+      )}
     </div>
   );
 }
@@ -2516,6 +2744,19 @@ function splitList(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    queued: "Queued",
+    running: "Analyzing",
+    processing: "Analyzing",
+    retrying: "Retrying",
+    complete: "Decision ready",
+    failed: "Needs attention",
+    cancelled: "Cancelled"
+  };
+  return labels[status] ?? status;
 }
 
 function delay(milliseconds: number): Promise<void> {
