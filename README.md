@@ -50,6 +50,23 @@ Production environment variables:
 
 The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
 
+### Modal GPU Inference
+
+The Modal app in `inference/tribe_modal.py` exposes a GPU endpoint for real TRIBE v2 inference. It uses a Modal Volume for model cache and two Modal Secrets:
+
+- `stimli-huggingface` with `HF_TOKEN`
+- `stimli-modal-auth` with `STIMLI_MODAL_API_KEY`
+
+```bash
+cd inference
+pip install -r requirements.txt
+modal secret create stimli-huggingface HF_TOKEN=...
+modal secret create stimli-modal-auth STIMLI_MODAL_API_KEY=...
+modal deploy tribe_modal.py
+```
+
+After deploy, set the resulting Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel.
+
 ## Local Development
 
 ### Backend

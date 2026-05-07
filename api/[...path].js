@@ -20,6 +20,7 @@ import {
 } from "./_lib/store.js";
 
 const assetTypes = new Set(["script", "landing_page", "image", "audio", "video"]);
+const maxInlineFileBytes = Number(process.env.STIMLI_MAX_INLINE_FILE_BYTES || 8 * 1024 * 1024);
 
 export default async function handler(request, response) {
   setBaseHeaders(response);
@@ -75,7 +76,7 @@ export default async function handler(request, response) {
 
 async function handleAssets(request, response, segments) {
   if (request.method === "GET" && segments.length === 1) {
-    return sendJson(response, 200, await listAssets());
+    return sendJson(response, 200, (await listAssets()).map(publicAsset));
   }
 
   if (request.method === "POST" && segments.length === 1) {
@@ -118,12 +119,24 @@ async function handleAssets(request, response, segments) {
         original_filename: file?.filename || null,
         file_size: file?.buffer?.length || null,
         content_type: file?.mimeType || null,
+        ...(file?.buffer?.length && file.buffer.length <= maxInlineFileBytes
+          ? {
+              file_base64: file.buffer.toString("base64"),
+              file_encoding: "base64"
+            }
+          : {}),
+        ...(file?.buffer?.length && file.buffer.length > maxInlineFileBytes
+          ? {
+              file_omitted: true,
+              file_limit_bytes: maxInlineFileBytes
+            }
+          : {}),
         ...extractionMetadata
       },
       created_at: nowIso()
     };
     await saveAsset(asset);
-    return sendJson(response, 200, { asset });
+    return sendJson(response, 200, { asset: publicAsset(asset) });
   }
 
   return sendJson(response, 405, { detail: "Method not allowed" });
@@ -131,7 +144,7 @@ async function handleAssets(request, response, segments) {
 
 async function handleComparisons(request, response, segments) {
   if (request.method === "GET" && segments.length === 1) {
-    return sendJson(response, 200, await listComparisons());
+    return sendJson(response, 200, (await listComparisons()).map(publicComparison));
   }
 
   if (request.method === "POST" && segments.length === 1) {
@@ -150,7 +163,7 @@ async function handleComparisons(request, response, segments) {
       assets.push(asset);
     }
 
-    const comparison = await compareAssets(newId("cmp"), payload.objective, assets, nowIso(), payload.brief);
+    const comparison = publicComparison(await compareAssets(newId("cmp"), payload.objective, assets, nowIso(), payload.brief));
     await saveComparison(comparison);
     return sendJson(response, 200, comparison);
   }
@@ -190,7 +203,7 @@ async function handleComparisons(request, response, segments) {
       created_at: nowIso()
     };
     await saveAsset(asset);
-    return sendJson(response, 200, { asset, source_asset_id: sourceVariant.asset.id, focus });
+    return sendJson(response, 200, { asset: publicAsset(asset), source_asset_id: sourceVariant.asset.id, focus });
   }
 
   if (segments[2] === "outcomes") {
@@ -308,7 +321,24 @@ async function requireComparison(comparisonId) {
   if (!comparison) {
     throw httpError(404, "Comparison not found");
   }
-  return comparison;
+  return publicComparison(comparison);
+}
+
+function publicComparison(comparison) {
+  return {
+    ...comparison,
+    variants: comparison.variants.map((variant) => ({
+      ...variant,
+      asset: publicAsset(variant.asset)
+    }))
+  };
+}
+
+function publicAsset(asset) {
+  const metadata = { ...(asset.metadata || {}) };
+  delete metadata.file_base64;
+  delete metadata.file_encoding;
+  return { ...asset, metadata };
 }
 
 function learningSummary(outcomes) {
