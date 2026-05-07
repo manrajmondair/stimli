@@ -162,6 +162,51 @@ test("creates async comparisons and finalizes completed remote jobs", async () =
   }
 });
 
+test("rate limits comparison creation per workspace and client", async () => {
+  const previousLimit = process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR;
+  process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR = "1";
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = {
+    "x-stimli-workspace": workspace,
+    "x-forwarded-for": "203.0.113.42",
+    "user-agent": "stimli-test"
+  };
+
+  try {
+    const first = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Limit A", text: "Stop weak hooks before launch. Try the starter kit today." },
+      headers
+    );
+    const second = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Limit B", text: "Upload creative and compare the strongest variant before spend." },
+      headers
+    );
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+
+    const allowed = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "First comparison should be allowed." },
+      headers
+    );
+    const blocked = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Second comparison should be blocked." },
+      headers
+    );
+    assert.equal(allowed.statusCode, 200);
+    assert.equal(blocked.statusCode, 429);
+  } finally {
+    restoreEnv("STIMLI_COMPARISON_LIMIT_PER_HOUR", previousLimit);
+  }
+});
+
 async function call(method, url, body = null, headers = {}) {
   const requestBody = body ? JSON.stringify(body) : "";
   const request = Readable.from(requestBody ? [Buffer.from(requestBody)] : []);

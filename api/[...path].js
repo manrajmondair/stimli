@@ -1,4 +1,5 @@
 import Busboy from "busboy";
+import crypto from "node:crypto";
 import { put } from "@vercel/blob";
 import { handleUpload } from "@vercel/blob/client";
 
@@ -17,12 +18,14 @@ import {
 import {
   getAsset,
   getComparison,
+  countUsageEvents,
   listAssets,
   listComparisons,
   listOutcomes,
   saveAsset,
   saveComparison,
   saveOutcome,
+  saveUsageEvent,
   storageHealth
 } from "./_lib/store.js";
 
@@ -93,6 +96,7 @@ async function handleAssets(request, response, segments, workspaceId) {
   }
 
   if (request.method === "POST" && segments.length === 1) {
+    await enforceUsageLimit(request, workspaceId, "asset", Number(process.env.STIMLI_ASSET_LIMIT_PER_HOUR || 80));
     const { fields, files } = await parseForm(request);
     const assetType = fields.asset_type || fields.assetType;
     if (!assetTypes.has(assetType)) {
@@ -196,6 +200,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
   }
 
   if (request.method === "POST" && segments.length === 1) {
+    await enforceUsageLimit(request, workspaceId, "comparison", Number(process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR || 24));
     const payload = await parseJson(request);
     const assetIds = Array.isArray(payload.asset_ids) ? payload.asset_ids : [];
     if (assetIds.length < 2) {
@@ -763,6 +768,41 @@ function workspaceForRequest(request) {
     throw httpError(400, "Invalid workspace id.");
   }
   return workspaceId;
+}
+
+async function enforceUsageLimit(request, workspaceId, kind, limit) {
+  if (process.env.STIMLI_DISABLE_RATE_LIMITS === "1" || !Number.isFinite(limit) || limit <= 0) {
+    return;
+  }
+  const windowMs = Number(process.env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
+  const since = new Date(Date.now() - windowMs).toISOString();
+  const bucketKey = clientBucketKey(request, workspaceId);
+  const [workspaceCount, clientCount] = await Promise.all([
+    countUsageEvents({ kind, since, workspaceId }),
+    countUsageEvents({ kind, since, bucketKey })
+  ]);
+  if (Math.max(workspaceCount, clientCount) >= limit) {
+    throw httpError(429, "Usage limit reached. Try again later.");
+  }
+  await saveUsageEvent({
+    id: newId("usage"),
+    workspace_id: workspaceId,
+    bucket_key: bucketKey,
+    kind,
+    payload: {
+      limit,
+      window_ms: windowMs
+    },
+    created_at: nowIso()
+  });
+}
+
+function clientBucketKey(request, workspaceId) {
+  const forwardedFor = getHeader(request, "x-forwarded-for").split(",")[0]?.trim();
+  const realIp = getHeader(request, "x-real-ip").trim();
+  const userAgent = getHeader(request, "user-agent").slice(0, 180);
+  const source = forwardedFor || realIp ? `${forwardedFor || realIp}|${userAgent}` : `workspace:${workspaceId}`;
+  return `client_${crypto.createHash("sha256").update(source).digest("hex").slice(0, 32)}`;
 }
 
 function getHeader(request, name) {

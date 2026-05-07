@@ -49,6 +49,7 @@ Production environment variables:
 - `TRIBE_CONTROL_URL`: optional hosted job-control endpoint for async media inference. When configured, audio/video comparisons return quickly with `status=processing` and finalize as the hosted jobs complete.
 - `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
 - `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
+- `STIMLI_ASSET_LIMIT_PER_HOUR` and `STIMLI_COMPARISON_LIMIT_PER_HOUR`: optional per-workspace/client quotas for the public API.
 
 The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
 

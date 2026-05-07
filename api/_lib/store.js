@@ -3,7 +3,8 @@ import postgres from "postgres";
 const memoryStore = (globalThis.__stimliMemoryStore ??= {
   assets: new Map(),
   comparisons: new Map(),
-  outcomes: new Map()
+  outcomes: new Map(),
+  usageEvents: new Map()
 });
 
 const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
@@ -137,6 +138,66 @@ export async function listOutcomes(comparisonId = null, workspaceId = "public") 
   return rows.map((row) => row.payload);
 }
 
+export async function saveUsageEvent(event) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.usageEvents.set(event.id, event);
+    return event;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_usage_events (id, workspace_id, bucket_key, kind, payload, created_at)
+    values (${event.id}, ${event.workspace_id}, ${event.bucket_key}, ${event.kind}, ${sql.json(event)}, ${event.created_at})
+    on conflict (id) do nothing
+  `;
+  return event;
+}
+
+export async function countUsageEvents({ kind, since, workspaceId = null, bucketKey = null }) {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.usageEvents.values()].filter((event) => {
+      if (event.kind !== kind || event.created_at < since) {
+        return false;
+      }
+      if (workspaceId && event.workspace_id !== workspaceId) {
+        return false;
+      }
+      if (bucketKey && event.bucket_key !== bucketKey) {
+        return false;
+      }
+      return true;
+    }).length;
+  }
+  await ensureTables(sql);
+  if (workspaceId && bucketKey) {
+    const rows = await sql`
+      select count(*)::int as count from stimli_usage_events
+      where kind = ${kind} and created_at >= ${since} and workspace_id = ${workspaceId} and bucket_key = ${bucketKey}
+    `;
+    return rows[0]?.count || 0;
+  }
+  if (workspaceId) {
+    const rows = await sql`
+      select count(*)::int as count from stimli_usage_events
+      where kind = ${kind} and created_at >= ${since} and workspace_id = ${workspaceId}
+    `;
+    return rows[0]?.count || 0;
+  }
+  if (bucketKey) {
+    const rows = await sql`
+      select count(*)::int as count from stimli_usage_events
+      where kind = ${kind} and created_at >= ${since} and bucket_key = ${bucketKey}
+    `;
+    return rows[0]?.count || 0;
+  }
+  const rows = await sql`
+    select count(*)::int as count from stimli_usage_events
+    where kind = ${kind} and created_at >= ${since}
+  `;
+  return rows[0]?.count || 0;
+}
+
 function getSql() {
   if (!databaseUrl) {
     return null;
@@ -177,13 +238,26 @@ async function ensureTables(sql) {
         created_at text not null
       )
     `;
+    await tx`
+      create table if not exists stimli_usage_events (
+        id text primary key,
+        workspace_id text not null default 'public',
+        bucket_key text not null,
+        kind text not null,
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
     await tx`alter table stimli_assets add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_comparisons add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_outcomes add column if not exists workspace_id text not null default 'public'`;
+    await tx`alter table stimli_usage_events add column if not exists workspace_id text not null default 'public'`;
     await tx`create index if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`;
     await tx`create index if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`;
     await tx`create index if not exists stimli_outcomes_workspace_idx on stimli_outcomes (workspace_id, created_at desc)`;
     await tx`create index if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`;
+    await tx`create index if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`;
+    await tx`create index if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`;
   });
   return initPromise;
 }
