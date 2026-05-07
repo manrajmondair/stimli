@@ -9,6 +9,7 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
   users: new Map(),
   teams: new Map(),
   teamMembers: new Map(),
+  teamInvites: new Map(),
   authenticators: new Map(),
   authChallenges: new Map(),
   sessions: new Map(),
@@ -329,6 +330,17 @@ export async function saveTeamMember(member) {
   return member;
 }
 
+export async function getTeamMember(teamId, userId) {
+  const sql = getSql();
+  const key = `${teamId}:${userId}`;
+  if (!sql) {
+    return memoryStore.teamMembers.get(key) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_team_members where team_id = ${teamId} and user_id = ${userId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
 export async function listTeamsForUser(userId) {
   const sql = getSql();
   if (!sql) {
@@ -344,6 +356,50 @@ export async function listTeamsForUser(userId) {
     where m.user_id = ${userId}
     order by m.created_at asc
   `;
+  return rows.map((row) => row.payload);
+}
+
+export async function saveTeamInvite(invite) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.teamInvites.set(invite.token_hash, invite);
+    return invite;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_team_invites (token_hash, team_id, email, role, payload, expires_at, created_at)
+    values (${invite.token_hash}, ${invite.team_id}, ${invite.email}, ${invite.role}, ${sql.json(invite)}, ${invite.expires_at}, ${invite.created_at})
+    on conflict (token_hash) do update
+    set payload = excluded.payload,
+        expires_at = excluded.expires_at
+  `;
+  return invite;
+}
+
+export async function getTeamInviteByTokenHash(tokenHash) {
+  const sql = getSql();
+  const now = new Date().toISOString();
+  if (!sql) {
+    const invite = memoryStore.teamInvites.get(tokenHash) || null;
+    return invite && invite.expires_at > now && !invite.accepted_at ? invite : null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select payload from stimli_team_invites
+    where token_hash = ${tokenHash} and expires_at > ${now}
+    limit 1
+  `;
+  const invite = rows[0]?.payload || null;
+  return invite && !invite.accepted_at ? invite : null;
+}
+
+export async function listTeamInvites(teamId) {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.teamInvites.values()].filter((invite) => invite.team_id === teamId).sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_team_invites where team_id = ${teamId} order by created_at desc`;
   return rows.map((row) => row.payload);
 }
 
@@ -584,6 +640,17 @@ async function ensureTables(sql) {
       )
     `;
     await tx`
+      create table if not exists stimli_team_invites (
+        token_hash text primary key,
+        team_id text not null,
+        email text not null,
+        role text not null,
+        payload jsonb not null,
+        expires_at text not null,
+        created_at text not null
+      )
+    `;
+    await tx`
       create table if not exists stimli_authenticators (
         credential_id text primary key,
         user_id text not null,
@@ -635,6 +702,7 @@ async function ensureTables(sql) {
     await tx`create index if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`;
     await tx`create index if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`;
     await tx`create index if not exists stimli_team_members_user_idx on stimli_team_members (user_id, created_at asc)`;
+    await tx`create index if not exists stimli_team_invites_team_idx on stimli_team_invites (team_id, created_at desc)`;
     await tx`create index if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`;
     await tx`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`;
     await tx`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`;

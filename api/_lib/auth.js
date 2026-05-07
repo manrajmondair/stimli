@@ -14,6 +14,7 @@ import {
   getAuthenticatorByCredentialId,
   getSessionByHash,
   getTeam,
+  getTeamMember,
   getUser,
   getUserByEmail,
   listAuthenticatorsForUser,
@@ -247,6 +248,30 @@ export async function logout(request, response) {
   }
   clearSessionCookie(response, request);
   return { authenticated: false };
+}
+
+export async function switchTeam(request, response, payload) {
+  const context = await getAuthContext(request);
+  if (!context.authenticated) {
+    throw httpError(401, "Sign in before switching teams.");
+  }
+  const teamId = String(payload.team_id || payload.teamId || "").trim();
+  const membership = await getTeamMember(teamId, context.user.id);
+  const team = membership ? await getTeam(teamId) : null;
+  if (!team) {
+    throw httpError(403, "You do not have access to this team.");
+  }
+  const token = cookiesForRequest(request)[sessionCookie];
+  if (token) {
+    await deleteSessionByHash(hashToken(token));
+  }
+  await issueSession(response, request, context.user.id, team.id);
+  return {
+    authenticated: true,
+    user: publicUser(context.user),
+    team,
+    teams: await listTeamsForUser(context.user.id)
+  };
 }
 
 function anonymousContext() {

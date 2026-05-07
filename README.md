@@ -10,6 +10,7 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 - Scores against a campaign brief: brand, audience, category, offer, required claims, and forbidden terms.
 - Extracts landing-page text from URLs when available, with a reliable fallback when a site blocks automated fetches.
 - Persists comparison history and launch outcomes so future versions can calibrate prediction quality against spend results.
+- Supports passkey accounts, team workspaces, free invite links, project ownership, and public report sharing.
 - Works with a deterministic local brain-response provider for reproducible demos, with a clean adapter boundary for TRIBE-style model inference.
 - Exports a report payload suitable for a short project demo or client-style review.
 
@@ -155,6 +156,8 @@ Sample text assets live in `backend/data/sample_assets/`.
 - `POST /api/comparisons/{id}/outcomes` records post-launch results.
 - `GET /api/learning/summary` summarizes logged launch outcomes.
 - `POST /api/demo/seed` loads sample creative variants.
+- `POST /api/teams/invites` creates a team invite link for a signed-in owner.
+- `POST /api/invites/{token}/accept` accepts a team invite and switches the session into that team.
 
 ## Notes On Model Use
 

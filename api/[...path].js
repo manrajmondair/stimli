@@ -23,6 +23,7 @@ import {
   getAuthContext,
   logout,
   registrationOptions,
+  switchTeam,
   verifyAuthentication,
   verifyRegistration
 } from "./_lib/auth.js";
@@ -38,15 +39,20 @@ import {
   getComparison,
   getProject,
   countUsageEvents,
+  getTeamInviteByTokenHash,
+  getTeamMember,
   listAssets,
   listComparisons,
   listOutcomes,
   listProjects,
+  listTeamInvites,
   getShareLink,
   saveAsset,
   saveComparison,
   saveOutcome,
   saveProject,
+  saveTeamInvite,
+  saveTeamMember,
   saveShareLink,
   saveUsageEvent,
   storageHealth
@@ -85,6 +91,14 @@ export default async function handler(request, response) {
 
     if (segments[0] === "billing") {
       return await handleBilling(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "teams") {
+      return await handleTeams(request, response, segments, authContext);
+    }
+
+    if (segments[0] === "invites") {
+      return await handleInvites(request, response, segments, authContext);
     }
 
     if (segments[0] === "share") {
@@ -180,7 +194,83 @@ async function handleAuth(request, response, segments) {
   if (request.method === "POST" && segments[1] === "logout") {
     return sendJson(response, 200, await logout(request, response));
   }
+  if (request.method === "POST" && segments[1] === "team") {
+    return sendJson(response, 200, await switchTeam(request, response, payload));
+  }
   return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleTeams(request, response, segments, authContext) {
+  if (!authContext.authenticated) {
+    throw httpError(401, "Sign in before managing teams.");
+  }
+  if (segments[1] === "invites") {
+    const membership = await getTeamMember(authContext.team.id, authContext.user.id);
+    if (!membership || membership.role !== "owner") {
+      throw httpError(403, "Only team owners can manage invites.");
+    }
+    if (request.method === "GET") {
+      const invites = await listTeamInvites(authContext.team.id);
+      return sendJson(response, 200, invites.map((invite) => publicInvite(invite, authContext.team)));
+    }
+    if (request.method === "POST") {
+      const payload = await parseJson(request);
+      const token = crypto.randomBytes(24).toString("base64url");
+      const invite = {
+        id: newId("invite"),
+        token_hash: hashToken(token),
+        team_id: authContext.team.id,
+        team_name: authContext.team.name,
+        email: normalizeInviteEmail(payload.email),
+        role: payload.role === "owner" ? "owner" : "member",
+        created_by: authContext.user.id,
+        expires_at: new Date(Date.now() + Number(process.env.STIMLI_INVITE_TTL_DAYS || 14) * 24 * 60 * 60 * 1000).toISOString(),
+        created_at: nowIso()
+      };
+      await saveTeamInvite(invite);
+      const origin = requestOrigin(request);
+      return sendJson(response, 200, {
+        ...publicInvite(invite, authContext.team),
+        url: `${origin}/invite/${token}`,
+        token
+      });
+    }
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleInvites(request, response, segments, authContext) {
+  const token = segments[1] || "";
+  const invite = token ? await getTeamInviteByTokenHash(hashToken(token)) : null;
+  if (!invite) {
+    throw httpError(404, "Invite not found or expired.");
+  }
+  const team = { id: invite.team_id, name: invite.team_name || "Team" };
+  if (request.method === "GET") {
+    return sendJson(response, 200, publicInvite(invite, team));
+  }
+  if (request.method === "POST" && segments[2] === "accept") {
+    if (!authContext.authenticated) {
+      throw httpError(401, "Sign in before accepting this invite.");
+    }
+    if (invite.email && invite.email !== authContext.user.email) {
+      throw httpError(403, "This invite belongs to a different email address.");
+    }
+    await saveTeamMember({
+      team_id: invite.team_id,
+      user_id: authContext.user.id,
+      role: invite.role,
+      invited_by: invite.created_by || null,
+      created_at: nowIso()
+    });
+    await saveTeamInvite({
+      ...invite,
+      accepted_by: authContext.user.id,
+      accepted_at: nowIso()
+    });
+    return sendJson(response, 200, await switchTeam(request, response, { team_id: invite.team_id }));
+  }
+  return sendJson(response, 405, { detail: "Method not allowed" });
 }
 
 async function handleBilling(request, response, segments, authContext) {
@@ -1127,6 +1217,34 @@ function clientBucketKey(request, workspaceId) {
   const userAgent = getHeader(request, "user-agent").slice(0, 180);
   const source = forwardedFor || realIp ? `${forwardedFor || realIp}|${userAgent}` : `workspace:${workspaceId}`;
   return `client_${crypto.createHash("sha256").update(source).digest("hex").slice(0, 32)}`;
+}
+
+function publicInvite(invite, team) {
+  return {
+    id: invite.id,
+    team_id: invite.team_id,
+    team_name: team.name || invite.team_name || "Team",
+    email: invite.email || "",
+    role: invite.role || "member",
+    expires_at: invite.expires_at,
+    accepted_at: invite.accepted_at || null,
+    created_at: invite.created_at
+  };
+}
+
+function normalizeInviteEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email) {
+    return "";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw httpError(400, "Invite email is invalid.");
+  }
+  return email;
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
 function getHeader(request, name) {

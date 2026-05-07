@@ -216,6 +216,33 @@ h1 {
   color: #17211d;
 }
 
+.auth-panel.signed-in select {
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+.auth-panel.signed-in a {
+  color: #087f5b;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.invite-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 42px;
+}
+
+.invite-row input {
+  min-width: 0;
+}
+
+.notice.compact {
+  margin: 0 0 14px;
+}
+
 .billing-panel {
   background: #fffaf2;
   border: 1px solid #e0d3c3;
@@ -1056,6 +1083,28 @@ textarea:focus {
 .shared-empty h1 {
   font-size: 2.2rem;
   margin-bottom: 8px;
+}
+
+.invite-shell {
+  align-items: center;
+  display: grid;
+  min-height: 100vh;
+}
+
+.invite-card {
+  margin: 0 auto;
+  max-width: 560px;
+  width: 100%;
+}
+
+.invite-card h1 {
+  font-size: clamp(2rem, 4vw, 3.6rem);
+}
+
+.invite-auth {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
 }
 
 .app-footer {

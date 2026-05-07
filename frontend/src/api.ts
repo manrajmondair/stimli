@@ -14,7 +14,8 @@ import type {
   OutcomeCreate,
   Project,
   Report,
-  ShareLink
+  ShareLink,
+  TeamInvite
 } from "./types";
 
 const localViteApi = import.meta.env.DEV && globalThis.location?.port === "5173" ? "http://localhost:8000" : "/api";
@@ -285,6 +286,43 @@ export async function loginWithPasskey(email: string): Promise<AuthSession> {
 export async function logout(): Promise<void> {
   await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
   setAuthenticatedWorkspace(null);
+}
+
+export async function switchTeam(teamId: string): Promise<AuthSession> {
+  const response = await fetch(`${API_BASE}/auth/team`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ team_id: teamId })
+  });
+  const session = await parseResponse<AuthSession>(response);
+  setAuthenticatedWorkspace(session.team?.id || null);
+  return session;
+}
+
+export async function createTeamInvite(input: { email?: string; role?: "member" | "owner" }): Promise<TeamInvite> {
+  const response = await fetch(`${API_BASE}/teams/invites`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function getInvite(token: string): Promise<TeamInvite> {
+  const response = await fetch(`${API_BASE}/invites/${encodeURIComponent(token)}`);
+  return parseResponse(response);
+}
+
+export async function acceptInvite(token: string): Promise<AuthSession> {
+  const response = await fetch(`${API_BASE}/invites/${encodeURIComponent(token)}/accept`, {
+    method: "POST",
+    credentials: "include"
+  });
+  const session = await parseResponse<AuthSession>(response);
+  setAuthenticatedWorkspace(session.team?.id || null);
+  return session;
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {

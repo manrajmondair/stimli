@@ -4,6 +4,8 @@ import { Readable, Writable } from "node:stream";
 import test from "node:test";
 
 import handler from "../api/[...path].js";
+import { nowIso } from "../api/_lib/analysis.js";
+import { getTeamMember, saveSession, saveTeam, saveTeamMember, saveUser } from "../api/_lib/store.js";
 
 test("serves health from the Vercel API", async () => {
   const response = await call("GET", "/api/health");
@@ -36,6 +38,34 @@ test("exposes billing and license status", async () => {
 
   const checkout = await call("POST", "/api/billing/checkout", { plan: "growth" });
   assert.equal(checkout.statusCode, 401);
+});
+
+test("creates free team invite links and switches invited users into the team", async () => {
+  const owner = await testAccount("Owner Team", "owner");
+  const invited = await testAccount("Invited Default Team", "member");
+  const invite = await call(
+    "POST",
+    "/api/teams/invites",
+    { email: invited.user.email, role: "member" },
+    { cookie: owner.cookie, host: "stimli.test", "x-forwarded-proto": "https" }
+  );
+  assert.equal(invite.statusCode, 200);
+  assert.match(invite.json.url, /^https:\/\/stimli\.test\/invite\//);
+  assert.equal(invite.json.team_id, owner.team.id);
+
+  const publicInvite = await call("GET", `/api/invites/${invite.json.token}`);
+  assert.equal(publicInvite.statusCode, 200);
+  assert.equal(publicInvite.json.team_name, owner.team.name);
+
+  const blocked = await call("POST", `/api/invites/${invite.json.token}/accept`);
+  assert.equal(blocked.statusCode, 401);
+
+  const accepted = await call("POST", `/api/invites/${invite.json.token}/accept`, null, { cookie: invited.cookie });
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(accepted.json.team.id, owner.team.id);
+  assert.equal(accepted.json.teams.some((team) => team.id === owner.team.id), true);
+  assert.equal(Boolean(accepted.headers["set-cookie"]), true);
+  assert.equal((await getTeamMember(owner.team.id, invited.user.id)).role, "member");
 });
 
 test("seeds assets and creates a comparison", async () => {
@@ -456,6 +486,33 @@ async function call(method, url, body = null, headers = {}) {
     text,
     json: text ? JSON.parse(text) : null
   };
+}
+
+async function testAccount(teamName, role) {
+  const createdAt = nowIso();
+  const user = {
+    id: `user_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    email: `${crypto.randomUUID().slice(0, 8)}@example.com`,
+    name: role === "owner" ? "Owner" : "Member",
+    created_at: createdAt
+  };
+  const team = {
+    id: `team_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    name: teamName,
+    created_at: createdAt
+  };
+  const token = crypto.randomBytes(32).toString("base64url");
+  await saveUser(user);
+  await saveTeam(team);
+  await saveTeamMember({ team_id: team.id, user_id: user.id, role: "owner", created_at: createdAt });
+  await saveSession({
+    token_hash: crypto.createHash("sha256").update(token).digest("hex"),
+    user_id: user.id,
+    team_id: team.id,
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    created_at: createdAt
+  });
+  return { user, team, cookie: `stimli_session=${token}` };
 }
 
 function jsonResponse(payload, status = 200) {

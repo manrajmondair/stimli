@@ -203,6 +203,19 @@ export type ShareLink = {
   expires_at: string;
 };
 
+export type TeamInvite = {
+  id: string;
+  team_id: string;
+  team_name: string;
+  email: string;
+  role: "member" | "owner";
+  url?: string;
+  token?: string;
+  expires_at: string;
+  accepted_at: string | null;
+  created_at: string;
+};
+
 export type AuthUser = {
   id: string;
   email: string;

@@ -25,15 +25,18 @@ import {
   Target,
   TrendingUp,
   Upload,
+  UserPlus,
   UserRound
 } from "lucide-react";
 import {
+  acceptInvite,
   cancelComparison,
   createBriefComparisonForProject,
   createChallenger,
   createOutcome,
   createProject,
   createShareLink,
+  createTeamInvite,
   createTextAsset,
   getBillingStatus,
   getBrainProviders,
@@ -41,6 +44,7 @@ import {
   getLearningSummary,
   getReport,
   getReportMarkdown,
+  getInvite,
   getSharedReport,
   getSession,
   listProjects,
@@ -51,7 +55,8 @@ import {
   openBillingPortal,
   registerWithPasskey,
   seedDemo,
-  startCheckout
+  startCheckout,
+  switchTeam
 } from "./api";
 import type {
   Asset,
@@ -67,6 +72,7 @@ import type {
   Report,
   ScoreBreakdown,
   Suggestion,
+  TeamInvite,
   TimelinePoint,
   VariantResult
 } from "./types";
@@ -94,8 +100,12 @@ const scoreLabels: { key: keyof ScoreBreakdown; label: string }[] = [
 
 export function App() {
   const shareToken = getShareToken();
+  const inviteToken = getInviteToken();
   if (window.location.pathname === "/legal") {
     return <LegalPage />;
+  }
+  if (inviteToken) {
+    return <InvitePage token={inviteToken} />;
   }
   return shareToken ? <SharedReportPage token={shareToken} /> : <WorkspaceApp />;
 }
@@ -233,6 +243,39 @@ function WorkspaceApp() {
       await refreshWorkspace();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not sign out.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSwitchTeam(teamId: string) {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      const nextSession = await switchTeam(teamId);
+      setSession(nextSession);
+      setSelected([]);
+      setComparison(null);
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not switch teams.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleCreateInvite(email: string): Promise<string> {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      const invite = await createTeamInvite({ email, role: "member" });
+      if (invite.url) {
+        await navigator.clipboard?.writeText(invite.url);
+      }
+      return invite.url || "";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create invite.");
+      return "";
     } finally {
       setAuthBusy(false);
     }
@@ -422,6 +465,8 @@ function WorkspaceApp() {
             onRegister={handleRegister}
             onLogin={handleLogin}
             onLogout={handleLogout}
+            onSwitchTeam={handleSwitchTeam}
+            onInvite={handleCreateInvite}
           />
           {billing && (
             <BillingPanel billing={billing} busy={billingBusy} onUpgrade={handleUpgrade} onPortal={handlePortal} />
@@ -690,6 +735,101 @@ function LegalPage() {
   );
 }
 
+function InvitePage({ token }: { token: string }) {
+  const [invite, setInvite] = useState<TeamInvite | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [mode, setMode] = useState<"login" | "register">("register");
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void Promise.all([getInvite(token), getSession()])
+      .then(([nextInvite, nextSession]) => {
+        setInvite(nextInvite);
+        setSession(nextSession);
+        if (nextInvite.email) {
+          setEmail(nextInvite.email);
+        }
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Invite is unavailable."));
+  }, [token]);
+
+  async function authenticate() {
+    setBusy(true);
+    setError(null);
+    try {
+      const nextSession =
+        mode === "register"
+          ? await registerWithPasskey({
+              email,
+              name: displayName || email.split("@")[0],
+              teamName: `${displayName || email.split("@")[0]}'s Team`
+            })
+          : await loginWithPasskey(email);
+      setSession(nextSession);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not authenticate.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function accept() {
+    setBusy(true);
+    setError(null);
+    try {
+      await acceptInvite(token);
+      window.location.assign("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not accept invite.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="app-shell invite-shell">
+      <section className="panel invite-card">
+        <p className="eyebrow">Team invite</p>
+        <h1>{invite ? `Join ${invite.team_name}` : "Loading invite"}</h1>
+        {error && <div className="notice compact">{error}</div>}
+        {invite && (
+          <div className="reason-list">
+            <p>Role: {invite.role}</p>
+            <p>Expires: {new Date(invite.expires_at).toLocaleDateString()}</p>
+          </div>
+        )}
+        {session?.authenticated ? (
+          <button className="button full" disabled={busy || !invite} onClick={accept}>
+            {busy ? <Loader2 className="spin" size={18} /> : <UserPlus size={18} />}
+            Accept invite
+          </button>
+        ) : (
+          <div className="auth-panel invite-auth">
+            <div className="auth-tabs">
+              <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} disabled={busy}>
+                Create
+              </button>
+              <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} disabled={busy}>
+                Sign in
+              </button>
+            </div>
+            <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email@company.com" />
+            {mode === "register" && (
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name" />
+            )}
+            <button className="button full" disabled={busy || !email.trim()} onClick={authenticate}>
+              {busy ? <Loader2 className="spin" size={18} /> : <KeyRound size={18} />}
+              Passkey
+            </button>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
 function SharedReportPage({ token }: { token: string }) {
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -812,18 +952,24 @@ function AuthPanel({
   busy,
   onRegister,
   onLogin,
-  onLogout
+  onLogout,
+  onSwitchTeam,
+  onInvite
 }: {
   session: AuthSession | null;
   busy: boolean;
   onRegister: (input: { email: string; name: string; teamName: string }) => Promise<void>;
   onLogin: (email: string) => Promise<void>;
   onLogout: () => Promise<void>;
+  onSwitchTeam: (teamId: string) => Promise<void>;
+  onInvite: (email: string) => Promise<string>;
 }) {
   const [mode, setMode] = useState<"login" | "register">("register");
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [teamName, setTeamName] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteUrl, setInviteUrl] = useState("");
 
   if (session?.authenticated && session.user && session.team) {
     return (
@@ -837,6 +983,31 @@ function AuthPanel({
             <Building2 size={15} />
             {session.team.name}
           </strong>
+          {session.teams.length > 1 && (
+            <select value={session.team.id} onChange={(event) => onSwitchTeam(event.target.value)} disabled={busy}>
+              {session.teams.map((team) => (
+                <option value={team.id} key={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="invite-row">
+            <input value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="teammate@company.com" />
+            <button
+              className="icon-button"
+              disabled={busy}
+              aria-label="Copy team invite"
+              onClick={async () => setInviteUrl(await onInvite(inviteEmail))}
+            >
+              {busy ? <Loader2 className="spin" size={17} /> : <UserPlus size={17} />}
+            </button>
+          </div>
+          {inviteUrl && (
+            <a href={inviteUrl} target="_blank" rel="noreferrer">
+              Invite copied
+            </a>
+          )}
         </div>
         <button className="icon-button" onClick={onLogout} disabled={busy} aria-label="Sign out">
           {busy ? <Loader2 className="spin" size={17} /> : <LogOut size={17} />}
@@ -1375,6 +1546,11 @@ function ShareSuggestionCard({ suggestion, variants }: { suggestion: Suggestion;
 
 function getShareToken(): string | null {
   const match = window.location.pathname.match(/^\/share\/([^/]+)$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function getInviteToken(): string | null {
+  const match = window.location.pathname.match(/^\/invite\/([^/]+)$/);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
