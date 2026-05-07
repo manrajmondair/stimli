@@ -11,6 +11,7 @@ import type {
   LearningSummary,
   Outcome,
   OutcomeCreate,
+  Project,
   Report,
   ShareLink
 } from "./types";
@@ -20,8 +21,26 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? localViteApi;
 const WORKSPACE_KEY = "stimli.workspace";
 const TEAM_WORKSPACE_KEY = "stimli.team_workspace";
 
-export async function seedDemo(): Promise<Asset[]> {
-  const response = await fetch(`${API_BASE}/demo/seed`, { method: "POST", headers: workspaceHeaders() });
+export async function seedDemo(projectId?: string | null): Promise<Asset[]> {
+  const response = await fetch(`${API_BASE}/demo/seed`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ project_id: projectId || null })
+  });
+  return parseResponse(response);
+}
+
+export async function listProjects(): Promise<Project[]> {
+  const response = await fetch(`${API_BASE}/projects`, { headers: workspaceHeaders() });
+  return parseResponse(response);
+}
+
+export async function createProject(input: { name: string; description?: string }): Promise<Project> {
+  const response = await fetch(`${API_BASE}/projects`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify(input)
+  });
   return parseResponse(response);
 }
 
@@ -37,6 +56,8 @@ export async function createTextAsset(input: {
   url?: string;
   durationSeconds?: number;
   file?: File | null;
+  projectId?: string | null;
+  onUploadProgress?: (percentage: number) => void;
 }): Promise<Asset> {
   const form = new FormData();
   form.append("asset_type", input.assetType);
@@ -44,6 +65,7 @@ export async function createTextAsset(input: {
   if (input.text) form.append("text", input.text);
   if (input.url) form.append("url", input.url);
   if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
+  if (input.projectId) form.append("project_id", input.projectId);
   if (input.file) form.append("file", input.file);
   if (input.file && shouldUseDirectBlobUpload()) {
     const blob = await upload(blobPath(input.file.name), input.file, {
@@ -51,7 +73,8 @@ export async function createTextAsset(input: {
       handleUploadUrl: `${API_BASE}/blob/upload`,
       clientPayload: JSON.stringify({ workspace_id: getWorkspaceId() }),
       contentType: input.file.type || undefined,
-      multipart: input.file.size > 8 * 1024 * 1024
+      multipart: input.file.size > 8 * 1024 * 1024,
+      onUploadProgress: (progress) => input.onUploadProgress?.(Math.round(progress.percentage))
     });
     const fileText = input.text || (input.assetType === "script" ? await input.file.text() : "");
     const response = await fetch(`${API_BASE}/assets`, {
@@ -63,6 +86,7 @@ export async function createTextAsset(input: {
         text: fileText,
         url: input.url,
         duration_seconds: input.durationSeconds,
+        project_id: input.projectId || null,
         blob: {
           ...blob,
           original_filename: input.file.name,
@@ -89,10 +113,19 @@ export async function createComparison(assetIds: string[], objective: string): P
 }
 
 export async function createBriefComparison(assetIds: string[], objective: string, brief: CreativeBrief): Promise<Comparison> {
+  return createBriefComparisonForProject(assetIds, objective, brief, null);
+}
+
+export async function createBriefComparisonForProject(
+  assetIds: string[],
+  objective: string,
+  brief: CreativeBrief,
+  projectId?: string | null
+): Promise<Comparison> {
   const response = await fetch(`${API_BASE}/comparisons`, {
     method: "POST",
     headers: jsonHeaders(),
-    body: JSON.stringify({ asset_ids: assetIds, objective, brief })
+    body: JSON.stringify({ asset_ids: assetIds, objective, brief, project_id: projectId || null })
   });
   return parseResponse(response);
 }

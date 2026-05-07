@@ -4,6 +4,7 @@ export type Asset = {
   id: string;
   type: AssetType;
   name: string;
+  project_id?: string | null;
   source_url?: string | null;
   file_path?: string | null;
   extracted_text: string;
@@ -80,6 +81,7 @@ export type CreativeBrief = {
 
 export type Comparison = {
   id: string;
+  project_id?: string | null;
   objective: string;
   brief: CreativeBrief;
   status: "processing" | "complete" | "failed" | "cancelled";
@@ -87,6 +89,14 @@ export type Comparison = {
   recommendation: Recommendation;
   suggestions: Suggestion[];
   jobs?: ComparisonJob[];
+  created_at: string;
+};
+
+export type Project = {
+  id: string;
+  name: string;
+  description: string;
+  status: "active" | "archived";
   created_at: string;
 };
 

@@ -106,6 +106,32 @@ test("creates public share links for completed reports", async () => {
   assert.equal(report.json.title, "Stimli Creative Decision Report");
 });
 
+test("organizes assets and comparisons by project", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const project = await call("POST", "/api/projects", { name: "Launch project" }, headers);
+  assert.equal(project.statusCode, 200);
+
+  const projects = await call("GET", "/api/projects", null, headers);
+  assert.equal(projects.json.some((item) => item.id === project.json.id), true);
+
+  const seeded = await call("POST", "/api/demo/seed", { project_id: project.json.id }, headers);
+  assert.equal(seeded.json.every((asset) => asset.project_id === project.json.id), true);
+
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    {
+      asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id),
+      objective: "Keep this decision in the launch project.",
+      project_id: project.json.id
+    },
+    headers
+  );
+  assert.equal(comparison.statusCode, 200);
+  assert.equal(comparison.json.project_id, project.json.id);
+});
+
 test("scopes persistent objects by workspace header", async () => {
   const workspaceA = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const workspaceB = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;

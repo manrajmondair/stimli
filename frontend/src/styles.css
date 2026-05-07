@@ -489,6 +489,64 @@ textarea:focus {
   padding: 12px 14px;
 }
 
+.project-bar {
+  align-items: end;
+  background: #fffaf2;
+  border: 1px solid #e0d3c3;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(190px, 260px) minmax(220px, 1fr) auto auto;
+  margin: 0 auto 18px;
+  max-width: 1480px;
+  padding: 14px;
+}
+
+.project-bar label {
+  margin: 0;
+}
+
+.project-stats {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
+}
+
+.project-stats span {
+  background: #edf8f0;
+  border: 1px solid #c7e4d0;
+  border-radius: 999px;
+  color: #174633;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 8px 10px;
+}
+
+.upload-progress {
+  background: #f4eadc;
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.upload-progress span {
+  color: #4f5c54;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.upload-progress i {
+  background: #087f5b;
+  border-radius: 999px;
+  display: block;
+  height: 8px;
+}
+
 .results-stack {
   display: grid;
   gap: 18px;
@@ -986,6 +1044,7 @@ textarea:focus {
   }
 
   .workspace-grid,
+  .project-bar,
   .variant-grid,
   .suggestion-list,
   .outcome-grid,

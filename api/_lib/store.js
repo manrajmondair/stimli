@@ -4,6 +4,7 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
   assets: new Map(),
   comparisons: new Map(),
   outcomes: new Map(),
+  projects: new Map(),
   usageEvents: new Map(),
   users: new Map(),
   teams: new Map(),
@@ -65,6 +66,46 @@ export async function getAsset(assetId, workspaceId = "public") {
   }
   await ensureTables(sql);
   const rows = await sql`select payload from stimli_assets where id = ${assetId} and workspace_id = ${workspaceId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function saveProject(project) {
+  const sql = getSql();
+  const workspaceId = workspaceForPayload(project);
+  if (!sql) {
+    memoryStore.projects.set(project.id, project);
+    return project;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_projects (id, workspace_id, payload, created_at)
+    values (${project.id}, ${workspaceId}, ${sql.json(project)}, ${project.created_at})
+    on conflict (id) do update
+    set workspace_id = excluded.workspace_id,
+        payload = excluded.payload,
+        created_at = excluded.created_at
+  `;
+  return project;
+}
+
+export async function listProjects(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.projects.values()].filter((project) => workspaceForPayload(project) === workspaceId).sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_projects where workspace_id = ${workspaceId} order by created_at desc`;
+  return rows.map((row) => row.payload);
+}
+
+export async function getProject(projectId, workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    const project = memoryStore.projects.get(projectId) || null;
+    return project && workspaceForPayload(project) === workspaceId ? project : null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_projects where id = ${projectId} and workspace_id = ${workspaceId} limit 1`;
   return rows[0]?.payload || null;
 }
 
@@ -480,6 +521,14 @@ async function ensureTables(sql) {
       )
     `;
     await tx`
+      create table if not exists stimli_projects (
+        id text primary key,
+        workspace_id text not null default 'public',
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
       create table if not exists stimli_comparisons (
         id text primary key,
         workspace_id text not null default 'public',
@@ -574,10 +623,12 @@ async function ensureTables(sql) {
       )
     `;
     await tx`alter table stimli_assets add column if not exists workspace_id text not null default 'public'`;
+    await tx`alter table stimli_projects add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_comparisons add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_outcomes add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_usage_events add column if not exists workspace_id text not null default 'public'`;
     await tx`create index if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`;
+    await tx`create index if not exists stimli_projects_workspace_idx on stimli_projects (workspace_id, created_at desc)`;
     await tx`create index if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`;
     await tx`create index if not exists stimli_outcomes_workspace_idx on stimli_outcomes (workspace_id, created_at desc)`;
     await tx`create index if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`;

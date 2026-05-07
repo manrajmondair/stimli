@@ -29,14 +29,17 @@ import {
 import {
   getAsset,
   getComparison,
+  getProject,
   countUsageEvents,
   listAssets,
   listComparisons,
   listOutcomes,
+  listProjects,
   getShareLink,
   saveAsset,
   saveComparison,
   saveOutcome,
+  saveProject,
   saveShareLink,
   saveUsageEvent,
   storageHealth
@@ -82,7 +85,13 @@ export default async function handler(request, response) {
     }
 
     if (request.method === "POST" && apiPath === "/demo/seed") {
-      return sendJson(response, 200, await seedDemo(workspaceId));
+      const payload = await parseJson(request);
+      const projectId = await resolveProjectId(payload.project_id, workspaceId);
+      return sendJson(response, 200, await seedDemo(workspaceId, projectId));
+    }
+
+    if (segments[0] === "projects") {
+      return await handleProjects(request, response, segments, workspaceId);
     }
 
     if (segments[0] === "assets") {
@@ -111,6 +120,32 @@ export default async function handler(request, response) {
     }
     return sendJson(response, status, { detail: message });
   }
+}
+
+async function handleProjects(request, response, segments, workspaceId) {
+  if (request.method === "GET" && segments.length === 1) {
+    return sendJson(response, 200, await listProjects(workspaceId));
+  }
+
+  if (request.method === "POST" && segments.length === 1) {
+    const payload = await parseJson(request);
+    const name = String(payload.name || "").trim();
+    if (name.length < 2) {
+      throw httpError(400, "Project name is required.");
+    }
+    const project = {
+      id: newId("project"),
+      name: name.slice(0, 120),
+      description: String(payload.description || "").trim().slice(0, 500),
+      status: ["active", "archived"].includes(payload.status) ? payload.status : "active",
+      workspace_id: workspaceId,
+      created_at: nowIso()
+    };
+    await saveProject(project);
+    return sendJson(response, 200, project);
+  }
+
+  return sendJson(response, 405, { detail: "Method not allowed" });
 }
 
 async function handleAuth(request, response, segments) {
@@ -154,6 +189,7 @@ async function handleAssets(request, response, segments, workspaceId) {
     const assetId = newId("asset");
     const url = fields.url || "";
     const finalName = fields.name || url || file?.filename || "Untitled asset";
+    const projectId = await resolveProjectId(fields.project_id || fields.projectId, workspaceId);
     let extractedText = fields.text || "";
     let extractionMetadata = {};
 
@@ -228,6 +264,7 @@ async function handleAssets(request, response, segments, workspaceId) {
       duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
       metadata: { ...baseMetadata, ...extractionMetadata },
       workspace_id: workspaceId,
+      project_id: projectId,
       created_at: nowIso()
     };
     await saveAsset(asset);
@@ -291,6 +328,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
       }
       assets.push(asset);
     }
+    const projectId = await resolveComparisonProjectId(payload.project_id || payload.projectId, assets, workspaceId);
 
     const comparisonId = newId("cmp");
     const createdAt = nowIso();
@@ -298,6 +336,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
       ? await createAsyncComparison(comparisonId, payload.objective, assets, createdAt, payload.brief)
       : await compareAssets(comparisonId, payload.objective, assets, createdAt, payload.brief);
     rawComparison.workspace_id = workspaceId;
+    rawComparison.project_id = projectId;
     const comparison = publicComparison(rawComparison);
     await saveComparison(comparison);
     return sendJson(response, comparison.status === "processing" ? 202 : 200, comparison);
@@ -340,6 +379,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
         focus
       },
       workspace_id: workspaceId,
+      project_id: comparison.project_id || null,
       created_at: nowIso()
     };
     await saveAsset(asset);
@@ -452,7 +492,7 @@ async function buildReport(comparisonId, workspaceId) {
   };
 }
 
-async function seedDemo(workspaceId) {
+async function seedDemo(workspaceId, projectId = null) {
   const samples = [
     {
       id: newId("asset"),
@@ -463,6 +503,7 @@ async function seedDemo(workspaceId) {
       duration_seconds: 28,
       metadata: { demo: true, channel: "paid social" },
       workspace_id: workspaceId,
+      project_id: projectId,
       created_at: nowIso()
     },
     {
@@ -474,6 +515,7 @@ async function seedDemo(workspaceId) {
       duration_seconds: 25,
       metadata: { demo: true, channel: "paid social" },
       workspace_id: workspaceId,
+      project_id: projectId,
       created_at: nowIso()
     },
     {
@@ -485,6 +527,7 @@ async function seedDemo(workspaceId) {
         "Lumina Hydration System. New customer bundle. Save 20 percent today. Dermatologist tested formula with ceramides, peptides, and daily SPF support. Shop the starter kit now and get free shipping.",
       metadata: { demo: true, channel: "landing page" },
       workspace_id: workspaceId,
+      project_id: projectId,
       created_at: nowIso()
     }
   ];
@@ -993,6 +1036,30 @@ function workspaceForRequest(request) {
     throw httpError(400, "Invalid workspace id.");
   }
   return workspaceId;
+}
+
+async function resolveProjectId(rawProjectId, workspaceId) {
+  const projectId = String(rawProjectId || "").trim();
+  if (!projectId || projectId === "all") {
+    return null;
+  }
+  if (!/^[A-Za-z0-9_-]{3,96}$/.test(projectId)) {
+    throw httpError(400, "Invalid project id.");
+  }
+  const project = await getProject(projectId, workspaceId);
+  if (!project) {
+    throw httpError(404, "Project not found.");
+  }
+  return project.id;
+}
+
+async function resolveComparisonProjectId(rawProjectId, assets, workspaceId) {
+  const explicitProjectId = await resolveProjectId(rawProjectId, workspaceId);
+  if (explicitProjectId) {
+    return explicitProjectId;
+  }
+  const assetProjectIds = [...new Set(assets.map((asset) => asset.project_id).filter(Boolean))];
+  return assetProjectIds.length === 1 ? assetProjectIds[0] : null;
 }
 
 async function enforceUsageLimit(request, workspaceId, kind, limit) {

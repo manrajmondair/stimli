@@ -27,9 +27,10 @@ import {
 } from "lucide-react";
 import {
   cancelComparison,
-  createBriefComparison,
+  createBriefComparisonForProject,
   createChallenger,
   createOutcome,
+  createProject,
   createShareLink,
   createTextAsset,
   getBrainProviders,
@@ -39,6 +40,7 @@ import {
   getReportMarkdown,
   getSharedReport,
   getSession,
+  listProjects,
   loginWithPasskey,
   logout,
   listAssets,
@@ -55,6 +57,7 @@ import type {
   CreativeBrief,
   LearningSummary,
   OutcomeCreate,
+  Project,
   Report,
   ScoreBreakdown,
   Suggestion,
@@ -89,8 +92,10 @@ export function App() {
 }
 
 function WorkspaceApp() {
+  const [projects, setProjects] = useState<Project[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [comparisons, setComparisons] = useState<Comparison[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("all");
   const [selected, setSelected] = useState<string[]>([]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [learning, setLearning] = useState<LearningSummary | null>(null);
@@ -102,6 +107,8 @@ function WorkspaceApp() {
   const [url, setUrl] = useState("");
   const [durationSeconds, setDurationSeconds] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [objective, setObjective] = useState("Pick the DTC creative most likely to earn attention, build memory, and convert.");
   const [brandName, setBrandName] = useState("Lumina");
   const [audience, setAudience] = useState("busy women with dry or sensitive skin");
@@ -118,7 +125,16 @@ function WorkspaceApp() {
     initializeWorkspace();
   }, []);
 
-  const selectedAssets = useMemo(() => assets.filter((asset) => selected.includes(asset.id)), [assets, selected]);
+  const activeProjectId = selectedProjectId === "all" ? null : selectedProjectId;
+  const visibleAssets = useMemo(
+    () => (activeProjectId ? assets.filter((asset) => asset.project_id === activeProjectId) : assets),
+    [activeProjectId, assets]
+  );
+  const visibleComparisons = useMemo(
+    () => (activeProjectId ? comparisons.filter((item) => item.project_id === activeProjectId) : comparisons),
+    [activeProjectId, comparisons]
+  );
+  const selectedAssets = useMemo(() => visibleAssets.filter((asset) => selected.includes(asset.id)), [visibleAssets, selected]);
   const brief = useMemo<CreativeBrief>(
     () => ({
       brand_name: brandName,
@@ -143,12 +159,14 @@ function WorkspaceApp() {
 
   async function refreshWorkspace() {
     try {
-      const [assetList, comparisonList, learningSummary, providerList] = await Promise.all([
+      const [projectList, assetList, comparisonList, learningSummary, providerList] = await Promise.all([
+        listProjects(),
         listAssets(),
         listComparisons(),
         getLearningSummary(),
         getBrainProviders()
       ]);
+      setProjects(projectList);
       setAssets(assetList);
       setComparisons(comparisonList);
       setLearning(learningSummary);
@@ -207,11 +225,32 @@ function WorkspaceApp() {
     }
   }
 
+  async function handleCreateProject() {
+    if (!projectName.trim()) {
+      setError("Add a project name.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const project = await createProject({ name: projectName });
+      setProjects([project, ...projects]);
+      setSelectedProjectId(project.id);
+      setSelected([]);
+      setComparison(null);
+      setProjectName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create project.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSeed() {
     setBusy(true);
     setError(null);
     try {
-      const seeded = await seedDemo();
+      const seeded = await seedDemo(activeProjectId);
       await refreshWorkspace();
       setSelected(seeded.slice(0, 2).map((asset) => asset.id));
     } catch (err) {
@@ -230,13 +269,18 @@ function WorkspaceApp() {
     setError(null);
     try {
       const parsedDuration = durationSeconds ? Number(durationSeconds) : undefined;
+      if (file) {
+        setUploadProgress(0);
+      }
       const asset = await createTextAsset({
         assetType,
         name,
         text,
         url: url || undefined,
         durationSeconds: Number.isFinite(parsedDuration) ? parsedDuration : undefined,
-        file
+        file,
+        projectId: activeProjectId,
+        onUploadProgress: setUploadProgress
       });
       setAssets([asset, ...assets]);
       setSelected((current) => [...new Set([...current, asset.id])].slice(-4));
@@ -245,9 +289,11 @@ function WorkspaceApp() {
       setUrl("");
       setDurationSeconds("");
       setFile(null);
+      setUploadProgress(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create asset.");
     } finally {
+      setUploadProgress(null);
       setBusy(false);
     }
   }
@@ -260,7 +306,7 @@ function WorkspaceApp() {
     setBusy(true);
     setError(null);
     try {
-      const nextComparison = await createBriefComparison(selected, objective, brief);
+      const nextComparison = await createBriefComparisonForProject(selected, objective, brief, activeProjectId);
       setComparison(nextComparison);
       await refreshWorkspace();
       if (nextComparison.status === "processing") {
@@ -312,6 +358,12 @@ function WorkspaceApp() {
     setSelected((current) => (current.includes(assetId) ? current.filter((id) => id !== assetId) : [...current, assetId]));
   }
 
+  function handleProjectChange(projectId: string) {
+    setSelectedProjectId(projectId);
+    setSelected([]);
+    setComparison(null);
+  }
+
   return (
     <main className="app-shell">
       <section className="top-band">
@@ -344,6 +396,32 @@ function WorkspaceApp() {
       </section>
 
       {error && <div className="notice">{error}</div>}
+
+      <section className="project-bar">
+        <label>
+          Project
+          <select value={selectedProjectId} onChange={(event) => handleProjectChange(event.target.value)}>
+            <option value="all">All projects</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          New project
+          <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Q3 hydration launch" />
+        </label>
+        <button className="button secondary" onClick={handleCreateProject} disabled={busy || !projectName.trim()}>
+          <Plus size={18} />
+          Create
+        </button>
+        <div className="project-stats">
+          <span>{visibleAssets.length} variants</span>
+          <span>{visibleComparisons.length} decisions</span>
+        </div>
+      </section>
 
       <section className="workspace-grid">
         <aside className="panel intake-panel">
@@ -398,6 +476,12 @@ function WorkspaceApp() {
             <Plus size={18} />
             Add to comparison
           </button>
+          {uploadProgress !== null && (
+            <div className="upload-progress">
+              <span>Uploading {uploadProgress}%</span>
+              <i style={{ width: `${uploadProgress}%` }} />
+            </div>
+          )}
 
           <div className="objective-box">
             <label>
@@ -446,10 +530,10 @@ function WorkspaceApp() {
           </div>
 
           <div className="asset-list">
-            {assets.length === 0 ? (
+            {visibleAssets.length === 0 ? (
               <EmptyState />
             ) : (
-              assets.map((asset) => (
+              visibleAssets.map((asset) => (
                 <button
                   className={`asset-row ${selected.includes(asset.id) ? "selected" : ""}`}
                   key={asset.id}
@@ -472,10 +556,10 @@ function WorkspaceApp() {
               <History size={17} />
               <h2>Recent Decisions</h2>
             </div>
-            {comparisons.length === 0 ? (
+            {visibleComparisons.length === 0 ? (
               <p className="muted">No comparisons yet.</p>
             ) : (
-              comparisons.slice(0, 5).map((item) => (
+              visibleComparisons.slice(0, 5).map((item) => (
                 <button className="history-row" key={item.id} onClick={() => setComparison(item)}>
                   <strong>{item.status === "processing" ? "Processing comparison" : item.recommendation.headline}</strong>
                   <small>
