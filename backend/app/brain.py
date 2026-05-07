@@ -106,10 +106,17 @@ class TribeAdapter(BrainResponseProvider):
 
     def _load_model(self, tribe_model_cls):
         if self._model is None:
+            feature_device = _feature_device(self.device)
             self._model = tribe_model_cls.from_pretrained(
                 self.checkpoint,
                 cache_folder=self.cache_folder,
                 device=self.device,
+                config_update={
+                    "data.text_feature.device": feature_device,
+                    "data.image_feature.image.device": feature_device,
+                    "data.audio_feature.device": feature_device,
+                    "data.video_feature.image.device": feature_device,
+                },
             )
         return self._model
 
@@ -271,6 +278,17 @@ def _tribe_note(attention: float, memory: float, load: float) -> str:
     if attention <= 0.42:
         return "TRIBE predicts a low-response segment"
     return "TRIBE response is stable"
+
+
+def _feature_device(device: str) -> str:
+    if device != "auto":
+        return device
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
 
 
 def _text_events_dataframe(text: str):

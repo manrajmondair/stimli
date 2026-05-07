@@ -16,7 +16,7 @@ class FakeModel:
     calls: list[str] = []
 
     @classmethod
-    def from_pretrained(cls, checkpoint: str, cache_folder: str, device: str):
+    def from_pretrained(cls, checkpoint: str, cache_folder: str, device: str, **_kwargs):
         cls.calls.append(f"{checkpoint}:{cache_folder}:{device}")
         return cls()
 
