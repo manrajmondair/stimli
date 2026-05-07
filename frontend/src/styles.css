@@ -13,24 +13,31 @@
 }
 
 :root {
-  --paper: #f6f4ee;
-  --paper-deep: #ebe6dc;
+  --paper: #f6fbff;
+  --paper-deep: #dcecff;
   --surface: #ffffff;
-  --surface-muted: #faf9f5;
-  --ink: #11110f;
-  --ink-soft: #37342f;
-  --muted: #4f4c45;
-  --subtle: #706b61;
-  --line: #d8d4ca;
-  --line-soft: #e4e0d7;
-  --win: #227553;
+  --surface-muted: #f4f9ff;
+  --ink: #0c1018;
+  --ink-soft: #283141;
+  --muted: #516073;
+  --subtle: #738196;
+  --line: #d2e1f1;
+  --line-soft: #e3edf8;
+  --win: #2f6df6;
   --risk: #a64e35;
-  --warn: #c36b43;
-  --memory: #8a7f68;
-  --electric: #1d9bcf;
+  --warn: #d17b54;
+  --memory: #7db4ea;
+  --electric: #3478ff;
+  --sky: #63adeb;
+  --sky-deep: #3f8dde;
+  --crystal: #e9f8ff;
+  --crystal-edge: rgba(255, 255, 255, 0.74);
   --radius-control: 7px;
   --radius-surface: 8px;
-  --shadow-artifact: 0 30px 90px rgba(17, 17, 15, 0.24);
+  --shadow-artifact:
+    0 34px 90px rgba(35, 104, 180, 0.28),
+    0 0 0 1px rgba(255, 255, 255, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
   color: var(--ink);
   background: var(--paper);
   font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
@@ -91,8 +98,8 @@ p {
 
 .button {
   align-items: center;
-  background: var(--ink);
-  border: 1px solid var(--ink);
+  background: var(--electric);
+  border: 1px solid var(--electric);
   border-radius: var(--radius-control);
   color: #fff;
   display: inline-flex;
@@ -110,7 +117,8 @@ p {
 }
 
 .button:hover:not(:disabled) {
-  background: #24231f;
+  background: #245fe4;
+  border-color: #245fe4;
 }
 
 .button.secondary {
@@ -131,9 +139,17 @@ p {
 }
 
 .landing-actions .button.ghost {
-  background: var(--surface);
-  border-color: var(--line);
-  color: var(--ink);
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.32);
+  color: #fff;
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+
+.landing-actions .button.primary {
+  background: #fff;
+  border-color: #fff;
+  color: var(--sky-deep);
+  box-shadow: 0 16px 36px rgba(24, 89, 160, 0.24);
 }
 
 .button.full {
@@ -182,7 +198,8 @@ p {
 
 .landing-shell {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.55), transparent 28rem),
+    radial-gradient(circle at 50% -10%, rgba(80, 169, 239, 0.42), transparent 38rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.8), transparent 32rem),
     var(--paper);
   color: var(--ink);
   min-height: 100vh;
@@ -195,8 +212,8 @@ p {
 
 .landing-nav {
   align-items: center;
-  background: rgba(246, 244, 238, 0.92);
-  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(52, 131, 215, 0.96), rgba(77, 157, 226, 0.88));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.24);
   display: grid;
   gap: 22px;
   grid-template-columns: auto 1fr auto;
@@ -205,7 +222,19 @@ p {
   position: sticky;
   top: 0;
   z-index: 20;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(18px) saturate(1.25);
+}
+
+.landing-shell .brand-mark,
+.landing-nav a:not(.brand-mark):not(.nav-cta) {
+  color: #fff;
+  text-shadow: 0 1px 16px rgba(24, 78, 133, 0.18);
+}
+
+.landing-shell .brand-mark span {
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--sky-deep);
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.32);
 }
 
 .brand-mark {
@@ -237,18 +266,18 @@ p {
 }
 
 .landing-nav a:not(.brand-mark):not(.nav-cta) {
-  color: var(--muted);
   font-size: 0.9rem;
   font-weight: 650;
 }
 
 .nav-cta {
-  background: var(--ink);
+  background: rgba(255, 255, 255, 0.96);
   border-radius: var(--radius-control);
-  color: #fff;
+  color: var(--sky-deep);
   font-size: 0.88rem;
   font-weight: 760;
   padding: 10px 15px;
+  box-shadow: 0 14px 34px rgba(29, 93, 170, 0.22);
 }
 
 .landing-hero {
@@ -258,18 +287,36 @@ p {
   min-height: calc(100vh - 70px);
   padding: clamp(56px, 8vw, 104px) clamp(20px, 5vw, 72px) 34px;
   position: relative;
+  background:
+    radial-gradient(circle at 80% 43%, rgba(255, 255, 255, 0.95) 0 4.4rem, rgba(255, 255, 255, 0.42) 4.5rem, transparent 8rem),
+    linear-gradient(180deg, #438fe0 0%, #69b4ed 38%, #dff4ff 78%, rgba(246, 251, 255, 0.94) 100%);
 }
 
 .landing-hero::before {
   background:
-    linear-gradient(var(--line-soft) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
-  background-size: 52px 52px;
+    linear-gradient(118deg, transparent 0 16%, rgba(255, 255, 255, 0.36) 16.2% 16.8%, transparent 17% 100%),
+    linear-gradient(62deg, transparent 0 31%, rgba(255, 255, 255, 0.24) 31.2% 31.8%, transparent 32% 100%),
+    radial-gradient(circle at 77% 44%, rgba(255, 255, 255, 0.78), transparent 13rem);
   content: "";
   inset: 0;
-  opacity: 0.32;
+  opacity: 0.9;
   pointer-events: none;
   position: absolute;
+}
+
+.landing-hero::after {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.76), rgba(135, 203, 247, 0.25) 46%, rgba(255, 255, 255, 0.78)),
+    linear-gradient(28deg, rgba(38, 125, 213, 0.42), transparent 58%);
+  bottom: -1px;
+  clip-path: polygon(0 66%, 11% 53%, 22% 62%, 32% 44%, 44% 61%, 55% 50%, 66% 63%, 78% 45%, 91% 60%, 100% 52%, 100% 100%, 0 100%);
+  content: "";
+  height: min(35vh, 330px);
+  left: 0;
+  opacity: 0.7;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
 }
 
 .hero-copy {
@@ -280,29 +327,34 @@ p {
 }
 
 .hero-kicker {
-  border-left: 2px solid var(--ink);
-  color: var(--ink-soft);
+  border-left: 2px solid rgba(255, 255, 255, 0.86);
+  color: #fff;
   font-size: 0.95rem;
   font-weight: 720;
   margin-bottom: 22px;
   padding-left: 12px;
+  text-shadow: 0 2px 24px rgba(16, 83, 150, 0.32);
 }
 
 .landing-hero h1 {
-  color: var(--ink);
+  color: #fff;
   font-size: clamp(3rem, 7.2vw, 6.7rem);
   font-weight: 760;
   letter-spacing: 0;
   line-height: 0.92;
   max-width: 900px;
+  text-shadow:
+    0 2px 0 rgba(255, 255, 255, 0.08),
+    0 24px 80px rgba(27, 88, 154, 0.32);
 }
 
-.landing-hero p:not(.hero-kicker) {
-  color: var(--muted);
+.hero-copy > p:not(.hero-kicker) {
+  color: rgba(255, 255, 255, 0.9);
   font-size: clamp(1rem, 1.4vw, 1.18rem);
   line-height: 1.55;
   margin-top: 24px;
   max-width: 620px;
+  text-shadow: 0 2px 20px rgba(31, 92, 151, 0.22);
 }
 
 .landing-actions,
@@ -322,12 +374,14 @@ p {
 }
 
 .hero-signals span {
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.34);
   border-radius: var(--radius-control);
-  color: var(--muted);
+  color: #fff;
   font-size: 0.78rem;
   font-weight: 680;
   padding: 7px 9px;
+  backdrop-filter: blur(10px) saturate(1.2);
 }
 
 .product-scene {
@@ -337,12 +391,30 @@ p {
 }
 
 .scene-window {
-  background: var(--surface);
-  border: 1px solid #c9c3b8;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid var(--crystal-edge);
   border-radius: var(--radius-surface);
+  backdrop-filter: blur(20px) saturate(1.28);
   box-shadow: var(--shadow-artifact);
   color: var(--ink);
   overflow: hidden;
+  position: relative;
+}
+
+.scene-window::before {
+  background:
+    linear-gradient(124deg, transparent 0 43%, rgba(255, 255, 255, 0.28) 43.2% 43.8%, transparent 44%),
+    radial-gradient(circle at 88% 16%, rgba(90, 175, 242, 0.12), transparent 12rem);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.scene-window > * {
+  position: relative;
+  z-index: 1;
 }
 
 .scene-toolbar,
@@ -356,7 +428,7 @@ p {
 
 .scene-toolbar {
   align-items: center;
-  background: #fbfaf7;
+  background: rgba(255, 255, 255, 0.74);
   display: flex;
   justify-content: space-between;
   min-height: 50px;
@@ -370,7 +442,7 @@ p {
 }
 
 .scene-toolbar strong {
-  color: var(--win);
+  color: var(--electric);
 }
 
 .scene-decision {
@@ -789,15 +861,21 @@ p {
 /* App shell */
 
 .app-shell {
-  background: var(--paper);
+  background:
+    radial-gradient(circle at 78% 0%, rgba(109, 188, 246, 0.26), transparent 28rem),
+    radial-gradient(circle at 8% 30%, rgba(255, 255, 255, 0.8), transparent 22rem),
+    linear-gradient(180deg, #f8fcff 0%, var(--paper) 42%, #eef7ff 100%);
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100vh;
+  position: relative;
 }
 
 .app-sidebar {
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.86);
   border-right: 1px solid var(--line);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(18px) saturate(1.16);
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-height: 100vh;
@@ -846,8 +924,8 @@ p {
 
 .enterprise-nav button.active,
 .enterprise-nav button:hover {
-  background: var(--surface-muted);
-  color: var(--ink);
+  background: rgba(52, 120, 255, 0.1);
+  color: #1f5fdc;
 }
 
 .sidebar-footer {
@@ -873,9 +951,13 @@ p {
 
 .app-topbar {
   align-items: center;
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.9);
   border: 1px solid var(--line);
   border-radius: var(--radius-surface);
+  box-shadow:
+    0 18px 52px rgba(51, 119, 206, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(16px) saturate(1.16);
   display: flex;
   gap: 18px;
   justify-content: space-between;
@@ -932,9 +1014,13 @@ p {
 .panel,
 .enterprise-table-wrap,
 .metric-cell {
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.88);
   border: 1px solid var(--line);
   border-radius: var(--radius-surface);
+  box-shadow:
+    0 14px 38px rgba(54, 126, 210, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(14px) saturate(1.08);
 }
 
 .project-bar {
@@ -1216,7 +1302,9 @@ textarea::placeholder {
 
 .decision-band {
   align-items: center;
-  background: var(--ink);
+  background:
+    radial-gradient(circle at 88% 0%, rgba(101, 190, 255, 0.24), transparent 18rem),
+    linear-gradient(135deg, #09101c 0%, #123f7d 100%);
   border-radius: var(--radius-surface);
   color: #fff;
   display: grid;
@@ -1311,7 +1399,7 @@ textarea::placeholder {
 }
 
 .result-tabs button.active {
-  background: var(--ink);
+  background: var(--electric);
   color: #fff;
 }
 
