@@ -44,6 +44,7 @@ The recommended production path is to connect the GitHub repo to Vercel and let 
 Production environment variables:
 
 - `POSTGRES_URL` or `DATABASE_URL`: enables persistent production storage. Without it, Vercel uses warm-function memory only, which is useful for previews but not durable.
+- `BLOB_READ_WRITE_TOKEN`: enables private Vercel Blob storage for uploaded files. Without it, small files can still be inlined for local workflows, but production media uploads are not durable.
 - `TRIBE_INFERENCE_URL`: optional hosted TRIBE-compatible inference endpoint. The Vercel app calls this endpoint for brain-response timelines when configured.
 - `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
 - `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
@@ -52,16 +53,18 @@ The full local TRIBE model is too large and slow for a normal Vercel serverless 
 
 ### Modal GPU Inference
 
-The Modal app in `inference/tribe_modal.py` exposes a GPU endpoint for real TRIBE v2 inference. It uses a Modal Volume for model cache and two Modal Secrets:
+The Modal app in `inference/tribe_modal.py` exposes a GPU endpoint for real TRIBE v2 inference. It uses a Modal Volume for model cache and three Modal Secrets:
 
 - `stimli-huggingface` with `HF_TOKEN`
 - `stimli-modal-auth` with `STIMLI_MODAL_API_KEY`
+- `stimli-vercel-blob` with `BLOB_READ_WRITE_TOKEN`
 
 ```bash
 cd inference
 pip install -r requirements.txt
 modal secret create stimli-huggingface HF_TOKEN=...
 modal secret create stimli-modal-auth STIMLI_MODAL_API_KEY=...
+modal secret create stimli-vercel-blob BLOB_READ_WRITE_TOKEN=...
 modal deploy tribe_modal.py
 ```
 

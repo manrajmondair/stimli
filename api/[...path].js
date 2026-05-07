@@ -1,4 +1,5 @@
 import Busboy from "busboy";
+import { put } from "@vercel/blob";
 
 import {
   buildChallengerText,
@@ -107,6 +108,8 @@ async function handleAssets(request, response, segments, workspaceId) {
     if (["image", "audio", "video"].includes(assetType) && !extractedText) {
       extractedText = textFromFilename(finalName);
     }
+    const blobMetadata = file ? await storeUploadedFile(file, workspaceId, assetId) : {};
+    const shouldInlineFile = file?.buffer?.length && !blobMetadata.blob_url && file.buffer.length <= maxInlineFileBytes;
 
     const asset = {
       id: assetId,
@@ -120,18 +123,19 @@ async function handleAssets(request, response, segments, workspaceId) {
         original_filename: file?.filename || null,
         file_size: file?.buffer?.length || null,
         content_type: file?.mimeType || null,
-        ...(file?.buffer?.length && file.buffer.length <= maxInlineFileBytes
+        ...(shouldInlineFile
           ? {
               file_base64: file.buffer.toString("base64"),
               file_encoding: "base64"
             }
           : {}),
-        ...(file?.buffer?.length && file.buffer.length > maxInlineFileBytes
+        ...(file?.buffer?.length && !blobMetadata.blob_url && file.buffer.length > maxInlineFileBytes
           ? {
               file_omitted: true,
               file_limit_bytes: maxInlineFileBytes
             }
           : {}),
+        ...blobMetadata,
         ...extractionMetadata
       },
       workspace_id: workspaceId,
@@ -347,7 +351,38 @@ function publicAsset(asset) {
   const metadata = { ...(asset.metadata || {}) };
   delete metadata.file_base64;
   delete metadata.file_encoding;
+  delete metadata.blob_url;
+  delete metadata.blob_download_url;
   return { ...asset, metadata };
+}
+
+async function storeUploadedFile(file, workspaceId, assetId) {
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    return {};
+  }
+  const safeName = safeBlobName(file.filename || `${assetId}.bin`);
+  const pathname = `workspaces/${workspaceId}/assets/${assetId}/${safeName}`;
+  const blob = await put(pathname, file.buffer, {
+    access: "private",
+    addRandomSuffix: true,
+    contentType: file.mimeType || "application/octet-stream",
+    token: process.env.BLOB_READ_WRITE_TOKEN
+  });
+  return {
+    blob_access: "private",
+    blob_url: blob.url,
+    blob_download_url: blob.downloadUrl,
+    blob_pathname: blob.pathname,
+    blob_content_type: blob.contentType || file.mimeType || null,
+    blob_size: file.buffer.length,
+    blob_etag: blob.etag || null
+  };
+}
+
+function safeBlobName(name) {
+  const basename = String(name).split(/[\\/]/).pop() || "upload.bin";
+  const safe = basename.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return safe || "upload.bin";
 }
 
 function learningSummary(outcomes) {

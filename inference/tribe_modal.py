@@ -50,6 +50,7 @@ _transformers_auth_patched = False
     secrets=[
         modal.Secret.from_name("stimli-huggingface"),
         modal.Secret.from_name("stimli-modal-auth"),
+        modal.Secret.from_name("stimli-vercel-blob"),
     ],
 )
 @modal.fastapi_endpoint(method="POST", label="stimli-tribe", docs=True)
@@ -82,13 +83,18 @@ def warm() -> dict[str, Any]:
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("stimli-huggingface"), modal.Secret.from_name("stimli-modal-auth")],
+    secrets=[
+        modal.Secret.from_name("stimli-huggingface"),
+        modal.Secret.from_name("stimli-modal-auth"),
+        modal.Secret.from_name("stimli-vercel-blob"),
+    ],
 )
 def secret_status() -> dict[str, Any]:
     _configure_hf_auth(validate=False)
     hf_token = os.getenv("HF_TOKEN") or ""
     hub_token = os.getenv("HUGGING_FACE_HUB_TOKEN") or ""
     auth_token = os.getenv("STIMLI_MODAL_API_KEY") or ""
+    blob_token = os.getenv("BLOB_READ_WRITE_TOKEN") or ""
     hub_status = _hf_hub_status(hf_token or hub_token)
     return {
         "hf_token_present": bool(hf_token),
@@ -96,6 +102,7 @@ def secret_status() -> dict[str, Any]:
         "hub_token_present": bool(hub_token),
         "hub_token_prefix_ok": hub_token.startswith("hf_"),
         "auth_token_present": bool(auth_token),
+        "blob_token_present": bool(blob_token),
         **hub_status,
     }
 
@@ -254,15 +261,32 @@ def _events_for_asset(model, asset: dict[str, Any]):
 def _asset_file(asset: dict[str, Any]) -> Path | None:
     metadata = asset.get("metadata") or {}
     encoded = metadata.get("file_base64")
-    if not encoded:
-        return None
     suffix = Path(metadata.get("original_filename") or "").suffix
     if not suffix:
         suffix = _suffix_for_type(asset.get("type"))
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    handle.write(base64.b64decode(encoded))
+    if encoded:
+        handle.write(base64.b64decode(encoded))
+    elif metadata.get("blob_url") or metadata.get("blob_download_url"):
+        handle.write(_download_blob(metadata.get("blob_url") or metadata.get("blob_download_url")))
+    else:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+        return None
     handle.close()
     return Path(handle.name)
+
+
+def _download_blob(url: str) -> bytes:
+    import urllib.request
+
+    headers = {}
+    token = os.getenv("BLOB_READ_WRITE_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=180) as response:
+        return response.read()
 
 
 def _suffix_for_type(asset_type: str | None) -> str:

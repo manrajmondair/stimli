@@ -132,7 +132,7 @@ async function predictBrain(asset) {
           ...(process.env.TRIBE_API_KEY ? { Authorization: `Bearer ${process.env.TRIBE_API_KEY}` } : {})
         },
         body: JSON.stringify({ asset }),
-        signal: AbortSignal.timeout(Number(process.env.TRIBE_INFERENCE_TIMEOUT_MS || 25000))
+        signal: AbortSignal.timeout(Number(process.env.TRIBE_INFERENCE_TIMEOUT_MS || 55000))
       });
       if (!response.ok) {
         throw new Error(`Remote provider returned ${response.status}`);
