@@ -15,6 +15,7 @@ from fastapi import Header
 
 APP_NAME = "stimli-tribe-inference"
 CACHE_PATH = "/model-cache"
+HF_HOME = f"{CACHE_PATH}/huggingface"
 TRIBE_CHECKPOINT = os.getenv("STIMLI_TRIBE_CHECKPOINT", "facebook/tribev2")
 
 app = modal.App(APP_NAME)
@@ -36,6 +37,7 @@ image = (
 )
 
 _model = None
+_transformers_auth_patched = False
 
 
 @app.function(
@@ -53,6 +55,7 @@ _model = None
 @modal.fastapi_endpoint(method="POST", label="stimli-tribe", docs=True)
 def predict(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _check_auth(authorization)
+    _configure_hf_auth()
     asset = payload.get("asset") or {}
     model = _load_model()
     events = _events_for_asset(model, asset)
@@ -72,8 +75,130 @@ def predict(payload: dict[str, Any], authorization: str | None = Header(default=
     secrets=[modal.Secret.from_name("stimli-huggingface")],
 )
 def warm() -> dict[str, Any]:
+    _configure_hf_auth()
     model = _load_model()
     return {"status": "ok", "checkpoint": TRIBE_CHECKPOINT, "model": type(model).__name__}
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("stimli-huggingface"), modal.Secret.from_name("stimli-modal-auth")],
+)
+def secret_status() -> dict[str, Any]:
+    _configure_hf_auth(validate=False)
+    hf_token = os.getenv("HF_TOKEN") or ""
+    hub_token = os.getenv("HUGGING_FACE_HUB_TOKEN") or ""
+    auth_token = os.getenv("STIMLI_MODAL_API_KEY") or ""
+    hub_status = _hf_hub_status(hf_token or hub_token)
+    return {
+        "hf_token_present": bool(hf_token),
+        "hf_token_prefix_ok": hf_token.startswith("hf_"),
+        "hub_token_present": bool(hub_token),
+        "hub_token_prefix_ok": hub_token.startswith("hf_"),
+        "auth_token_present": bool(auth_token),
+        **hub_status,
+    }
+
+
+def _configure_hf_auth(validate: bool = True) -> None:
+    token = (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        or os.getenv("HF_HUB_TOKEN")
+    )
+    os.environ.setdefault("HF_HOME", HF_HOME)
+    os.environ.setdefault("HF_HUB_CACHE", f"{HF_HOME}/hub")
+    os.environ.setdefault("TRANSFORMERS_CACHE", f"{HF_HOME}/transformers")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    if not token:
+        if validate:
+            raise _http_error(500, "Hugging Face token secret is not configured.")
+        return
+    os.environ["HF_TOKEN"] = token
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+    os.environ["HF_HUB_TOKEN"] = token
+    _patch_transformers_auth(token)
+    try:
+        from huggingface_hub import login
+
+        login(token=token, add_to_git_credential=False)
+    except Exception:
+        pass
+
+
+def _patch_transformers_auth(token: str) -> None:
+    global _transformers_auth_patched
+    if _transformers_auth_patched:
+        return
+    try:
+        import transformers
+    except Exception:
+        return
+
+    class_names = [
+        "AutoConfig",
+        "AutoFeatureExtractor",
+        "AutoModel",
+        "AutoModelForCausalLM",
+        "AutoModelForTextEncoding",
+        "AutoProcessor",
+        "AutoTokenizer",
+        "MllamaForConditionalGeneration",
+        "SeamlessM4TModel",
+        "Wav2Vec2BertModel",
+        "WhisperModel",
+    ]
+    for class_name in class_names:
+        cls = getattr(transformers, class_name, None)
+        if cls is None or not hasattr(cls, "from_pretrained"):
+            continue
+        original = cls.from_pretrained
+
+        def build_wrapper(original_method):
+            def wrapped(inner_cls, pretrained_model_name_or_path, *args, **kwargs):
+                kwargs.setdefault("token", token)
+                return original_method(pretrained_model_name_or_path, *args, **kwargs)
+
+            return classmethod(wrapped)
+
+        cls.from_pretrained = build_wrapper(original)
+    _transformers_auth_patched = True
+
+
+def _hf_hub_status(token: str) -> dict[str, Any]:
+    status = {
+        "hf_whoami_ok": False,
+        "hf_whoami_error": None,
+        "llama_access_ok": False,
+        "llama_access_error": None,
+        "llama_config_download_ok": False,
+        "llama_config_download_error": None,
+    }
+    if not token:
+        return status
+    try:
+        from huggingface_hub import whoami
+
+        whoami(token=token)
+        status["hf_whoami_ok"] = True
+    except Exception as exc:
+        status["hf_whoami_error"] = type(exc).__name__
+    try:
+        from huggingface_hub import hf_hub_download, model_info
+
+        model_info("meta-llama/Llama-3.2-3B", token=token)
+        status["llama_access_ok"] = True
+        hf_hub_download(
+            "meta-llama/Llama-3.2-3B",
+            "config.json",
+            cache_dir=HF_HOME,
+            token=token,
+        )
+        status["llama_config_download_ok"] = True
+    except Exception as exc:
+        status["llama_access_error"] = type(exc).__name__
+        status["llama_config_download_error"] = type(exc).__name__
+    return status
 
 
 def _check_auth(authorization: str | None) -> None:
@@ -87,6 +212,7 @@ def _check_auth(authorization: str | None) -> None:
 def _load_model():
     global _model
     if _model is None:
+        _configure_hf_auth()
         import torch
         from tribev2 import TribeModel
 
@@ -280,3 +406,9 @@ def _http_error(status_code: int, detail: str):
 @app.local_entrypoint()
 def main():
     print(warm.remote())
+    print(secret_status.remote())
+
+
+@app.local_entrypoint()
+def check_secrets():
+    print(secret_status.remote())
