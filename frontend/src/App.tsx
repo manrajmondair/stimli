@@ -123,104 +123,89 @@ function LandingPage() {
           Stimli
         </a>
         <div>
-          <a href="#how-it-works">How it works</a>
+          <a href="#product">Product</a>
+          <a href="#inputs">Inputs</a>
           <a href="#sample-report">Sample report</a>
           <a href="/legal">Trust</a>
         </div>
         <a className="nav-cta" href="/app">
-          Start free analysis
+          Start free
         </a>
       </nav>
 
       <section className="landing-hero">
         <div className="hero-copy">
-          <p className="eyebrow">Pre-spend creative intelligence</p>
-          <h1>Know which creative to ship before you spend.</h1>
+          <h1>Creative testing before ad spend.</h1>
           <p>
-            Stimli compares scripts, pages, images, audio, and video with TRIBE-backed response signals, then turns the
-            evidence into one decision and the exact edits to make next.
+            Compare scripts, landing pages, images, audio, and video. Stimli gives you a winner, the evidence, and the
+            edits to make before a campaign burns budget.
           </p>
           <div className="landing-actions">
             <a className="button primary" href="/app">
               <Play size={18} />
-              Start free analysis
+              Start free
             </a>
             <a className="button ghost" href="#sample-report">
               <FileText size={18} />
-              View sample report
+              Sample report
             </a>
-          </div>
-          <div className="hero-signals">
-            <span>Free to start</span>
-            <span>Real TRIBE inference</span>
-            <span>Private uploads</span>
-            <span>Passkey accounts</span>
           </div>
         </div>
         <LandingProductScene />
       </section>
 
-      <section className="landing-section proof-strip">
-        <span>Built for DTC growth teams</span>
-        <span>Comparison-first workflow</span>
-        <span>Timestamped edit cards</span>
-        <span>Outcome calibration</span>
+      <section className="landing-section proof-strip" aria-label="Stimli product details">
+        <p>Free to start</p>
+        <p>TRIBE-backed signals</p>
+        <p>Private uploads</p>
+        <p>Passkey accounts</p>
       </section>
 
-      <section className="landing-section product-section">
+      <section className="landing-section product-section" id="product">
         <div>
-          <p className="eyebrow">Product workflow</p>
-          <h2>One clean path from variant chaos to a shipping decision.</h2>
+          <h2>One answer. Then the edit list.</h2>
         </div>
         <div className="workflow-grid" id="how-it-works">
           <article>
-            <Upload size={20} />
             <h3>Upload variants</h3>
             <p>Bring scripts, landing pages, static creative, audio, or short video into one comparison set.</p>
           </article>
           <article>
-            <Activity size={20} />
             <h3>Predict response</h3>
             <p>Blend brain-response timelines with hook, pacing, CTA, brand cue, offer, and clarity scoring.</p>
           </article>
           <article>
-            <Target size={20} />
             <h3>Ship or edit</h3>
             <p>Get the winner, the confidence, and concrete edits your team can apply before buying media.</p>
           </article>
         </div>
       </section>
 
-      <section className="landing-section multimodal-section">
+      <section className="landing-section multimodal-section" id="inputs">
         <div>
-          <p className="eyebrow">Multimodal inputs</p>
-          <h2>Creative intelligence before the ad account ever sees spend.</h2>
+          <h2>Not just video. Not just copy.</h2>
         </div>
         <div className="input-matrix">
           {["Script", "Landing page", "Static creative", "Audio", "Video"].map((item) => (
-            <span key={item}>{item}</span>
+            <p key={item}>{item}</p>
           ))}
         </div>
       </section>
 
       <section className="landing-section trust-section">
         <div>
-          <p className="eyebrow">Free-first infrastructure</p>
-          <h2>Clean enough for customers, light enough for a founder budget.</h2>
+          <h2>Built to be used, not watched in a demo.</h2>
         </div>
         <div className="trust-grid">
           <article>
-            <KeyRound size={20} />
             <strong>Passkey accounts</strong>
             <p>No paid auth provider required. Sessions and teams live in Postgres.</p>
           </article>
           <article>
-            <ShieldCheck size={20} />
             <strong>Private uploads</strong>
             <p>Media goes to private Blob storage and is hidden from public report payloads.</p>
           </article>
           <article>
-            <Gauge size={20} />
             <strong>Free-tier controls</strong>
             <p>Conservative quotas, one Modal container, and billing disabled until deliberately configured.</p>
           </article>
@@ -229,8 +214,7 @@ function LandingPage() {
 
       <section className="landing-section report-preview" id="sample-report">
         <div>
-          <p className="eyebrow">Sample decision report</p>
-          <h2>Every answer ends with what to do next.</h2>
+          <h2>Reports your team can actually act on.</h2>
           <p>
             Reports package the winner, score deltas, timeline evidence, and edit cards into a shareable artifact for
             creative, growth, and founder review.
@@ -240,7 +224,7 @@ function LandingPage() {
           </a>
         </div>
         <div className="report-card">
-          <span>Recommendation</span>
+          <p>Recommendation</p>
           <h3>Ship Variant A with one CTA edit</h3>
           <div className="report-score-row">
             <b>84</b>
@@ -255,9 +239,9 @@ function LandingPage() {
       </section>
 
       <section className="landing-final">
-        <h2>Stop guessing which creative deserves budget.</h2>
+        <h2>Know what deserves budget.</h2>
         <a className="button primary" href="/app">
-          Start free analysis
+          Start free
         </a>
       </section>
     </main>
@@ -277,27 +261,26 @@ function LandingProductScene() {
     <div className="product-scene" role="img" aria-label="Stimli creative comparison preview">
       <div className="scene-window">
         <div className="scene-toolbar">
-          <span>Creative decision</span>
-          <strong>Processing complete</strong>
+          <p>Stimli</p>
+          <strong>Decision ready</strong>
         </div>
         <div className="scene-decision">
-          <p>Recommendation</p>
           <h2>Ship Variant A</h2>
           <div>
             <b>84</b>
-            <span>92% confidence</span>
+            <p>92% confidence</p>
           </div>
         </div>
         <div className="scene-grid">
           <article className="scene-variant winner">
-            <span>Variant A</span>
+            <p>Variant A</p>
             <strong>Pain-led hook</strong>
-            <small>+14 pts ahead</small>
+            <em>+14 pts ahead</em>
           </article>
           <article className="scene-variant">
-            <span>Variant B</span>
+            <p>Variant B</p>
             <strong>Generic product story</strong>
-            <small>Revise hook</small>
+            <em>Revise hook</em>
           </article>
         </div>
         <div className="scene-timeline">
