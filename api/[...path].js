@@ -631,6 +631,7 @@ async function refreshComparison(comparison, workspaceId) {
       brainByAssetId
     );
     completed.workspace_id = workspaceId;
+    completed.project_id = comparison.project_id || null;
     completed.jobs = updatedJobs;
     await saveComparison(publicComparison(completed));
     return completed;

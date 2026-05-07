@@ -225,31 +225,43 @@ test("creates async comparisons and finalizes completed remote jobs", async () =
   };
 
   try {
+    const project = await call("POST", "/api/projects", { name: "Async project" }, headers);
     const first = await call(
       "POST",
       "/api/assets",
-      { asset_type: "audio", name: "Audio A", text: "Stop wasting paid media spend. Try the starter kit today." },
+      {
+        asset_type: "audio",
+        name: "Audio A",
+        text: "Stop wasting paid media spend. Try the starter kit today.",
+        project_id: project.json.id
+      },
       headers
     );
     const second = await call(
       "POST",
       "/api/assets",
-      { asset_type: "audio", name: "Audio B", text: "Our brand has a modern solution for everyone." },
+      { asset_type: "audio", name: "Audio B", text: "Our brand has a modern solution for everyone.", project_id: project.json.id },
       headers
     );
     const created = await call(
       "POST",
       "/api/comparisons",
-      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Pick the stronger audio ad." },
+      {
+        asset_ids: [first.json.asset.id, second.json.asset.id],
+        objective: "Pick the stronger audio ad.",
+        project_id: project.json.id
+      },
       headers
     );
     assert.equal(created.statusCode, 202);
     assert.equal(created.json.status, "processing");
+    assert.equal(created.json.project_id, project.json.id);
     assert.equal(created.json.jobs.length, 2);
 
     const refreshed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
     assert.equal(refreshed.statusCode, 200);
     assert.equal(refreshed.json.status, "complete");
+    assert.equal(refreshed.json.project_id, project.json.id);
     assert.equal(refreshed.json.variants.length, 2);
     assert.equal(refreshed.json.variants[0].analysis.provider, "tribe-remote");
     assert.ok(refreshed.json.recommendation.headline);
