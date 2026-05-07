@@ -29,6 +29,7 @@ Stimli is configured as one Vercel project: the React dashboard builds to `front
 ```bash
 npm install
 npm run build
+npx vercel deploy --prod
 ```
 
 Vercel uses the root `vercel.json`:
@@ -37,6 +38,8 @@ Vercel uses the root `vercel.json`:
 - Output directory: `frontend/dist`
 - API runtime: `api/[...path].js`
 - SPA routing: all non-API routes fall back to `index.html`
+
+The recommended production path is to connect the GitHub repo to Vercel and let pushes to `main` deploy automatically. The CLI command above is useful for a manual production deployment after `vercel login`.
 
 Production environment variables:
 
