@@ -16,12 +16,38 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 ## Project Structure
 
 ```text
+api/         Vercel serverless API routes and production storage adapter
 backend/     FastAPI service, analysis pipeline, SQLite storage, tests
 frontend/    React/Vite dashboard for upload, comparison, and reports
 .github/     CI workflow
 ```
 
-## Quick Start
+## Deploy On Vercel
+
+Stimli is configured as one Vercel project: the React dashboard builds to `frontend/dist`, and the product API runs from same-origin `/api/*` serverless functions. There is no separate hosted frontend/backend split required for production.
+
+```bash
+npm install
+npm run build
+```
+
+Vercel uses the root `vercel.json`:
+
+- Build command: `npm run build`
+- Output directory: `frontend/dist`
+- API runtime: `api/[...path].js`
+- SPA routing: all non-API routes fall back to `index.html`
+
+Production environment variables:
+
+- `POSTGRES_URL` or `DATABASE_URL`: enables persistent production storage. Without it, Vercel uses warm-function memory only, which is useful for previews but not durable.
+- `TRIBE_INFERENCE_URL`: optional hosted TRIBE-compatible inference endpoint. The Vercel app calls this endpoint for brain-response timelines when configured.
+- `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
+- `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
+
+The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
+
+## Local Development
 
 ### Backend
 
@@ -66,15 +92,15 @@ Sample text assets live in `backend/data/sample_assets/`.
 
 ## API
 
-- `POST /assets` uploads or registers an asset.
-- `GET /assets` lists assets.
-- `POST /comparisons` creates an A/B or multi-variant comparison.
-- `GET /comparisons/{id}` returns scores, timeline signals, recommendation, and edit suggestions.
-- `GET /reports/{id}` returns a shareable report payload.
-- `GET /comparisons` lists saved decisions.
-- `POST /comparisons/{id}/outcomes` records post-launch results.
-- `GET /learning/summary` summarizes logged launch outcomes.
-- `POST /demo/seed` loads sample creative variants.
+- `POST /api/assets` uploads or registers an asset.
+- `GET /api/assets` lists assets.
+- `POST /api/comparisons` creates an A/B or multi-variant comparison.
+- `GET /api/comparisons/{id}` returns scores, timeline signals, recommendation, and edit suggestions.
+- `GET /api/reports/{id}` returns a shareable report payload.
+- `GET /api/comparisons` lists saved decisions.
+- `POST /api/comparisons/{id}/outcomes` records post-launch results.
+- `GET /api/learning/summary` summarizes logged launch outcomes.
+- `POST /api/demo/seed` loads sample creative variants.
 
 ## Notes On Model Use
 

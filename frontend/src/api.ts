@@ -11,7 +11,8 @@ import type {
   Report
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const localViteApi = import.meta.env.DEV && globalThis.location?.port === "5173" ? "http://localhost:8000" : "/api";
+const API_BASE = import.meta.env.VITE_API_BASE ?? localViteApi;
 
 export async function seedDemo(): Promise<Asset[]> {
   const response = await fetch(`${API_BASE}/demo/seed`, { method: "POST" });

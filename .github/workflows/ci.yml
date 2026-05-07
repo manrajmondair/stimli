@@ -23,18 +23,14 @@ jobs:
           cd backend
           pytest
 
-  frontend:
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm ci
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm run build
+      - name: Install web dependencies
+        run: npm ci
+      - name: Test Vercel API and build frontend
+        run: npm run test

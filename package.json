@@ -1,0 +1,21 @@
+{
+  "name": "stimli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=22 <24"
+  },
+  "scripts": {
+    "build": "npm run build --workspace stimli-frontend",
+    "test": "npm run test:api && npm run build",
+    "test:api": "node --test tests/**/*.test.js"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "postgres": "^3.4.5"
+  }
+}
