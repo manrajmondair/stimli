@@ -36,26 +36,39 @@ import {
 } from "./_lib/billing.js";
 import {
   getAsset,
+  getBrandProfile,
   getComparison,
   getProject,
   countUsageEvents,
   getTeamInviteByTokenHash,
   getTeamMember,
+  listAuditEvents,
   listAssets,
+  listBenchmarkRuns,
+  listBrandProfiles,
   listComparisons,
+  listGovernanceRequests,
+  listIntegrationJobs,
   listOutcomes,
   listProjects,
+  listTeamMembers,
   listTeamInvites,
   getShareLink,
+  saveAuditEvent,
   saveAsset,
+  saveBenchmarkRun,
+  saveBrandProfile,
   saveComparison,
+  saveGovernanceRequest,
+  saveIntegrationJob,
   saveOutcome,
   saveProject,
   saveTeamInvite,
   saveTeamMember,
   saveShareLink,
   saveUsageEvent,
-  storageHealth
+  storageHealth,
+  updateTeamMemberRole
 } from "./_lib/store.js";
 
 const assetTypes = new Set(["script", "landing_page", "image", "audio", "video"]);
@@ -109,6 +122,34 @@ export default async function handler(request, response) {
       return await handleBlobUpload(request, response, authContext);
     }
 
+    if (segments[0] === "admin") {
+      return await handleAdmin(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "audit") {
+      return await handleAudit(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "governance") {
+      return await handleGovernance(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "brand-profiles") {
+      return await handleBrandProfiles(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "library") {
+      return await handleLibrary(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "imports") {
+      return await handleImports(request, response, segments, authContext, workspaceId);
+    }
+
+    if (segments[0] === "validation") {
+      return await handleValidation(request, response, segments, authContext, workspaceId);
+    }
+
     if (request.method === "POST" && apiPath === "/demo/seed") {
       const payload = await parseJson(request);
       const projectId = await resolveProjectId(payload.project_id, workspaceId);
@@ -116,19 +157,19 @@ export default async function handler(request, response) {
     }
 
     if (segments[0] === "projects") {
-      return await handleProjects(request, response, segments, workspaceId);
+      return await handleProjects(request, response, segments, workspaceId, authContext);
     }
 
     if (segments[0] === "assets") {
-      return await handleAssets(request, response, segments, workspaceId);
+      return await handleAssets(request, response, segments, workspaceId, authContext);
     }
 
     if (segments[0] === "comparisons") {
-      return await handleComparisons(request, response, segments, workspaceId);
+      return await handleComparisons(request, response, segments, workspaceId, authContext);
     }
 
     if (segments[0] === "reports") {
-      return await handleReports(request, response, segments, workspaceId);
+      return await handleReports(request, response, segments, workspaceId, authContext);
     }
 
     if (request.method === "GET" && apiPath === "/learning/summary") {
@@ -147,12 +188,13 @@ export default async function handler(request, response) {
   }
 }
 
-async function handleProjects(request, response, segments, workspaceId) {
+async function handleProjects(request, response, segments, workspaceId, authContext) {
   if (request.method === "GET" && segments.length === 1) {
     return sendJson(response, 200, await listProjects(workspaceId));
   }
 
   if (request.method === "POST" && segments.length === 1) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const payload = await parseJson(request);
     const name = String(payload.name || "").trim();
     if (name.length < 2) {
@@ -167,6 +209,7 @@ async function handleProjects(request, response, segments, workspaceId) {
       created_at: nowIso()
     };
     await saveProject(project);
+    await audit(workspaceId, null, "project.created", "project", project.id, { name: project.name });
     return sendJson(response, 200, project);
   }
 
@@ -205,10 +248,7 @@ async function handleTeams(request, response, segments, authContext) {
     throw httpError(401, "Sign in before managing teams.");
   }
   if (segments[1] === "invites") {
-    const membership = await getTeamMember(authContext.team.id, authContext.user.id);
-    if (!membership || membership.role !== "owner") {
-      throw httpError(403, "Only team owners can manage invites.");
-    }
+    requirePermission(authContext, "members:manage");
     if (request.method === "GET") {
       const invites = await listTeamInvites(authContext.team.id);
       return sendJson(response, 200, invites.map((invite) => publicInvite(invite, authContext.team)));
@@ -222,18 +262,42 @@ async function handleTeams(request, response, segments, authContext) {
         team_id: authContext.team.id,
         team_name: authContext.team.name,
         email: normalizeInviteEmail(payload.email),
-        role: payload.role === "owner" ? "owner" : "member",
+        role: normalizeRole(payload.role || "analyst"),
         created_by: authContext.user.id,
         expires_at: new Date(Date.now() + Number(process.env.STIMLI_INVITE_TTL_DAYS || 14) * 24 * 60 * 60 * 1000).toISOString(),
         created_at: nowIso()
       };
       await saveTeamInvite(invite);
+      await audit(authContext.team.id, authContext.user, "invite.created", "invite", invite.id, {
+        email: invite.email,
+        role: invite.role
+      });
       const origin = requestOrigin(request);
       return sendJson(response, 200, {
         ...publicInvite(invite, authContext.team),
         url: `${origin}/invite/${token}`,
         token
       });
+    }
+  }
+  if (segments[1] === "members") {
+    requirePermission(authContext, "members:manage");
+    if (request.method === "GET" && segments.length === 2) {
+      const members = await listTeamMembers(authContext.team.id);
+      return sendJson(response, 200, members.map(publicMember));
+    }
+    if (request.method === "PATCH" && segments[2] && segments[3] === "role") {
+      const payload = await parseJson(request);
+      const role = normalizeRole(payload.role);
+      if (segments[2] === authContext.user.id && role !== "owner") {
+        throw httpError(400, "Owners cannot demote their own active session.");
+      }
+      const updated = await updateTeamMemberRole(authContext.team.id, segments[2], role);
+      if (!updated) {
+        throw httpError(404, "Team member not found.");
+      }
+      await audit(authContext.team.id, authContext.user, "member.role_updated", "user", segments[2], { role });
+      return sendJson(response, 200, publicMember(updated));
     }
   }
   return sendJson(response, 404, { detail: "Not found" });
@@ -268,6 +332,9 @@ async function handleInvites(request, response, segments, authContext) {
       accepted_by: authContext.user.id,
       accepted_at: nowIso()
     });
+    await audit(invite.team_id, authContext.user, "invite.accepted", "invite", invite.id, {
+      role: invite.role
+    });
     return sendJson(response, 200, await switchTeam(request, response, { team_id: invite.team_id }));
   }
   return sendJson(response, 405, { detail: "Method not allowed" });
@@ -278,10 +345,12 @@ async function handleBilling(request, response, segments, authContext) {
     return sendJson(response, 200, await billingStatus(authContext.team));
   }
   if (request.method === "POST" && segments[1] === "checkout") {
+    requirePermission(authContext, "billing:manage");
     const payload = await parseJson(request);
     return sendJson(response, 200, await createCheckoutSession(request, authContext.team, payload.plan));
   }
   if (request.method === "POST" && segments[1] === "portal") {
+    requirePermission(authContext, "billing:manage");
     return sendJson(response, 200, await createPortalSession(request, authContext.team));
   }
   if (request.method === "POST" && segments[1] === "webhook") {
@@ -291,12 +360,248 @@ async function handleBilling(request, response, segments, authContext) {
   return sendJson(response, 404, { detail: "Not found" });
 }
 
-async function handleAssets(request, response, segments, workspaceId) {
+async function handleAdmin(request, response, segments, authContext, workspaceId) {
+  requirePermission(authContext, "jobs:manage");
+  if (request.method === "GET" && segments[1] === "summary") {
+    const [comparisons, providers, auditEvents] = await Promise.all([
+      listComparisons(workspaceId),
+      providerHealth(),
+      listAuditEvents(workspaceId, 20)
+    ]);
+    const jobs = comparisonJobs(comparisons);
+    return sendJson(response, 200, {
+      jobs: jobSummary(jobs),
+      providers,
+      recent_events: auditEvents,
+      storage: storageHealth(),
+      inference: {
+        remote_configured: Boolean(process.env.TRIBE_INFERENCE_URL || process.env.TRIBE_CONTROL_URL),
+        control_configured: Boolean(process.env.TRIBE_CONTROL_URL),
+        extractor_configured: Boolean(process.env.STIMLI_EXTRACT_URL),
+        strict_remote: process.env.STIMLI_BRAIN_PROVIDER === "tribe-remote"
+      }
+    });
+  }
+  if (request.method === "GET" && segments[1] === "jobs") {
+    const status = new URL(request.url || "/", "http://stimli.local").searchParams.get("status");
+    const jobs = comparisonJobs(await listComparisons(workspaceId));
+    const filtered = status ? jobs.filter((job) => job.status === status) : jobs;
+    return sendJson(response, 200, filtered.slice(0, 200));
+  }
+  if (request.method === "POST" && segments[1] === "jobs" && segments[2] && segments[3] === "retry") {
+    const retried = await retryComparisonJob(segments[2], workspaceId, authContext.user);
+    return sendJson(response, 200, retried);
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleAudit(request, response, segments, authContext, workspaceId) {
+  requirePermission(authContext, "audit:read");
+  if (request.method === "GET" && segments[1] === "events") {
+    const limit = Number(new URL(request.url || "/", "http://stimli.local").searchParams.get("limit") || 100);
+    return sendJson(response, 200, await listAuditEvents(workspaceId, limit));
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleGovernance(request, response, segments, authContext, workspaceId) {
+  requirePermission(authContext, "governance:manage");
+  if (request.method === "GET" && segments[1] === "export") {
+    return sendJson(response, 200, await workspaceExport(workspaceId, authContext));
+  }
+  if (request.method === "GET" && segments[1] === "requests") {
+    return sendJson(response, 200, await listGovernanceRequests(workspaceId));
+  }
+  if (request.method === "POST" && segments[1] === "deletion-requests") {
+    const payload = await parseJson(request);
+    const requestRecord = {
+      id: newId("gov"),
+      request_type: "deletion",
+      target_type: normalizeTargetType(payload.target_type),
+      target_id: String(payload.target_id || "").trim().slice(0, 160),
+      reason: String(payload.reason || "").trim().slice(0, 1000),
+      status: "pending_review",
+      requested_by: authContext.user?.id || null,
+      workspace_id: workspaceId,
+      created_at: nowIso()
+    };
+    if (!requestRecord.target_id) {
+      throw httpError(400, "Deletion target is required.");
+    }
+    await saveGovernanceRequest(requestRecord);
+    await audit(workspaceId, authContext.user, "governance.deletion_requested", requestRecord.target_type, requestRecord.target_id, {
+      request_id: requestRecord.id
+    });
+    return sendJson(response, 200, requestRecord);
+  }
+  if (request.method === "GET" && segments[1] === "policy") {
+    return sendJson(response, 200, governancePolicy());
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleBrandProfiles(request, response, segments, authContext, workspaceId) {
+  if (request.method === "GET" && segments.length === 1) {
+    return sendJson(response, 200, await listBrandProfiles(workspaceId));
+  }
+  if (request.method === "POST" && segments.length === 1) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const payload = await parseJson(request);
+    const profile = normalizeBrandProfile(payload, workspaceId);
+    await saveBrandProfile(profile);
+    await audit(workspaceId, authContext.user, "brand_profile.created", "brand_profile", profile.id, { name: profile.name });
+    return sendJson(response, 200, profile);
+  }
+  const profileId = segments[1];
+  if (!profileId) {
+    return sendJson(response, 404, { detail: "Not found" });
+  }
+  const existing = await getBrandProfile(profileId, workspaceId);
+  if (!existing) {
+    throw httpError(404, "Brand profile not found.");
+  }
+  if (request.method === "GET" && segments.length === 2) {
+    return sendJson(response, 200, existing);
+  }
+  if (request.method === "PATCH" && segments.length === 2) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const payload = await parseJson(request);
+    const updated = normalizeBrandProfile({ ...existing, ...payload, id: existing.id, created_at: existing.created_at }, workspaceId);
+    updated.updated_at = nowIso();
+    await saveBrandProfile(updated);
+    await audit(workspaceId, authContext.user, "brand_profile.updated", "brand_profile", updated.id, { name: updated.name });
+    return sendJson(response, 200, updated);
+  }
+  if (request.method === "GET" && segments[2] === "export") {
+    return sendJson(response, 200, {
+      schema: "stimli.brand_profile.v1",
+      exported_at: nowIso(),
+      profile: existing
+    });
+  }
+  return sendJson(response, 405, { detail: "Method not allowed" });
+}
+
+async function handleLibrary(request, response, segments, authContext, workspaceId) {
+  requirePermission(authContext, "workspace:read", { allowAnonymous: true });
+  if (request.method === "GET" && segments[1] === "assets") {
+    const url = new URL(request.url || "/", "http://stimli.local");
+    const type = url.searchParams.get("type");
+    const projectId = url.searchParams.get("project_id");
+    const assets = (await listAssets(workspaceId))
+      .filter((asset) => !type || asset.type === type)
+      .filter((asset) => !projectId || asset.project_id === projectId)
+      .map((asset) => ({
+        ...publicAsset(asset),
+        library: {
+          text_length: String(asset.extracted_text || "").length,
+          extraction_status: asset.metadata?.extraction_status || "provided",
+          has_private_blob: Boolean(asset.metadata?.blob_pathname),
+          source: asset.source_url ? "url" : asset.metadata?.original_filename ? "file" : "text"
+        }
+      }));
+    return sendJson(response, 200, { assets, total: assets.length });
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleImports(request, response, segments, authContext, workspaceId) {
+  if (request.method === "GET" && segments.length === 1) {
+    requirePermission(authContext, "workspace:read", { allowAnonymous: true });
+    return sendJson(response, 200, await listIntegrationJobs(workspaceId));
+  }
+  if (request.method === "POST" && segments.length === 1) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const payload = await parseJson(request);
+    const items = Array.isArray(payload.items) ? payload.items.slice(0, 50) : [];
+    if (!items.length) {
+      throw httpError(400, "Import items are required.");
+    }
+    const imported = [];
+    const failed = [];
+    for (const item of items) {
+      try {
+        const assetType = assetTypes.has(item.asset_type) ? item.asset_type : "script";
+        const projectId = await resolveProjectId(item.project_id || payload.project_id, workspaceId);
+        const asset = {
+          id: newId("asset"),
+          type: assetType,
+          name: String(item.name || item.url || "Imported creative").trim().slice(0, 180),
+          source_url: item.url || null,
+          file_path: null,
+          extracted_text: String(item.text || item.notes || textFromFilename(item.name || item.url || "Imported creative")).trim(),
+          duration_seconds: item.duration_seconds ? Number(item.duration_seconds) : null,
+          metadata: { import_source: payload.source || "manual", import_platform: payload.platform || "csv" },
+          workspace_id: workspaceId,
+          project_id: projectId,
+          created_at: nowIso()
+        };
+        await saveAsset(asset);
+        imported.push(publicAsset(asset));
+      } catch (error) {
+        failed.push({ item, error: error.message });
+      }
+    }
+    const job = {
+      id: newId("import"),
+      platform: normalizePlatform(payload.platform),
+      source: payload.source || "manual",
+      status: failed.length ? (imported.length ? "partial" : "failed") : "complete",
+      total_items: items.length,
+      imported_items: imported.length,
+      failed_items: failed.length,
+      failures: failed.slice(0, 20),
+      workspace_id: workspaceId,
+      created_at: nowIso()
+    };
+    await saveIntegrationJob(job);
+    await audit(workspaceId, authContext.user, "import.completed", "import", job.id, {
+      platform: job.platform,
+      imported_items: imported.length,
+      failed_items: failed.length
+    });
+    return sendJson(response, 200, { job, assets: imported });
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleValidation(request, response, segments, authContext, workspaceId) {
+  requirePermission(authContext, "validation:manage", { allowAnonymous: true });
+  if (request.method === "GET" && segments[1] === "calibration") {
+    const [outcomes, comparisons, runs] = await Promise.all([
+      listOutcomes(null, workspaceId),
+      listComparisons(workspaceId),
+      listBenchmarkRuns(workspaceId)
+    ]);
+    return sendJson(response, 200, {
+      learning: learningSummary(outcomes, comparisons),
+      confidence_bins: confidenceBins(outcomes, comparisons),
+      benchmark_runs: runs.slice(0, 20)
+    });
+  }
+  if (request.method === "GET" && segments[1] === "benchmarks") {
+    return sendJson(response, 200, benchmarkCatalog());
+  }
+  if (request.method === "POST" && segments[1] === "benchmarks" && segments[2] === "run") {
+    const payload = await parseJson(request);
+    const run = await runBenchmark(payload.benchmark_id || "dtc-hooks-v1", workspaceId);
+    await saveBenchmarkRun(run);
+    await audit(workspaceId, authContext.user, "validation.benchmark_run", "benchmark", run.id, {
+      benchmark_id: run.benchmark_id,
+      accuracy: run.accuracy
+    });
+    return sendJson(response, 200, run);
+  }
+  return sendJson(response, 404, { detail: "Not found" });
+}
+
+async function handleAssets(request, response, segments, workspaceId, authContext) {
   if (request.method === "GET" && segments.length === 1) {
     return sendJson(response, 200, (await listAssets(workspaceId)).map(publicAsset));
   }
 
   if (request.method === "POST" && segments.length === 1) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const limits = await usageLimitsForWorkspace(workspaceId);
     await enforceUsageLimit(request, workspaceId, "asset", limits.asset);
     const { fields, files } = await parseForm(request);
@@ -388,6 +693,11 @@ async function handleAssets(request, response, segments, workspaceId) {
       created_at: nowIso()
     };
     await saveAsset(asset);
+    await audit(workspaceId, authContext.user, "asset.created", "asset", asset.id, {
+      name: asset.name,
+      type: asset.type,
+      project_id: asset.project_id || null
+    });
     return sendJson(response, 200, { asset: publicAsset(asset) });
   }
 
@@ -427,12 +737,13 @@ async function handleBlobUpload(request, response, authContext) {
   return sendJson(response, 200, result);
 }
 
-async function handleComparisons(request, response, segments, workspaceId) {
+async function handleComparisons(request, response, segments, workspaceId, authContext) {
   if (request.method === "GET" && segments.length === 1) {
     return sendJson(response, 200, (await listComparisons(workspaceId)).map(publicComparison));
   }
 
   if (request.method === "POST" && segments.length === 1) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const limits = await usageLimitsForWorkspace(workspaceId);
     await enforceUsageLimit(request, workspaceId, "comparison", limits.comparison);
     const payload = await parseJson(request);
@@ -453,13 +764,22 @@ async function handleComparisons(request, response, segments, workspaceId) {
 
     const comparisonId = newId("cmp");
     const createdAt = nowIso();
+    const brief = await resolveComparisonBrief(payload, workspaceId);
     const rawComparison = shouldCreateAsyncComparison(payload, assets)
-      ? await createAsyncComparison(comparisonId, payload.objective, assets, createdAt, payload.brief)
-      : await compareAssets(comparisonId, payload.objective, assets, createdAt, payload.brief);
+      ? await createAsyncComparison(comparisonId, payload.objective, assets, createdAt, brief)
+      : await compareAssets(comparisonId, payload.objective, assets, createdAt, brief);
     rawComparison.workspace_id = workspaceId;
     rawComparison.project_id = projectId;
+    if (payload.brand_profile_id || payload.brandProfileId) {
+      rawComparison.brand_profile_id = payload.brand_profile_id || payload.brandProfileId;
+    }
     const comparison = publicComparison(rawComparison);
     await saveComparison(comparison);
+    await audit(workspaceId, authContext.user, "comparison.created", "comparison", comparison.id, {
+      status: comparison.status,
+      asset_count: comparison.variants.length,
+      project_id: comparison.project_id || null
+    });
     return sendJson(response, comparison.status === "processing" ? 202 : 200, comparison);
   }
 
@@ -473,10 +793,14 @@ async function handleComparisons(request, response, segments, workspaceId) {
   }
 
   if (request.method === "POST" && segments[2] === "cancel") {
-    return sendJson(response, 200, await cancelComparison(comparisonId, workspaceId));
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const cancelled = await cancelComparison(comparisonId, workspaceId);
+    await audit(workspaceId, authContext.user, "comparison.cancelled", "comparison", comparisonId, {});
+    return sendJson(response, 200, cancelled);
   }
 
   if (request.method === "POST" && segments[2] === "challengers") {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
@@ -504,6 +828,11 @@ async function handleComparisons(request, response, segments, workspaceId) {
       created_at: nowIso()
     };
     await saveAsset(asset);
+    await audit(workspaceId, authContext.user, "asset.challenger_created", "asset", asset.id, {
+      comparison_id: comparison.id,
+      source_asset_id: sourceVariant.asset.id,
+      focus
+    });
     return sendJson(response, 200, { asset: publicAsset(asset), source_asset_id: sourceVariant.asset.id, focus });
   }
 
@@ -514,6 +843,7 @@ async function handleComparisons(request, response, segments, workspaceId) {
     }
 
     if (request.method === "POST") {
+      requirePermission(authContext, "workspace:write", { allowAnonymous: true });
       const comparison = await requireCompleteComparison(comparisonId, workspaceId);
       const payload = await parseJson(request);
       const variantIds = new Set(comparison.variants.map((variant) => variant.asset.id));
@@ -534,6 +864,10 @@ async function handleComparisons(request, response, segments, workspaceId) {
         created_at: nowIso()
       };
       await saveOutcome(outcome);
+      await audit(workspaceId, authContext.user, "outcome.created", "outcome", outcome.id, {
+        comparison_id: comparisonId,
+        asset_id: outcome.asset_id
+      });
       return sendJson(response, 200, outcome);
     }
   }
@@ -541,9 +875,14 @@ async function handleComparisons(request, response, segments, workspaceId) {
   return sendJson(response, 405, { detail: "Method not allowed" });
 }
 
-async function handleReports(request, response, segments, workspaceId) {
+async function handleReports(request, response, segments, workspaceId, authContext) {
   if (request.method === "POST" && segments[1] && segments[2] === "share") {
-    return sendJson(response, 200, await createShareLink(request, segments[1], workspaceId));
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const link = await createShareLink(request, segments[1], workspaceId);
+    await audit(workspaceId, authContext.user, "report.shared", "comparison", segments[1], {
+      expires_at: link.expires_at
+    });
+    return sendJson(response, 200, link);
   }
 
   if (request.method !== "GET" || !segments[1]) {
@@ -1223,6 +1562,25 @@ async function resolveComparisonProjectId(rawProjectId, assets, workspaceId) {
   return assetProjectIds.length === 1 ? assetProjectIds[0] : null;
 }
 
+async function resolveComparisonBrief(payload, workspaceId) {
+  const profileId = payload.brand_profile_id || payload.brandProfileId || "";
+  const explicitBrief = payload.brief || {};
+  if (!profileId) {
+    return explicitBrief;
+  }
+  const profile = await getBrandProfile(profileId, workspaceId);
+  if (!profile) {
+    throw httpError(404, "Brand profile not found.");
+  }
+  return {
+    ...(profile.brief || {}),
+    ...explicitBrief,
+    required_claims: mergeLists(profile.brief?.required_claims, explicitBrief.required_claims),
+    forbidden_terms: mergeLists(profile.brief?.forbidden_terms, explicitBrief.forbidden_terms),
+    voice_rules: mergeLists(profile.voice_rules, explicitBrief.voice_rules)
+  };
+}
+
 async function enforceUsageLimit(request, workspaceId, kind, limit) {
   if (process.env.STIMLI_DISABLE_RATE_LIMITS === "1" || !Number.isFinite(limit) || limit <= 0) {
     return;
@@ -1256,6 +1614,347 @@ function clientBucketKey(request, workspaceId) {
   const userAgent = getHeader(request, "user-agent").slice(0, 180);
   const source = forwardedFor || realIp ? `${forwardedFor || realIp}|${userAgent}` : `workspace:${workspaceId}`;
   return `client_${crypto.createHash("sha256").update(source).digest("hex").slice(0, 32)}`;
+}
+
+function requirePermission(authContext, permission, options = {}) {
+  if (options.allowAnonymous && !authContext.authenticated) {
+    return;
+  }
+  if (!authContext.authenticated) {
+    throw httpError(401, "Sign in before using this workspace control.");
+  }
+  if (!authContext.permissions?.includes(permission)) {
+    throw httpError(403, "Your role does not allow this action.");
+  }
+}
+
+async function audit(workspaceId, actor, action, targetType, targetId, details = {}) {
+  await saveAuditEvent({
+    id: newId("audit"),
+    workspace_id: workspaceId,
+    actor_id: actor?.id || "",
+    actor_email: actor?.email || "",
+    action,
+    target_type: targetType || "",
+    target_id: targetId || "",
+    details,
+    created_at: nowIso()
+  });
+}
+
+function publicMember(member) {
+  const user = member.user || {};
+  return {
+    user_id: member.user_id,
+    role: member.role || "viewer",
+    email: user.email || "",
+    name: user.name || "",
+    created_at: member.created_at,
+    updated_at: member.updated_at || null
+  };
+}
+
+function normalizeRole(value) {
+  let role = String(value || "").trim().toLowerCase();
+  if (role === "member") {
+    role = "analyst";
+  }
+  if (!["owner", "admin", "analyst", "viewer"].includes(role)) {
+    throw httpError(400, "Role must be owner, admin, analyst, or viewer.");
+  }
+  return role;
+}
+
+function comparisonJobs(comparisons) {
+  return comparisons.flatMap((comparison) =>
+    (comparison.jobs || []).map((job) => {
+      const variant = (comparison.variants || []).find((item) => item.asset?.id === job.asset_id);
+      return {
+        ...job,
+        comparison_id: comparison.id,
+        comparison_status: comparison.status,
+        asset_name: variant?.asset?.name || job.asset_id,
+        objective: comparison.objective,
+        project_id: comparison.project_id || null
+      };
+    })
+  );
+}
+
+function jobSummary(jobs) {
+  const counts = {
+    total: jobs.length,
+    queued: 0,
+    processing: 0,
+    running: 0,
+    retrying: 0,
+    complete: 0,
+    failed: 0,
+    cancelled: 0
+  };
+  for (const job of jobs) {
+    const status = job.status || "processing";
+    counts[status] = (counts[status] || 0) + 1;
+  }
+  return counts;
+}
+
+async function retryComparisonJob(jobId, workspaceId, actor) {
+  if (!process.env.TRIBE_CONTROL_URL) {
+    throw httpError(503, "Hosted job control is not configured.");
+  }
+  const comparisons = await listComparisons(workspaceId);
+  const comparison = comparisons.find((item) => (item.jobs || []).some((job) => job.job_id === jobId));
+  if (!comparison) {
+    throw httpError(404, "Job not found.");
+  }
+  const job = comparison.jobs.find((item) => item.job_id === jobId);
+  if (!["failed", "cancelled"].includes(job.status)) {
+    throw httpError(409, "Only failed or cancelled jobs can be retried.");
+  }
+  const maxRetries = Number(process.env.STIMLI_MODAL_JOB_RETRIES || 2);
+  const attempt = Number(job.attempt || 0) + 1;
+  if (attempt > maxRetries) {
+    throw httpError(409, "Retry limit reached for this job.");
+  }
+  const asset = await getAsset(job.asset_id, workspaceId);
+  if (!asset) {
+    throw httpError(404, "Job asset was deleted or is unavailable.");
+  }
+  const started = publicJobStatus(await startBrainJob(asset));
+  const retryJob = {
+    ...started,
+    attempt,
+    previous_job_id: job.job_id,
+    status: started.status || "queued",
+    updated_at: nowIso()
+  };
+  const jobs = comparison.jobs.map((item) => (item.job_id === jobId ? retryJob : item));
+  const updated = {
+    ...comparison,
+    status: "processing",
+    jobs,
+    variants: withJobStatuses(comparison.variants || [], jobs),
+    recommendation: {
+      winner_asset_id: null,
+      verdict: "revise",
+      confidence: 0,
+      headline: "Retrying hosted inference",
+      reasons: ["A failed inference job was restarted and this decision will refresh when the hosted model returns."]
+    }
+  };
+  await saveComparison(publicComparison(updated));
+  await audit(workspaceId, actor, "job.retried", "job", retryJob.job_id, {
+    comparison_id: comparison.id,
+    previous_job_id: job.job_id,
+    attempt
+  });
+  return publicComparison(updated);
+}
+
+async function workspaceExport(workspaceId, authContext) {
+  const [projects, assets, comparisons, outcomes, audits, brands, requests, benchmarkRuns, imports, members] = await Promise.all([
+    listProjects(workspaceId),
+    listAssets(workspaceId),
+    listComparisons(workspaceId),
+    listOutcomes(null, workspaceId),
+    listAuditEvents(workspaceId, 500),
+    listBrandProfiles(workspaceId),
+    listGovernanceRequests(workspaceId),
+    listBenchmarkRuns(workspaceId),
+    listIntegrationJobs(workspaceId),
+    authContext.team ? listTeamMembers(authContext.team.id) : []
+  ]);
+  return {
+    schema: "stimli.workspace_export.v1",
+    exported_at: nowIso(),
+    workspace_id: workspaceId,
+    policy: governancePolicy(),
+    projects,
+    assets: assets.map(publicAsset),
+    comparisons: comparisons.map(publicComparison),
+    outcomes,
+    audit_events: audits,
+    brand_profiles: brands,
+    governance_requests: requests,
+    benchmark_runs: benchmarkRuns,
+    imports,
+    members: members.map(publicMember)
+  };
+}
+
+function governancePolicy() {
+  return {
+    private_uploads: true,
+    public_share_links: true,
+    share_link_ttl_days: Number(process.env.STIMLI_SHARE_LINK_TTL_DAYS || 14),
+    deletion_workflow: "request_review",
+    export_scope: "workspace",
+    retention_days: Number(process.env.STIMLI_RETENTION_DAYS || 365),
+    commercial_license_mode: process.env.STIMLI_TRIBE_COMMERCIAL_LICENSE === "1" ? "commercial-ready" : "research-only"
+  };
+}
+
+function normalizeTargetType(value) {
+  const type = String(value || "asset").trim().toLowerCase();
+  return ["asset", "comparison", "project", "workspace", "user"].includes(type) ? type : "asset";
+}
+
+function normalizeBrandProfile(payload, workspaceId) {
+  const name = String(payload.name || payload.brief?.brand_name || "").trim();
+  if (name.length < 2) {
+    throw httpError(400, "Brand profile name is required.");
+  }
+  const brief = payload.brief || payload;
+  const createdAt = payload.created_at || nowIso();
+  return {
+    id: payload.id || newId("brand"),
+    name: name.slice(0, 120),
+    brief: {
+      brand_name: String(brief.brand_name || name).trim().slice(0, 120),
+      audience: String(brief.audience || "").trim().slice(0, 500),
+      product_category: String(brief.product_category || "").trim().slice(0, 240),
+      primary_offer: String(brief.primary_offer || "").trim().slice(0, 240),
+      required_claims: cleanStringList(brief.required_claims),
+      forbidden_terms: cleanStringList(brief.forbidden_terms)
+    },
+    voice_rules: cleanStringList(payload.voice_rules),
+    compliance_notes: cleanStringList(payload.compliance_notes),
+    workspace_id: workspaceId,
+    created_at: createdAt,
+    updated_at: payload.updated_at || createdAt
+  };
+}
+
+function cleanStringList(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return raw.map((item) => String(item).trim()).filter(Boolean).slice(0, 25);
+}
+
+function mergeLists(first, second) {
+  return [...new Set([...cleanStringList(first), ...cleanStringList(second)])];
+}
+
+function normalizePlatform(value) {
+  const platform = String(value || "manual").trim().toLowerCase();
+  return ["manual", "meta", "tiktok", "youtube", "google", "csv", "urls"].includes(platform) ? platform : "manual";
+}
+
+function benchmarkCatalog() {
+  return [
+    {
+      id: "dtc-hooks-v1",
+      name: "DTC hook and offer benchmark",
+      description: "Pairs strong pain-led hooks against generic product stories to validate winner selection.",
+      cases: 3
+    }
+  ];
+}
+
+async function runBenchmark(benchmarkId, workspaceId) {
+  const benchmark = benchmarkCatalog().find((item) => item.id === benchmarkId) || benchmarkCatalog()[0];
+  const cases = [
+    {
+      expected: "A",
+      assets: [
+        {
+          label: "A",
+          text: "Stop wasting budget on ads people skip after three seconds. Try the starter kit with free shipping today."
+        },
+        {
+          label: "B",
+          text: "Our brand is an innovative ecosystem for modern people who want quality and convenience."
+        }
+      ]
+    },
+    {
+      expected: "A",
+      assets: [
+        {
+          label: "A",
+          text: "Dry skin by lunch? This 24 hour hydration kit locks moisture in before your morning commute."
+        },
+        {
+          label: "B",
+          text: "We make premium skincare with thoughtful ingredients for your everyday lifestyle."
+        }
+      ]
+    },
+    {
+      expected: "B",
+      assets: [
+        {
+          label: "A",
+          text: "A skincare ecosystem designed for all your needs with a holistic approach to modern beauty."
+        },
+        {
+          label: "B",
+          text: "Before you buy another serum, fix the barrier problem first. Start with the tested hydration kit."
+        }
+      ]
+    }
+  ];
+  const results = [];
+  for (const testCase of cases) {
+    const assets = testCase.assets.map((item) => ({
+      id: newId("bench_asset"),
+      type: "script",
+      name: `Benchmark ${item.label}`,
+      extracted_text: item.text,
+      source_url: null,
+      file_path: null,
+      metadata: { benchmark: true },
+      workspace_id: workspaceId,
+      created_at: nowIso()
+    }));
+    const comparison = await compareAssets(newId("bench_cmp"), "Pick the stronger benchmark creative.", assets, nowIso(), {
+      brand_name: "Lumina",
+      audience: "DTC paid social shoppers",
+      primary_offer: "starter kit"
+    });
+    const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
+    const predictedLabel = winner?.asset.name.endsWith("A") ? "A" : "B";
+    results.push({
+      expected: testCase.expected,
+      predicted: predictedLabel,
+      aligned: predictedLabel === testCase.expected,
+      confidence: comparison.recommendation.confidence,
+      winner_score: winner?.analysis.scores.overall || 0
+    });
+  }
+  const aligned = results.filter((item) => item.aligned).length;
+  return {
+    id: newId("bench"),
+    benchmark_id: benchmark.id,
+    benchmark_name: benchmark.name,
+    case_count: results.length,
+    aligned,
+    accuracy: results.length ? round(aligned / results.length, 3) : 0,
+    average_confidence: results.length ? round(results.reduce((sum, item) => sum + item.confidence, 0) / results.length, 3) : 0,
+    results,
+    workspace_id: workspaceId,
+    created_at: nowIso()
+  };
+}
+
+function confidenceBins(outcomes, comparisons) {
+  const calibration = calibrationSummary(outcomes, comparisons);
+  const bins = [
+    { label: "50-65%", min: 0.5, max: 0.65, predictions: 0, aligned: 0 },
+    { label: "65-80%", min: 0.65, max: 0.8, predictions: 0, aligned: 0 },
+    { label: "80-95%", min: 0.8, max: 0.95, predictions: 0, aligned: 0 }
+  ];
+  for (const evaluation of calibration.recent) {
+    const comparison = comparisons.find((item) => item.id === evaluation.comparison_id);
+    const confidence = comparison?.recommendation?.confidence || 0;
+    const bin = bins.find((item) => confidence >= item.min && confidence < item.max) || bins[bins.length - 1];
+    bin.predictions += 1;
+    bin.aligned += evaluation.aligned ? 1 : 0;
+  }
+  return bins.map((bin) => ({
+    ...bin,
+    observed_accuracy: bin.predictions ? round(bin.aligned / bin.predictions, 3) : 0
+  }));
 }
 
 function publicInvite(invite, team) {

@@ -13,7 +13,12 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
   authenticators: new Map(),
   authChallenges: new Map(),
   sessions: new Map(),
-  shareLinks: new Map()
+  shareLinks: new Map(),
+  auditEvents: new Map(),
+  brandProfiles: new Map(),
+  governanceRequests: new Map(),
+  benchmarkRuns: new Map(),
+  integrationJobs: new Map()
 });
 
 const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
@@ -341,22 +346,64 @@ export async function getTeamMember(teamId, userId) {
   return rows[0]?.payload || null;
 }
 
+export async function updateTeamMemberRole(teamId, userId, role) {
+  const member = await getTeamMember(teamId, userId);
+  if (!member) {
+    return null;
+  }
+  const updated = { ...member, role, updated_at: new Date().toISOString() };
+  await saveTeamMember(updated);
+  return updated;
+}
+
 export async function listTeamsForUser(userId) {
   const sql = getSql();
   if (!sql) {
     return [...memoryStore.teamMembers.values()]
       .filter((member) => member.user_id === userId)
-      .map((member) => memoryStore.teams.get(member.team_id))
+      .map((member) => {
+        const team = memoryStore.teams.get(member.team_id);
+        return team ? { ...team, role: member.role || "viewer" } : null;
+      })
       .filter(Boolean);
   }
   await ensureTables(sql);
   const rows = await sql`
-    select t.payload from stimli_team_members m
+    select t.payload as team_payload, m.payload as member_payload, m.role
+    from stimli_team_members m
     join stimli_teams t on t.id = m.team_id
     where m.user_id = ${userId}
     order by m.created_at asc
   `;
-  return rows.map((row) => row.payload);
+  return rows.map((row) => ({
+    ...row.team_payload,
+    role: row.role || row.member_payload?.role || "viewer"
+  }));
+}
+
+export async function listTeamMembers(teamId) {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.teamMembers.values()]
+      .filter((member) => member.team_id === teamId)
+      .map((member) => ({
+        ...member,
+        user: memoryStore.users.get(member.user_id) || null
+      }))
+      .sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select m.payload, u.payload as user_payload
+    from stimli_team_members m
+    left join stimli_users u on u.id = m.user_id
+    where m.team_id = ${teamId}
+    order by m.created_at asc
+  `;
+  return rows.map((row) => ({
+    ...row.payload,
+    user: row.user_payload || null
+  }));
 }
 
 export async function saveTeamInvite(invite) {
@@ -554,6 +601,163 @@ export async function getShareLink(token) {
   return rows[0]?.payload || null;
 }
 
+export async function saveAuditEvent(event) {
+  const sql = getSql();
+  const workspaceId = workspaceForPayload(event);
+  if (!sql) {
+    memoryStore.auditEvents.set(event.id, event);
+    return event;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_audit_events (id, workspace_id, actor_id, action, target_type, target_id, payload, created_at)
+    values (${event.id}, ${workspaceId}, ${event.actor_id || ""}, ${event.action}, ${event.target_type || ""}, ${event.target_id || ""}, ${sql.json(event)}, ${event.created_at})
+    on conflict (id) do nothing
+  `;
+  return event;
+}
+
+export async function listAuditEvents(workspaceId = "public", limit = 100) {
+  const sql = getSql();
+  const maxRows = Math.max(1, Math.min(Number(limit) || 100, 500));
+  if (!sql) {
+    return [...memoryStore.auditEvents.values()]
+      .filter((event) => workspaceForPayload(event) === workspaceId)
+      .sort(descCreatedAt)
+      .slice(0, maxRows);
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select payload from stimli_audit_events
+    where workspace_id = ${workspaceId}
+    order by created_at desc
+    limit ${maxRows}
+  `;
+  return rows.map((row) => row.payload);
+}
+
+export async function saveBrandProfile(profile) {
+  const sql = getSql();
+  const workspaceId = workspaceForPayload(profile);
+  if (!sql) {
+    memoryStore.brandProfiles.set(profile.id, profile);
+    return profile;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_brand_profiles (id, workspace_id, payload, created_at)
+    values (${profile.id}, ${workspaceId}, ${sql.json(profile)}, ${profile.created_at})
+    on conflict (id) do update
+    set workspace_id = excluded.workspace_id,
+        payload = excluded.payload
+  `;
+  return profile;
+}
+
+export async function listBrandProfiles(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.brandProfiles.values()].filter((profile) => workspaceForPayload(profile) === workspaceId).sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_brand_profiles where workspace_id = ${workspaceId} order by created_at desc`;
+  return rows.map((row) => row.payload);
+}
+
+export async function getBrandProfile(profileId, workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    const profile = memoryStore.brandProfiles.get(profileId) || null;
+    return profile && workspaceForPayload(profile) === workspaceId ? profile : null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_brand_profiles where id = ${profileId} and workspace_id = ${workspaceId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function saveGovernanceRequest(request) {
+  const sql = getSql();
+  const workspaceId = workspaceForPayload(request);
+  if (!sql) {
+    memoryStore.governanceRequests.set(request.id, request);
+    return request;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_governance_requests (id, workspace_id, request_type, payload, created_at)
+    values (${request.id}, ${workspaceId}, ${request.request_type}, ${sql.json(request)}, ${request.created_at})
+    on conflict (id) do update
+    set payload = excluded.payload
+  `;
+  return request;
+}
+
+export async function listGovernanceRequests(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.governanceRequests.values()]
+      .filter((request) => workspaceForPayload(request) === workspaceId)
+      .sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_governance_requests where workspace_id = ${workspaceId} order by created_at desc`;
+  return rows.map((row) => row.payload);
+}
+
+export async function saveBenchmarkRun(run) {
+  const sql = getSql();
+  const workspaceId = workspaceForPayload(run);
+  if (!sql) {
+    memoryStore.benchmarkRuns.set(run.id, run);
+    return run;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_benchmark_runs (id, workspace_id, benchmark_id, payload, created_at)
+    values (${run.id}, ${workspaceId}, ${run.benchmark_id}, ${sql.json(run)}, ${run.created_at})
+    on conflict (id) do update
+    set payload = excluded.payload
+  `;
+  return run;
+}
+
+export async function listBenchmarkRuns(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.benchmarkRuns.values()].filter((run) => workspaceForPayload(run) === workspaceId).sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_benchmark_runs where workspace_id = ${workspaceId} order by created_at desc`;
+  return rows.map((row) => row.payload);
+}
+
+export async function saveIntegrationJob(job) {
+  const sql = getSql();
+  const workspaceId = workspaceForPayload(job);
+  if (!sql) {
+    memoryStore.integrationJobs.set(job.id, job);
+    return job;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_integration_jobs (id, workspace_id, platform, payload, created_at)
+    values (${job.id}, ${workspaceId}, ${job.platform}, ${sql.json(job)}, ${job.created_at})
+    on conflict (id) do update
+    set payload = excluded.payload
+  `;
+  return job;
+}
+
+export async function listIntegrationJobs(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.integrationJobs.values()].filter((job) => workspaceForPayload(job) === workspaceId).sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_integration_jobs where workspace_id = ${workspaceId} order by created_at desc`;
+  return rows.map((row) => row.payload);
+}
+
 function getSql() {
   if (!databaseUrl) {
     return null;
@@ -561,6 +765,7 @@ function getSql() {
   sqlClient ??= postgres(databaseUrl, {
     max: 1,
     prepare: false,
+    onnotice: () => undefined,
     ssl: databaseUrl.includes("sslmode=disable") ? false : "require"
   });
   return sqlClient;
@@ -689,6 +894,53 @@ async function ensureTables(sql) {
         created_at text not null
       )
     `;
+    await tx`
+      create table if not exists stimli_audit_events (
+        id text primary key,
+        workspace_id text not null,
+        actor_id text not null default '',
+        action text not null,
+        target_type text not null default '',
+        target_id text not null default '',
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_brand_profiles (
+        id text primary key,
+        workspace_id text not null default 'public',
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_governance_requests (
+        id text primary key,
+        workspace_id text not null default 'public',
+        request_type text not null,
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_benchmark_runs (
+        id text primary key,
+        workspace_id text not null default 'public',
+        benchmark_id text not null,
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
+    await tx`
+      create table if not exists stimli_integration_jobs (
+        id text primary key,
+        workspace_id text not null default 'public',
+        platform text not null,
+        payload jsonb not null,
+        created_at text not null
+      )
+    `;
     await tx`alter table stimli_assets add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_projects add column if not exists workspace_id text not null default 'public'`;
     await tx`alter table stimli_comparisons add column if not exists workspace_id text not null default 'public'`;
@@ -707,6 +959,11 @@ async function ensureTables(sql) {
     await tx`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`;
     await tx`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`;
     await tx`create index if not exists stimli_share_links_comparison_idx on stimli_share_links (comparison_id, created_at desc)`;
+    await tx`create index if not exists stimli_audit_events_workspace_idx on stimli_audit_events (workspace_id, created_at desc)`;
+    await tx`create index if not exists stimli_brand_profiles_workspace_idx on stimli_brand_profiles (workspace_id, created_at desc)`;
+    await tx`create index if not exists stimli_governance_requests_workspace_idx on stimli_governance_requests (workspace_id, created_at desc)`;
+    await tx`create index if not exists stimli_benchmark_runs_workspace_idx on stimli_benchmark_runs (workspace_id, created_at desc)`;
+    await tx`create index if not exists stimli_integration_jobs_workspace_idx on stimli_integration_jobs (workspace_id, created_at desc)`;
   });
   return initPromise;
 }

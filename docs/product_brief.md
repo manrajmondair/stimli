@@ -25,7 +25,15 @@ The first customer is a DTC growth team or founder running paid social tests wit
 ## Near-Term Roadmap
 
 - Improve extraction quality with stronger OCR, transcription diarization, and landing-page screenshot capture.
-- Add saved brand profiles, reusable campaign briefs, and team-level creative libraries.
-- Add outcome calibration that adjusts scoring weights by category, channel, audience, and placement.
+- Expand saved brand profiles, reusable campaign briefs, imports, and team creative libraries into the daily workflow.
+- Deepen outcome calibration so scoring weights can be tuned by category, channel, audience, placement, and creative format.
 - Add ad-platform import/export for Meta, TikTok, YouTube, and creative libraries.
-- Add enterprise controls: SSO, audit logs, retention policies, role-based permissions, and admin analytics.
+- Keep hardening enterprise controls: SSO/SAML, SCIM, audit exports, retention automation, role-based permissions, and admin analytics.
+
+## Enterprise Controls Now In Product
+
+- Team roles for owner, admin, analyst, and viewer workspaces.
+- Audit events for key workspace actions.
+- Hosted inference observability with job status and retry recovery.
+- Governance policy surface, workspace export, and deletion-review requests.
+- Brand profiles, creative library metadata, bulk imports, and built-in benchmark validation.

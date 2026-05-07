@@ -3,19 +3,31 @@ import { startAuthentication, startRegistration } from "@simplewebauthn/browser"
 import type {
   Asset,
   AssetType,
+  AdminSummary,
+  AuditEvent,
   AuthSession,
   BillingStatus,
+  BrandProfile,
   BrainProviderHealth,
+  BenchmarkRun,
   ChallengerResponse,
   Comparison,
   CreativeBrief,
+  GovernancePolicy,
+  GovernanceRequest,
+  ImportJob,
+  LibraryResponse,
   LearningSummary,
   Outcome,
   OutcomeCreate,
   Project,
   Report,
   ShareLink,
-  TeamInvite
+  TeamInvite,
+  TeamMember,
+  TeamRole,
+  ValidationCalibration,
+  WorkspaceExport
 } from "./types";
 
 const localViteApi = import.meta.env.DEV && globalThis.location?.port === "5173" ? "http://localhost:8000" : "/api";
@@ -122,12 +134,13 @@ export async function createBriefComparisonForProject(
   assetIds: string[],
   objective: string,
   brief: CreativeBrief,
-  projectId?: string | null
+  projectId?: string | null,
+  brandProfileId?: string | null
 ): Promise<Comparison> {
   const response = await fetch(`${API_BASE}/comparisons`, {
     method: "POST",
     headers: jsonHeaders(),
-    body: JSON.stringify({ asset_ids: assetIds, objective, brief, project_id: projectId || null })
+    body: JSON.stringify({ asset_ids: assetIds, objective, brief, project_id: projectId || null, brand_profile_id: brandProfileId || null })
   });
   return parseResponse(response);
 }
@@ -300,12 +313,144 @@ export async function switchTeam(teamId: string): Promise<AuthSession> {
   return session;
 }
 
-export async function createTeamInvite(input: { email?: string; role?: "member" | "owner" }): Promise<TeamInvite> {
+export async function createTeamInvite(input: { email?: string; role?: TeamRole }): Promise<TeamInvite> {
   const response = await fetch(`${API_BASE}/teams/invites`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function listTeamMembers(): Promise<TeamMember[]> {
+  const response = await fetch(`${API_BASE}/teams/members`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function updateTeamMemberRole(userId: string, role: TeamRole): Promise<TeamMember> {
+  const response = await fetch(`${API_BASE}/teams/members/${encodeURIComponent(userId)}/role`, {
+    method: "PATCH",
+    headers: jsonHeaders(),
+    credentials: "include",
+    body: JSON.stringify({ role })
+  });
+  return parseResponse(response);
+}
+
+export async function getAdminSummary(): Promise<AdminSummary> {
+  const response = await fetch(`${API_BASE}/admin/summary`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function listAdminJobs(status?: string): Promise<Comparison["jobs"]> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+  const response = await fetch(`${API_BASE}/admin/jobs${suffix}`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function retryAdminJob(jobId: string): Promise<Comparison> {
+  const response = await fetch(`${API_BASE}/admin/jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: "POST",
+    headers: workspaceHeaders(),
+    credentials: "include"
+  });
+  return parseResponse(response);
+}
+
+export async function listAuditEvents(): Promise<AuditEvent[]> {
+  const response = await fetch(`${API_BASE}/audit/events`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function listBrandProfiles(): Promise<BrandProfile[]> {
+  const response = await fetch(`${API_BASE}/brand-profiles`, { headers: workspaceHeaders() });
+  return parseResponse(response);
+}
+
+export async function createBrandProfile(input: Partial<BrandProfile> & { name: string; brief: CreativeBrief }): Promise<BrandProfile> {
+  const response = await fetch(`${API_BASE}/brand-profiles`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function updateBrandProfile(id: string, input: Partial<BrandProfile>): Promise<BrandProfile> {
+  const response = await fetch(`${API_BASE}/brand-profiles/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: jsonHeaders(),
+    body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function getGovernancePolicy(): Promise<GovernancePolicy> {
+  const response = await fetch(`${API_BASE}/governance/policy`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function exportWorkspace(): Promise<WorkspaceExport> {
+  const response = await fetch(`${API_BASE}/governance/export`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function listGovernanceRequests(): Promise<GovernanceRequest[]> {
+  const response = await fetch(`${API_BASE}/governance/requests`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function createDeletionRequest(input: {
+  target_type: string;
+  target_id: string;
+  reason: string;
+}): Promise<GovernanceRequest> {
+  const response = await fetch(`${API_BASE}/governance/deletion-requests`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    credentials: "include",
+    body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function listLibraryAssets(): Promise<LibraryResponse> {
+  const response = await fetch(`${API_BASE}/library/assets`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function createImportJob(input: {
+  platform: string;
+  source: string;
+  project_id?: string | null;
+  items: Array<{ asset_type?: AssetType; name?: string; text?: string; url?: string; duration_seconds?: number }>;
+}): Promise<{ job: ImportJob; assets: Asset[] }> {
+  const response = await fetch(`${API_BASE}/imports`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    credentials: "include",
+    body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function listImportJobs(): Promise<ImportJob[]> {
+  const response = await fetch(`${API_BASE}/imports`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function getValidationCalibration(): Promise<ValidationCalibration> {
+  const response = await fetch(`${API_BASE}/validation/calibration`, { headers: workspaceHeaders(), credentials: "include" });
+  return parseResponse(response);
+}
+
+export async function runValidationBenchmark(benchmarkId = "dtc-hooks-v1"): Promise<BenchmarkRun> {
+  const response = await fetch(`${API_BASE}/validation/benchmarks/run`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    credentials: "include",
+    body: JSON.stringify({ benchmark_id: benchmarkId })
   });
   return parseResponse(response);
 }

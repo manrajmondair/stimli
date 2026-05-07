@@ -40,14 +40,21 @@ export async function getAuthContext(request) {
   if (!session) {
     return anonymousContext();
   }
-  const [user, team] = await Promise.all([getUser(session.user_id), getTeam(session.team_id)]);
-  if (!user || !team) {
+  const [user, team, membership] = await Promise.all([
+    getUser(session.user_id),
+    getTeam(session.team_id),
+    getTeamMember(session.team_id, session.user_id)
+  ]);
+  if (!user || !team || !membership) {
     return anonymousContext();
   }
   return {
     authenticated: true,
     user,
     team,
+    membership,
+    role: membership.role || "viewer",
+    permissions: permissionsForRole(membership.role),
     workspace_id: team.id
   };
 }
@@ -61,6 +68,8 @@ export async function authSessionPayload(request) {
     authenticated: true,
     user: publicUser(context.user),
     team: context.team,
+    role: context.role,
+    permissions: context.permissions,
     teams: await listTeamsForUser(context.user.id)
   };
 }
@@ -154,6 +163,8 @@ export async function verifyRegistration(request, response, payload) {
     authenticated: true,
     user: publicUser(user),
     team,
+    role: "owner",
+    permissions: permissionsForRole("owner"),
     teams: [team]
   };
 }
@@ -237,6 +248,8 @@ export async function verifyAuthentication(request, response, payload) {
     authenticated: true,
     user: publicUser(user),
     team,
+    role: roleForTeam(team.id, teams, "viewer"),
+    permissions: permissionsForRole(roleForTeam(team.id, teams, "viewer")),
     teams
   };
 }
@@ -270,6 +283,8 @@ export async function switchTeam(request, response, payload) {
     authenticated: true,
     user: publicUser(context.user),
     team,
+    role: membership.role || "viewer",
+    permissions: permissionsForRole(membership.role),
     teams: await listTeamsForUser(context.user.id)
   };
 }
@@ -279,8 +294,44 @@ function anonymousContext() {
     authenticated: false,
     user: null,
     team: null,
+    membership: null,
+    role: "anonymous",
+    permissions: [],
     workspace_id: null
   };
+}
+
+export function permissionsForRole(role = "viewer") {
+  const policies = {
+    owner: [
+      "workspace:read",
+      "workspace:write",
+      "members:manage",
+      "billing:manage",
+      "jobs:manage",
+      "audit:read",
+      "governance:manage",
+      "validation:manage"
+    ],
+    admin: [
+      "workspace:read",
+      "workspace:write",
+      "members:manage",
+      "jobs:manage",
+      "audit:read",
+      "governance:manage",
+      "validation:manage"
+    ],
+    analyst: ["workspace:read", "workspace:write", "validation:manage"],
+    member: ["workspace:read", "workspace:write", "validation:manage"],
+    viewer: ["workspace:read"]
+  };
+  return policies[role] || policies.viewer;
+}
+
+function roleForTeam(teamId, teams, fallback) {
+  const team = teams.find((item) => item.id === teamId);
+  return team?.role || team?.membership?.role || fallback;
 }
 
 async function saveCredential(userId, registrationInfo) {

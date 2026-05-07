@@ -6,6 +6,7 @@ import {
   Check,
   ClipboardList,
   CreditCard,
+  Database,
   Download,
   FileText,
   Gauge,
@@ -18,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Repeat2,
   Send,
   Share2,
   ShieldCheck,
@@ -32,40 +34,64 @@ import {
   acceptInvite,
   cancelComparison,
   createBriefComparisonForProject,
+  createBrandProfile,
+  createDeletionRequest,
   createChallenger,
+  createImportJob,
   createOutcome,
   createProject,
   createShareLink,
   createTeamInvite,
   createTextAsset,
+  exportWorkspace,
+  getAdminSummary,
   getBillingStatus,
   getBrainProviders,
   getComparison,
+  getGovernancePolicy,
   getLearningSummary,
   getReport,
   getReportMarkdown,
   getInvite,
   getSharedReport,
   getSession,
+  getValidationCalibration,
+  listAdminJobs,
   listProjects,
+  listAuditEvents,
+  listBrandProfiles,
+  listGovernanceRequests,
+  listImportJobs,
+  listLibraryAssets,
+  listTeamMembers,
   loginWithPasskey,
   logout,
   listAssets,
   listComparisons,
   openBillingPortal,
   registerWithPasskey,
+  retryAdminJob,
+  runValidationBenchmark,
   seedDemo,
   startCheckout,
   switchTeam
 } from "./api";
 import type {
+  AdminSummary,
   Asset,
   AuthSession,
   AssetType,
+  AuditEvent,
+  BenchmarkRun,
   BillingStatus,
+  BrandProfile,
   BrainProviderHealth,
   Comparison,
   CreativeBrief,
+  GovernancePolicy,
+  GovernanceRequest,
+  ImportJob,
+  LibraryAsset,
   LearningSummary,
   OutcomeCreate,
   Project,
@@ -73,6 +99,7 @@ import type {
   ScoreBreakdown,
   Suggestion,
   TeamInvite,
+  TeamMember,
   TimelinePoint,
   VariantResult
 } from "./types";
@@ -302,6 +329,9 @@ function LandingProductScene() {
 }
 
 function WorkspaceApp() {
+  const [view, setView] = useState<"workbench" | "observability" | "governance" | "validation" | "brands" | "library" | "imports">(
+    "workbench"
+  );
   const [projects, setProjects] = useState<Project[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [comparisons, setComparisons] = useState<Comparison[]>([]);
@@ -312,6 +342,18 @@ function WorkspaceApp() {
   const [providers, setProviders] = useState<BrainProviderHealth[]>([]);
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [adminSummary, setAdminSummary] = useState<AdminSummary | null>(null);
+  const [adminJobs, setAdminJobs] = useState<NonNullable<Comparison["jobs"]>>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [brandProfiles, setBrandProfiles] = useState<BrandProfile[]>([]);
+  const [selectedBrandProfileId, setSelectedBrandProfileId] = useState<string>("");
+  const [governancePolicy, setGovernancePolicy] = useState<GovernancePolicy | null>(null);
+  const [governanceRequests, setGovernanceRequests] = useState<GovernanceRequest[]>([]);
+  const [validation, setValidation] = useState<Awaited<ReturnType<typeof getValidationCalibration>> | null>(null);
+  const [benchmarkRuns, setBenchmarkRuns] = useState<BenchmarkRun[]>([]);
+  const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [name, setName] = useState("");
   const [assetType, setAssetType] = useState<AssetType>("script");
   const [text, setText] = useState("");
@@ -327,6 +369,10 @@ function WorkspaceApp() {
   const [primaryOffer, setPrimaryOffer] = useState("starter kit with free shipping");
   const [requiredClaims, setRequiredClaims] = useState("24 hour hydration, dermatologist tested");
   const [forbiddenTerms, setForbiddenTerms] = useState("miracle cure, guaranteed");
+  const [profileName, setProfileName] = useState("");
+  const [profileVoiceRules, setProfileVoiceRules] = useState("specific before abstract, proof before promise");
+  const [importText, setImportText] = useState("Variant A,Stop weak hooks before launch. Try the starter kit today.");
+  const [deletionTarget, setDeletionTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -387,6 +433,29 @@ function WorkspaceApp() {
       setLearning(learningSummary);
       setProviders(providerList);
       setBilling(billingState);
+      const [brands, library, imports] = await Promise.all([listBrandProfiles(), listLibraryAssets(), listImportJobs().catch(() => [])]);
+      setBrandProfiles(brands);
+      setLibraryAssets(library.assets);
+      setImportJobs(imports);
+      const guarded = await Promise.allSettled([
+        getAdminSummary(),
+        listAdminJobs(),
+        listAuditEvents(),
+        listTeamMembers(),
+        getGovernancePolicy(),
+        listGovernanceRequests(),
+        getValidationCalibration()
+      ]);
+      if (guarded[0].status === "fulfilled") setAdminSummary(guarded[0].value);
+      if (guarded[1].status === "fulfilled") setAdminJobs(guarded[1].value || []);
+      if (guarded[2].status === "fulfilled") setAuditEvents(guarded[2].value);
+      if (guarded[3].status === "fulfilled") setTeamMembers(guarded[3].value);
+      if (guarded[4].status === "fulfilled") setGovernancePolicy(guarded[4].value);
+      if (guarded[5].status === "fulfilled") setGovernanceRequests(guarded[5].value);
+      if (guarded[6].status === "fulfilled") {
+        setValidation(guarded[6].value);
+        setBenchmarkRuns(guarded[6].value.benchmark_runs);
+      }
     } catch {
       setError("Backend is not reachable. Start the API on port 8000.");
     }
@@ -461,7 +530,7 @@ function WorkspaceApp() {
     setAuthBusy(true);
     setError(null);
     try {
-      const invite = await createTeamInvite({ email, role: "member" });
+      const invite = await createTeamInvite({ email, role: "analyst" });
       if (invite.url) {
         await navigator.clipboard?.writeText(invite.url);
       }
@@ -535,6 +604,132 @@ function WorkspaceApp() {
     }
   }
 
+  async function handleSaveBrandProfile() {
+    const nextName = profileName.trim() || brandName.trim();
+    if (!nextName) {
+      setError("Add a brand profile name.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const profile = await createBrandProfile({
+        name: nextName,
+        brief,
+        voice_rules: splitList(profileVoiceRules),
+        compliance_notes: []
+      });
+      setBrandProfiles([profile, ...brandProfiles]);
+      setSelectedBrandProfileId(profile.id);
+      setProfileName("");
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save brand profile.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImportRows() {
+    const rows = importText
+      .split("\n")
+      .map((row) => row.trim())
+      .filter(Boolean)
+      .map((row) => {
+        const [namePart, ...textParts] = row.split(",");
+        return { asset_type: "script" as AssetType, name: namePart?.trim(), text: textParts.join(",").trim() };
+      })
+      .filter((row) => row.name && row.text);
+    if (!rows.length) {
+      setError("Add import rows as Name,Creative text.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await createImportJob({ platform: "csv", source: "paste", project_id: activeProjectId, items: rows });
+      setAssets([...result.assets, ...assets]);
+      setImportJobs([result.job, ...importJobs]);
+      setImportText("");
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import assets.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeletionRequest() {
+    if (!deletionTarget.trim()) {
+      setError("Add an asset, project, comparison, or user id.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const request = await createDeletionRequest({
+        target_type: deletionTarget.startsWith("cmp_") ? "comparison" : deletionTarget.startsWith("project_") ? "project" : "asset",
+        target_id: deletionTarget.trim(),
+        reason: "Workspace governance review"
+      });
+      setGovernanceRequests([request, ...governanceRequests]);
+      setDeletionTarget("");
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create deletion request.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRunBenchmark() {
+    setBusy(true);
+    setError(null);
+    try {
+      const run = await runValidationBenchmark();
+      setBenchmarkRuns([run, ...benchmarkRuns]);
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not run benchmark.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRetryJob(jobId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const retried = await retryAdminJob(jobId);
+      setComparison(retried);
+      void pollComparison(retried.id);
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not retry job.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleExportWorkspace() {
+    setBusy(true);
+    setError(null);
+    try {
+      const exported = await exportWorkspace();
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `stimli-workspace-${exported.workspace_id}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not export workspace.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleCreateAsset() {
     if (!name.trim() || (!text.trim() && !url.trim() && !file)) {
       setError("Add a name plus text, a URL, or a file.");
@@ -581,7 +776,13 @@ function WorkspaceApp() {
     setBusy(true);
     setError(null);
     try {
-      const nextComparison = await createBriefComparisonForProject(selected, objective, brief, activeProjectId);
+      const nextComparison = await createBriefComparisonForProject(
+        selected,
+        objective,
+        brief,
+        activeProjectId,
+        selectedBrandProfileId || null
+      );
       setComparison(nextComparison);
       await refreshWorkspace();
       if (nextComparison.status === "processing") {
@@ -642,7 +843,10 @@ function WorkspaceApp() {
   return (
     <main className="app-shell">
       <AppHeader session={session} projectName={activeProjectName} />
+      <EnterpriseNav view={view} onChange={setView} />
 
+      {view === "workbench" ? (
+        <>
       <section className="top-band app-intro">
         <div>
           <p className="eyebrow">Creative command center</p>
@@ -677,7 +881,11 @@ function WorkspaceApp() {
         </div>
       </section>
 
-      {error && <div className="notice">{error}</div>}
+      {error && (
+        <div className="notice" role="alert" aria-live="polite">
+          {error}
+        </div>
+      )}
 
       <section className="project-bar">
         <label>
@@ -775,6 +983,17 @@ function WorkspaceApp() {
               <input value={brandName} onChange={(event) => setBrandName(event.target.value)} />
             </label>
             <label>
+              Saved profile
+              <select value={selectedBrandProfileId} onChange={(event) => setSelectedBrandProfileId(event.target.value)}>
+                <option value="">Use manual brief</option>
+                {brandProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
               Audience
               <input value={audience} onChange={(event) => setAudience(event.target.value)} />
             </label>
@@ -864,11 +1083,499 @@ function WorkspaceApp() {
           )}
         </section>
       </section>
+        </>
+      ) : (
+        <EnterpriseView
+          view={view}
+          session={session}
+          adminSummary={adminSummary}
+          adminJobs={adminJobs}
+          auditEvents={auditEvents}
+          teamMembers={teamMembers}
+          brandProfiles={brandProfiles}
+          selectedBrandProfileId={selectedBrandProfileId}
+          onSelectBrandProfile={setSelectedBrandProfileId}
+          governancePolicy={governancePolicy}
+          governanceRequests={governanceRequests}
+          validation={validation}
+          benchmarkRuns={benchmarkRuns}
+          libraryAssets={libraryAssets}
+          importJobs={importJobs}
+          profileName={profileName}
+          setProfileName={setProfileName}
+          profileVoiceRules={profileVoiceRules}
+          setProfileVoiceRules={setProfileVoiceRules}
+          importText={importText}
+          setImportText={setImportText}
+          deletionTarget={deletionTarget}
+          setDeletionTarget={setDeletionTarget}
+          busy={busy}
+          onSaveBrandProfile={handleSaveBrandProfile}
+          onImportRows={handleImportRows}
+          onDeletionRequest={handleDeletionRequest}
+          onRunBenchmark={handleRunBenchmark}
+          onRetryJob={handleRetryJob}
+          onExportWorkspace={handleExportWorkspace}
+          onRefresh={refreshWorkspace}
+        />
+      )}
 
       <footer className="app-footer">
         <a href="/legal">Legal & license</a>
       </footer>
     </main>
+  );
+}
+
+function EnterpriseNav({
+  view,
+  onChange
+}: {
+  view: "workbench" | "observability" | "governance" | "validation" | "brands" | "library" | "imports";
+  onChange: (view: "workbench" | "observability" | "governance" | "validation" | "brands" | "library" | "imports") => void;
+}) {
+  const items = [
+    ["workbench", Layers, "Workbench"],
+    ["observability", Activity, "Observability"],
+    ["governance", ShieldCheck, "Governance"],
+    ["validation", BarChart3, "Validation"],
+    ["brands", ClipboardList, "Brands"],
+    ["library", Database, "Library"],
+    ["imports", Upload, "Imports"]
+  ] as const;
+  return (
+    <nav className="enterprise-nav" aria-label="Workspace sections">
+      {items.map(([id, Icon, label]) => (
+        <button key={id} className={view === id ? "active" : ""} onClick={() => onChange(id)}>
+          <Icon size={16} />
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function EnterpriseView({
+  view,
+  session,
+  adminSummary,
+  adminJobs,
+  auditEvents,
+  teamMembers,
+  brandProfiles,
+  selectedBrandProfileId,
+  onSelectBrandProfile,
+  governancePolicy,
+  governanceRequests,
+  validation,
+  benchmarkRuns,
+  libraryAssets,
+  importJobs,
+  profileName,
+  setProfileName,
+  profileVoiceRules,
+  setProfileVoiceRules,
+  importText,
+  setImportText,
+  deletionTarget,
+  setDeletionTarget,
+  busy,
+  onSaveBrandProfile,
+  onImportRows,
+  onDeletionRequest,
+  onRunBenchmark,
+  onRetryJob,
+  onExportWorkspace,
+  onRefresh
+}: {
+  view: "observability" | "governance" | "validation" | "brands" | "library" | "imports";
+  session: AuthSession | null;
+  adminSummary: AdminSummary | null;
+  adminJobs: NonNullable<Comparison["jobs"]>;
+  auditEvents: AuditEvent[];
+  teamMembers: TeamMember[];
+  brandProfiles: BrandProfile[];
+  selectedBrandProfileId: string;
+  onSelectBrandProfile: (id: string) => void;
+  governancePolicy: GovernancePolicy | null;
+  governanceRequests: GovernanceRequest[];
+  validation: Awaited<ReturnType<typeof getValidationCalibration>> | null;
+  benchmarkRuns: BenchmarkRun[];
+  libraryAssets: LibraryAsset[];
+  importJobs: ImportJob[];
+  profileName: string;
+  setProfileName: (value: string) => void;
+  profileVoiceRules: string;
+  setProfileVoiceRules: (value: string) => void;
+  importText: string;
+  setImportText: (value: string) => void;
+  deletionTarget: string;
+  setDeletionTarget: (value: string) => void;
+  busy: boolean;
+  onSaveBrandProfile: () => Promise<void>;
+  onImportRows: () => Promise<void>;
+  onDeletionRequest: () => Promise<void>;
+  onRunBenchmark: () => Promise<void>;
+  onRetryJob: (jobId: string) => Promise<void>;
+  onExportWorkspace: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+}) {
+  if (!session?.authenticated && ["observability", "governance", "validation"].includes(view)) {
+    return (
+      <section className="panel enterprise-empty">
+        <ShieldCheck size={24} />
+        <h2>Sign in to use enterprise controls</h2>
+        <p>Admin, governance, and validation surfaces are scoped to authenticated team workspaces.</p>
+      </section>
+    );
+  }
+
+  if (view === "observability") {
+    return (
+      <section className="enterprise-view">
+        <div className="enterprise-toolbar">
+          <div>
+            <h1>Observability</h1>
+            <p>Hosted inference, extraction, storage, jobs, and audit activity.</p>
+          </div>
+          <button className="button secondary" onClick={onRefresh} disabled={busy}>
+            <RefreshCw size={17} />
+            Refresh
+          </button>
+        </div>
+        <div className="ops-grid">
+          <Metric label="Jobs" value={adminSummary?.jobs.total ?? adminJobs.length} />
+          <Metric label="Failed" value={adminSummary?.jobs.failed ?? 0} />
+          <Metric label="Storage" value={adminSummary?.storage.persistent ? "Postgres" : "Memory"} />
+          <Metric label="TRIBE" value={adminSummary?.inference.control_configured ? "Control ready" : "Not configured"} />
+        </div>
+        <div className="enterprise-table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Asset</th>
+                <th>Status</th>
+                <th>Provider</th>
+                <th>Attempt</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {adminJobs.length ? (
+                adminJobs.map((job) => (
+                  <tr key={job.job_id}>
+                    <td>{job.job_id}</td>
+                    <td>{job.asset_id}</td>
+                    <td>{job.status}</td>
+                    <td>{job.provider}</td>
+                    <td>{job.attempt ?? 0}</td>
+                    <td>
+                      {["failed", "cancelled"].includes(job.status) && (
+                        <button className="text-button" onClick={() => onRetryJob(job.job_id)}>
+                          <Repeat2 size={15} />
+                          Retry
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6}>No hosted inference jobs yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <AuditTable events={auditEvents} />
+      </section>
+    );
+  }
+
+  if (view === "governance") {
+    return (
+      <section className="enterprise-view">
+        <div className="enterprise-toolbar">
+          <div>
+            <h1>Governance</h1>
+            <p>Workspace export, retention, deletion review, members, and license posture.</p>
+          </div>
+          <button className="button secondary" onClick={onExportWorkspace} disabled={busy}>
+            <Download size={17} />
+            Export
+          </button>
+        </div>
+        <div className="ops-grid">
+          <Metric label="Retention" value={`${governancePolicy?.retention_days ?? 365} days`} />
+          <Metric label="Sharing" value={governancePolicy?.public_share_links ? "Enabled" : "Disabled"} />
+          <Metric label="License" value={governancePolicy?.commercial_license_mode ?? "research-only"} />
+          <Metric label="Requests" value={governanceRequests.length} />
+        </div>
+        <div className="enterprise-split">
+          <section className="panel compact-panel">
+            <h2>Deletion Review</h2>
+            <label>
+              Target id
+              <input value={deletionTarget} onChange={(event) => setDeletionTarget(event.target.value)} placeholder="asset_..." />
+            </label>
+            <button className="button full" onClick={onDeletionRequest} disabled={busy || !deletionTarget.trim()}>
+              <ShieldCheck size={17} />
+              Request review
+            </button>
+          </section>
+          <section className="enterprise-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Member</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {teamMembers.map((member) => (
+                  <tr key={member.user_id}>
+                    <td>{member.name || member.user_id}</td>
+                    <td>{member.email || "-"}</td>
+                    <td>{member.role}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </section>
+    );
+  }
+
+  if (view === "validation") {
+    return (
+      <section className="enterprise-view">
+        <div className="enterprise-toolbar">
+          <div>
+            <h1>Validation</h1>
+            <p>Prediction accuracy, confidence calibration, and benchmark checks.</p>
+          </div>
+          <button className="button secondary" onClick={onRunBenchmark} disabled={busy}>
+            <Play size={17} />
+            Run benchmark
+          </button>
+        </div>
+        <div className="ops-grid">
+          <Metric label="Outcomes" value={validation?.learning.outcome_count ?? 0} />
+          <Metric label="Alignment" value={`${Math.round((validation?.learning.calibration.alignment_rate ?? 0) * 100)}%`} />
+          <Metric label="Benchmarks" value={benchmarkRuns.length} />
+          <Metric label="Revenue" value={`$${validation?.learning.total_revenue ?? 0}`} />
+        </div>
+        <section className="enterprise-table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Benchmark</th>
+                <th>Accuracy</th>
+                <th>Confidence</th>
+                <th>Cases</th>
+              </tr>
+            </thead>
+            <tbody>
+              {benchmarkRuns.length ? (
+                benchmarkRuns.map((run) => (
+                  <tr key={run.id}>
+                    <td>{run.benchmark_name}</td>
+                    <td>{Math.round(run.accuracy * 100)}%</td>
+                    <td>{Math.round(run.average_confidence * 100)}%</td>
+                    <td>{run.case_count}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={4}>Run the built-in DTC benchmark to create a validation baseline.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+      </section>
+    );
+  }
+
+  if (view === "brands") {
+    return (
+      <section className="enterprise-view">
+        <div className="enterprise-toolbar">
+          <div>
+            <h1>Brand Profiles</h1>
+            <p>Reusable briefs, claims, forbidden terms, and voice rules for comparison scoring.</p>
+          </div>
+        </div>
+        <div className="enterprise-split">
+          <section className="panel compact-panel">
+            <h2>Save Current Brief</h2>
+            <label>
+              Profile name
+              <input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Lumina paid social" />
+            </label>
+            <label>
+              Voice rules
+              <textarea value={profileVoiceRules} onChange={(event) => setProfileVoiceRules(event.target.value)} />
+            </label>
+            <button className="button full" onClick={onSaveBrandProfile} disabled={busy}>
+              <Plus size={17} />
+              Save profile
+            </button>
+          </section>
+          <section className="enterprise-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Audience</th>
+                  <th>Offer</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {brandProfiles.map((profile) => (
+                  <tr key={profile.id}>
+                    <td>{profile.name}</td>
+                    <td>{profile.brief.audience || "-"}</td>
+                    <td>{profile.brief.primary_offer || "-"}</td>
+                    <td>
+                      <button className="text-button" onClick={() => onSelectBrandProfile(profile.id)}>
+                        {selectedBrandProfileId === profile.id ? "Selected" : "Use"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </section>
+    );
+  }
+
+  if (view === "imports") {
+    return (
+      <section className="enterprise-view">
+        <div className="enterprise-toolbar">
+          <div>
+            <h1>Imports</h1>
+            <p>Bulk creative intake for CSV rows, ad-platform exports, transcripts, and URL lists.</p>
+          </div>
+        </div>
+        <div className="enterprise-split">
+          <section className="panel compact-panel">
+            <h2>Paste Rows</h2>
+            <textarea value={importText} onChange={(event) => setImportText(event.target.value)} />
+            <button className="button full" onClick={onImportRows} disabled={busy || !importText.trim()}>
+              <Upload size={17} />
+              Import
+            </button>
+          </section>
+          <section className="enterprise-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Status</th>
+                  <th>Imported</th>
+                  <th>Failed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {importJobs.map((job) => (
+                  <tr key={job.id}>
+                    <td>{job.platform}</td>
+                    <td>{job.status}</td>
+                    <td>{job.imported_items}</td>
+                    <td>{job.failed_items}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="enterprise-view">
+      <div className="enterprise-toolbar">
+        <div>
+          <h1>Creative Library</h1>
+          <p>Workspace assets with extraction status, source, and reusable creative text.</p>
+        </div>
+      </div>
+      <section className="enterprise-table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Source</th>
+              <th>Text</th>
+              <th>Extraction</th>
+            </tr>
+          </thead>
+          <tbody>
+            {libraryAssets.map((asset) => (
+              <tr key={asset.id}>
+                <td>{asset.name}</td>
+                <td>{asset.type.replace("_", " ")}</td>
+                <td>{asset.library.source}</td>
+                <td>{asset.library.text_length} chars</td>
+                <td>{asset.library.extraction_status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </section>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="metric-cell">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function AuditTable({ events }: { events: AuditEvent[] }) {
+  return (
+    <section className="enterprise-table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Event</th>
+            <th>Actor</th>
+            <th>Target</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.length ? (
+            events.slice(0, 12).map((event) => (
+              <tr key={event.id}>
+                <td>{event.action}</td>
+                <td>{event.actor_email || "workspace"}</td>
+                <td>{event.target_id || event.target_type}</td>
+                <td>{new Date(event.created_at).toLocaleString()}</td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td colSpan={4}>No audit events yet.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </section>
   );
 }
 

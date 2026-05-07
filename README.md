@@ -11,6 +11,7 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 - Extracts landing-page text from URLs when available, with a reliable fallback when a site blocks automated fetches.
 - Persists comparison history and launch outcomes so future versions can calibrate prediction quality against spend results.
 - Supports passkey accounts, team workspaces, free invite links, project ownership, and public report sharing.
+- Adds enterprise controls for team roles, audit events, hosted-job observability, retry recovery, workspace export, deletion review, validation benchmarks, brand profiles, creative library, and bulk imports.
 - Works with a deterministic local brain-response provider for reproducible demos, with a clean adapter boundary for TRIBE-style model inference.
 - Exports a report payload suitable for a short project demo or client-style review.
 
@@ -54,6 +55,7 @@ Production environment variables:
 - `STIMLI_ASSET_LIMIT_PER_HOUR` and `STIMLI_COMPARISON_LIMIT_PER_HOUR`: optional per-workspace/client quotas for the public API.
 - `STIMLI_RP_ID` and `STIMLI_ORIGIN`: optional passkey relying-party settings. For production, use the public app host and origin.
 - `STIMLI_COMPARISON_JOB_TIMEOUT_MS` and `STIMLI_MODAL_JOB_RETRIES`: optional controls for hosted job timeout and retry behavior.
+- `STIMLI_RETENTION_DAYS` and `STIMLI_SHARE_LINK_TTL_DAYS`: optional governance defaults shown in the workspace policy surface.
 
 The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
 
@@ -171,6 +173,15 @@ Sample text assets live in `backend/data/sample_assets/`.
 - `POST /api/demo/seed` loads sample creative variants.
 - `POST /api/teams/invites` creates a team invite link for a signed-in owner.
 - `POST /api/invites/{token}/accept` accepts a team invite and switches the session into that team.
+- `GET /api/admin/summary` and `GET /api/admin/jobs` expose hosted inference health and job state for owners/admins.
+- `POST /api/admin/jobs/{job_id}/retry` restarts a failed or cancelled hosted inference job.
+- `GET /api/audit/events` returns workspace-scoped audit events.
+- `GET /api/governance/export` returns a workspace export for authorized teams.
+- `POST /api/governance/deletion-requests` records deletion review requests.
+- `GET /api/brand-profiles` and `POST /api/brand-profiles` manage reusable campaign briefs.
+- `GET /api/library/assets` lists the creative library with extraction/source metadata.
+- `POST /api/imports` bulk-imports pasted or CSV-like creative rows.
+- `POST /api/validation/benchmarks/run` runs the built-in validation benchmark.
 
 ## Notes On Model Use
 

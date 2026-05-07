@@ -106,6 +106,8 @@ export type ComparisonJob = {
   status: "queued" | "running" | "retrying" | "processing" | "complete" | "failed" | "cancelled";
   provider: string;
   error?: string | null;
+  attempt?: number | null;
+  previous_job_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -208,13 +210,15 @@ export type TeamInvite = {
   team_id: string;
   team_name: string;
   email: string;
-  role: "member" | "owner";
+  role: TeamRole;
   url?: string;
   token?: string;
   expires_at: string;
   accepted_at: string | null;
   created_at: string;
 };
+
+export type TeamRole = "owner" | "admin" | "analyst" | "viewer";
 
 export type AuthUser = {
   id: string;
@@ -226,6 +230,7 @@ export type AuthUser = {
 export type Team = {
   id: string;
   name: string;
+  role?: TeamRole;
   created_at: string;
 };
 
@@ -233,5 +238,146 @@ export type AuthSession = {
   authenticated: boolean;
   user: AuthUser | null;
   team: Team | null;
+  role?: TeamRole | "anonymous";
+  permissions?: string[];
   teams: Team[];
+};
+
+export type TeamMember = {
+  user_id: string;
+  role: TeamRole;
+  email: string;
+  name: string;
+  created_at: string;
+  updated_at: string | null;
+};
+
+export type AuditEvent = {
+  id: string;
+  workspace_id: string;
+  actor_id: string;
+  actor_email: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AdminSummary = {
+  jobs: Record<string, number>;
+  providers: BrainProviderHealth[];
+  recent_events: AuditEvent[];
+  storage: { mode: string; persistent: boolean; detail: string };
+  inference: {
+    remote_configured: boolean;
+    control_configured: boolean;
+    extractor_configured: boolean;
+    strict_remote: boolean;
+  };
+};
+
+export type BrandProfile = {
+  id: string;
+  name: string;
+  brief: CreativeBrief;
+  voice_rules: string[];
+  compliance_notes: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type GovernancePolicy = {
+  private_uploads: boolean;
+  public_share_links: boolean;
+  share_link_ttl_days: number;
+  deletion_workflow: string;
+  export_scope: string;
+  retention_days: number;
+  commercial_license_mode: string;
+};
+
+export type GovernanceRequest = {
+  id: string;
+  request_type: string;
+  target_type: string;
+  target_id: string;
+  reason: string;
+  status: "pending_review" | "approved" | "rejected" | "complete";
+  requested_by: string | null;
+  created_at: string;
+};
+
+export type WorkspaceExport = {
+  schema: string;
+  exported_at: string;
+  workspace_id: string;
+  policy: GovernancePolicy;
+  projects: Project[];
+  assets: Asset[];
+  comparisons: Comparison[];
+  outcomes: Outcome[];
+  audit_events: AuditEvent[];
+  brand_profiles: BrandProfile[];
+  governance_requests: GovernanceRequest[];
+  benchmark_runs: BenchmarkRun[];
+  imports: ImportJob[];
+  members: TeamMember[];
+};
+
+export type LibraryAsset = Asset & {
+  library: {
+    text_length: number;
+    extraction_status: string;
+    has_private_blob: boolean;
+    source: string;
+  };
+};
+
+export type LibraryResponse = {
+  assets: LibraryAsset[];
+  total: number;
+};
+
+export type ImportJob = {
+  id: string;
+  platform: string;
+  source: string;
+  status: "complete" | "partial" | "failed";
+  total_items: number;
+  imported_items: number;
+  failed_items: number;
+  failures: Array<{ item: unknown; error: string }>;
+  created_at: string;
+};
+
+export type BenchmarkRun = {
+  id: string;
+  benchmark_id: string;
+  benchmark_name: string;
+  case_count: number;
+  aligned: number;
+  accuracy: number;
+  average_confidence: number;
+  results: Array<{
+    expected: string;
+    predicted: string;
+    aligned: boolean;
+    confidence: number;
+    winner_score: number;
+  }>;
+  created_at: string;
+};
+
+export type ValidationCalibration = {
+  learning: LearningSummary;
+  confidence_bins: Array<{
+    label: string;
+    min: number;
+    max: number;
+    predictions: number;
+    aligned: number;
+    observed_accuracy: number;
+  }>;
+  benchmark_runs: BenchmarkRun[];
 };

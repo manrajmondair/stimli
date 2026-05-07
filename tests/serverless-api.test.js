@@ -76,7 +76,43 @@ test("creates free team invite links and switches invited users into the team", 
   assert.equal(accepted.json.team.id, owner.team.id);
   assert.equal(accepted.json.teams.some((team) => team.id === owner.team.id), true);
   assert.equal(Boolean(accepted.headers["set-cookie"]), true);
-  assert.equal((await getTeamMember(owner.team.id, invited.user.id)).role, "member");
+  assert.equal((await getTeamMember(owner.team.id, invited.user.id)).role, "analyst");
+});
+
+test("enforces granular team roles for workspace writes", async () => {
+  const owner = await testAccount("Role Owner Team", "owner");
+  const viewer = await testAccount("Viewer Default Team", "viewer");
+  await saveTeamMember({
+    team_id: owner.team.id,
+    user_id: viewer.user.id,
+    role: "viewer",
+    created_at: nowIso()
+  });
+  const viewerCookie = await sessionCookie(viewer.user.id, owner.team.id);
+
+  const blocked = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Viewer write", text: "Try the starter kit today." },
+    { cookie: viewerCookie }
+  );
+  assert.equal(blocked.statusCode, 403);
+
+  const analyst = await testAccount("Analyst Default Team", "analyst");
+  await saveTeamMember({
+    team_id: owner.team.id,
+    user_id: analyst.user.id,
+    role: "analyst",
+    created_at: nowIso()
+  });
+  const analystCookie = await sessionCookie(analyst.user.id, owner.team.id);
+  const allowed = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Analyst write", text: "Stop weak hooks before launch. Try the starter kit today." },
+    { cookie: analystCookie }
+  );
+  assert.equal(allowed.statusCode, 200);
 });
 
 test("seeds assets and creates a comparison", async () => {
@@ -463,6 +499,143 @@ test("uses hosted extraction for media assets before filename fallback", async (
   }
 });
 
+test("exposes enterprise controls for brands, governance, validation, imports, and audit", async () => {
+  const owner = await testAccount("Enterprise Team", "owner");
+  const headers = { cookie: owner.cookie };
+  const brand = await call(
+    "POST",
+    "/api/brand-profiles",
+    {
+      name: "Lumina",
+      brief: {
+        brand_name: "Lumina",
+        audience: "busy skincare buyers",
+        product_category: "hydration kit",
+        primary_offer: "starter kit",
+        required_claims: ["24 hour hydration"],
+        forbidden_terms: ["miracle cure"]
+      },
+      voice_rules: ["specific before abstract"]
+    },
+    headers
+  );
+  assert.equal(brand.statusCode, 200);
+  assert.equal(brand.json.brief.brand_name, "Lumina");
+
+  const imported = await call(
+    "POST",
+    "/api/imports",
+    {
+      platform: "meta",
+      source: "csv",
+      items: [
+        { asset_type: "script", name: "Import A", text: "Stop dry skin by lunch. Try the starter kit today." },
+        { asset_type: "script", name: "Import B", text: "Our product is a modern ecosystem for everyone." }
+      ]
+    },
+    headers
+  );
+  assert.equal(imported.statusCode, 200);
+  assert.equal(imported.json.job.status, "complete");
+  assert.equal(imported.json.assets.length, 2);
+
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    {
+      asset_ids: imported.json.assets.map((asset) => asset.id),
+      objective: "Use the saved brand profile.",
+      brand_profile_id: brand.json.id
+    },
+    headers
+  );
+  assert.equal(comparison.statusCode, 200);
+  assert.equal(comparison.json.brief.brand_name, "Lumina");
+  assert.equal(comparison.json.brand_profile_id, brand.json.id);
+
+  const library = await call("GET", "/api/library/assets", null, headers);
+  assert.equal(library.statusCode, 200);
+  assert.equal(library.json.total >= 2, true);
+
+  const deletion = await call(
+    "POST",
+    "/api/governance/deletion-requests",
+    { target_type: "asset", target_id: imported.json.assets[0].id, reason: "Customer removal request" },
+    headers
+  );
+  assert.equal(deletion.statusCode, 200);
+  assert.equal(deletion.json.status, "pending_review");
+
+  const benchmark = await call("POST", "/api/validation/benchmarks/run", { benchmark_id: "dtc-hooks-v1" }, headers);
+  assert.equal(benchmark.statusCode, 200);
+  assert.equal(benchmark.json.case_count, 3);
+
+  const admin = await call("GET", "/api/admin/summary", null, headers);
+  assert.equal(admin.statusCode, 200);
+  assert.equal(admin.json.inference.control_configured, false);
+
+  const exported = await call("GET", "/api/governance/export", null, headers);
+  assert.equal(exported.statusCode, 200);
+  assert.equal(exported.json.brand_profiles.some((profile) => profile.id === brand.json.id), true);
+  assert.equal(exported.json.governance_requests.some((item) => item.id === deletion.json.id), true);
+
+  const audit = await call("GET", "/api/audit/events", null, headers);
+  assert.equal(audit.statusCode, 200);
+  assert.equal(audit.json.some((event) => event.action === "brand_profile.created"), true);
+  assert.equal(audit.json.some((event) => event.action === "validation.benchmark_run"), true);
+});
+
+test("retries failed hosted inference jobs from admin controls", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousControlUrl = process.env.TRIBE_CONTROL_URL;
+  const previousApiKey = process.env.TRIBE_API_KEY;
+  const owner = await testAccount("Retry Team", "owner");
+  const headers = { cookie: owner.cookie };
+  const jobs = new Map();
+  let jobIndex = 0;
+
+  process.env.TRIBE_CONTROL_URL = "https://modal.test/control";
+  process.env.TRIBE_API_KEY = "test-key";
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `retry_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      const job = jobs.get(body.job_id);
+      return jsonResponse({ ...job, status: "failed", error: "GPU worker failed" });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Retry A", text: "Try the starter kit today." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Retry B", text: "A generic message." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Retry this comparison." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+    const failed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(failed.json.status, "failed");
+
+    const failedJob = failed.json.jobs[0];
+    const retried = await call("POST", `/api/admin/jobs/${failedJob.job_id}/retry`, null, headers);
+    assert.equal(retried.statusCode, 200);
+    assert.equal(retried.json.status, "processing");
+    assert.equal(retried.json.jobs.some((job) => job.previous_job_id === failedJob.job_id && job.attempt === 1), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv("TRIBE_CONTROL_URL", previousControlUrl);
+    restoreEnv("TRIBE_API_KEY", previousApiKey);
+  }
+});
+
 async function call(method, url, body = null, headers = {}) {
   const requestBody = body ? JSON.stringify(body) : "";
   const request = Readable.from(requestBody ? [Buffer.from(requestBody)] : []);
@@ -524,6 +697,18 @@ async function testAccount(teamName, role) {
     created_at: createdAt
   });
   return { user, team, cookie: `stimli_session=${token}` };
+}
+
+async function sessionCookie(userId, teamId) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  await saveSession({
+    token_hash: crypto.createHash("sha256").update(token).digest("hex"),
+    user_id: userId,
+    team_id: teamId,
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    created_at: nowIso()
+  });
+  return `stimli_session=${token}`;
 }
 
 function jsonResponse(payload, status = 200) {
