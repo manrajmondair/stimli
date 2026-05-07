@@ -2062,6 +2062,16 @@ textarea::placeholder {
     display: none;
   }
 
+  .enterprise-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .enterprise-nav button {
+    font-size: 0.92rem;
+    gap: 7px;
+    padding: 0 8px;
+  }
+
   .landing-hero {
     min-height: 0;
     padding: 48px 16px 22px;
