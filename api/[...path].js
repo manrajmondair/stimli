@@ -92,7 +92,8 @@ export default async function handler(request, response) {
     }
 
     if (request.method === "GET" && apiPath === "/learning/summary") {
-      return sendJson(response, 200, learningSummary(await listOutcomes(null, workspaceId)));
+      const [outcomes, comparisons] = await Promise.all([listOutcomes(null, workspaceId), listComparisons(workspaceId)]);
+      return sendJson(response, 200, learningSummary(outcomes, comparisons));
     }
 
     return sendJson(response, 404, { detail: "Not found" });
@@ -387,7 +388,7 @@ async function handleReports(request, response, segments, workspaceId) {
 async function buildReport(comparisonId, workspaceId) {
   const comparison = await requireCompleteComparison(comparisonId, workspaceId);
   const outcomes = await listOutcomes(comparisonId, workspaceId);
-  const learning = learningSummary(outcomes);
+  const learning = learningSummary(outcomes, [comparison]);
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const executiveSummary = winner
     ? `${comparison.recommendation.headline}. Confidence is ${Math.round(comparison.recommendation.confidence * 100)}%. The leading variant scored ${winner.analysis.scores.overall}/100.`
@@ -716,7 +717,7 @@ function workspaceFromClientPayload(clientPayload) {
   return workspaceId;
 }
 
-function learningSummary(outcomes) {
+function learningSummary(outcomes, comparisons = []) {
   const totalSpend = round(outcomes.reduce((sum, outcome) => sum + Number(outcome.spend || 0), 0), 2);
   const totalRevenue = round(outcomes.reduce((sum, outcome) => sum + Number(outcome.revenue || 0), 0), 2);
   const totalImpressions = outcomes.reduce((sum, outcome) => sum + Number(outcome.impressions || 0), 0);
@@ -725,6 +726,7 @@ function learningSummary(outcomes) {
   const best = outcomes.length
     ? [...outcomes].sort((left, right) => right.revenue - right.spend - (left.revenue - left.spend) || right.conversions - left.conversions || right.clicks - left.clicks)[0]
     : null;
+  const calibration = calibrationSummary(outcomes, comparisons);
   return {
     outcome_count: outcomes.length,
     total_spend: totalSpend,
@@ -732,10 +734,62 @@ function learningSummary(outcomes) {
     average_ctr: totalImpressions ? round(totalClicks / totalImpressions, 4) : 0,
     average_cvr: totalClicks ? round(totalConversions / totalClicks, 4) : 0,
     best_asset_id: best?.asset_id || null,
+    calibration,
     insight: outcomes.length
-      ? "Outcome data is ready to compare pre-spend predictions with launch performance."
+      ? calibration.evaluated_comparisons
+        ? `${calibration.aligned_predictions}/${calibration.evaluated_comparisons} predictions matched the strongest logged outcome.`
+        : "Outcome data is ready to compare pre-spend predictions with launch performance."
       : "No launch outcomes logged yet. Add post-flight results after a test campaign."
   };
+}
+
+function calibrationSummary(outcomes, comparisons) {
+  const outcomesByComparison = new Map();
+  for (const outcome of outcomes) {
+    if (!outcomesByComparison.has(outcome.comparison_id)) {
+      outcomesByComparison.set(outcome.comparison_id, []);
+    }
+    outcomesByComparison.get(outcome.comparison_id).push(outcome);
+  }
+
+  const evaluations = comparisons
+    .filter((comparison) => comparison.status === "complete" && comparison.recommendation?.winner_asset_id)
+    .map((comparison) => {
+      const comparisonOutcomes = outcomesByComparison.get(comparison.id) || [];
+      if (!comparisonOutcomes.length) {
+        return null;
+      }
+      const actual = [...comparisonOutcomes].sort(outcomeRank)[0];
+      const predicted = comparison.recommendation.winner_asset_id;
+      const predictedOutcome = comparisonOutcomes.find((outcome) => outcome.asset_id === predicted) || null;
+      return {
+        comparison_id: comparison.id,
+        predicted_asset_id: predicted,
+        actual_best_asset_id: actual.asset_id,
+        aligned: actual.asset_id === predicted,
+        actual_profit: round(Number(actual.revenue || 0) - Number(actual.spend || 0), 2),
+        predicted_profit: predictedOutcome ? round(Number(predictedOutcome.revenue || 0) - Number(predictedOutcome.spend || 0), 2) : null
+      };
+    })
+    .filter(Boolean);
+
+  const aligned = evaluations.filter((evaluation) => evaluation.aligned).length;
+  return {
+    evaluated_comparisons: evaluations.length,
+    aligned_predictions: aligned,
+    alignment_rate: evaluations.length ? round(aligned / evaluations.length, 3) : 0,
+    recent: evaluations.slice(-5)
+  };
+}
+
+function outcomeRank(left, right) {
+  return (
+    Number(right.revenue || 0) -
+    Number(right.spend || 0) -
+    (Number(left.revenue || 0) - Number(left.spend || 0)) ||
+    Number(right.conversions || 0) - Number(left.conversions || 0) ||
+    Number(right.clicks || 0) - Number(left.clicks || 0)
+  );
 }
 
 async function extractLandingPageText(url) {

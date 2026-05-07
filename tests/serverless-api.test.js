@@ -50,6 +50,41 @@ test("seeds assets and creates a comparison", async () => {
   assert.ok(comparison.json.suggestions.length > 0);
 });
 
+test("calibrates predicted winners against logged outcomes", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    {
+      asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id),
+      objective: "Pick the winner to calibrate."
+    },
+    headers
+  );
+  const predicted = comparison.json.recommendation.winner_asset_id;
+  const other = comparison.json.variants.find((variant) => variant.asset.id !== predicted).asset.id;
+  await call(
+    "POST",
+    `/api/comparisons/${comparison.json.id}/outcomes`,
+    { asset_id: predicted, spend: 100, impressions: 10000, clicks: 500, conversions: 40, revenue: 900, notes: "" },
+    headers
+  );
+  await call(
+    "POST",
+    `/api/comparisons/${comparison.json.id}/outcomes`,
+    { asset_id: other, spend: 100, impressions: 10000, clicks: 200, conversions: 12, revenue: 240, notes: "" },
+    headers
+  );
+
+  const summary = await call("GET", "/api/learning/summary", null, headers);
+  assert.equal(summary.statusCode, 200);
+  assert.equal(summary.json.calibration.evaluated_comparisons, 1);
+  assert.equal(summary.json.calibration.aligned_predictions, 1);
+  assert.equal(summary.json.calibration.alignment_rate, 1);
+});
+
 test("scopes persistent objects by workspace header", async () => {
   const workspaceA = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const workspaceB = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;

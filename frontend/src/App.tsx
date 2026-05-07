@@ -602,6 +602,12 @@ function LearningSnapshot({ learning }: { learning: LearningSummary }) {
         {Math.round(learning.average_ctr * 10000) / 100}% CTR
       </span>
       <span>${learning.total_revenue.toLocaleString()} revenue tracked</span>
+      <span>
+        <Gauge size={16} />
+        {learning.calibration.evaluated_comparisons
+          ? `${Math.round(learning.calibration.alignment_rate * 100)}% prediction alignment`
+          : "Calibration pending"}
+      </span>
     </div>
   );
 }

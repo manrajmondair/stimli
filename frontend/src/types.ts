@@ -129,6 +129,19 @@ export type LearningSummary = {
   average_ctr: number;
   average_cvr: number;
   best_asset_id: string | null;
+  calibration: {
+    evaluated_comparisons: number;
+    aligned_predictions: number;
+    alignment_rate: number;
+    recent: Array<{
+      comparison_id: string;
+      predicted_asset_id: string;
+      actual_best_asset_id: string;
+      aligned: boolean;
+      actual_profit: number;
+      predicted_profit: number | null;
+    }>;
+  };
   insight: string;
 };
 
