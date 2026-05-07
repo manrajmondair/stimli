@@ -6,18 +6,17 @@
   "outputDirectory": "frontend/dist",
   "regions": ["sfo1"],
   "functions": {
-    "api/[...path].js": {
-      "memory": 1024,
+    "api/**/*.js": {
       "maxDuration": 30
     }
   },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "source": "/api/:path*",
+      "destination": "/api/[...path]"
     },
     {
-      "source": "/(.*)",
+      "source": "/:path*",
       "destination": "/index.html"
     }
   ]
