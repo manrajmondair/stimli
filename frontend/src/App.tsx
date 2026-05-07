@@ -101,13 +101,221 @@ const scoreLabels: { key: keyof ScoreBreakdown; label: string }[] = [
 export function App() {
   const shareToken = getShareToken();
   const inviteToken = getInviteToken();
+  const path = window.location.pathname;
   if (window.location.pathname === "/legal") {
     return <LegalPage />;
   }
   if (inviteToken) {
     return <InvitePage token={inviteToken} />;
   }
-  return shareToken ? <SharedReportPage token={shareToken} /> : <WorkspaceApp />;
+  if (shareToken) {
+    return <SharedReportPage token={shareToken} />;
+  }
+  return path === "/app" || path.startsWith("/app/") ? <WorkspaceApp /> : <LandingPage />;
+}
+
+function LandingPage() {
+  return (
+    <main className="landing-shell">
+      <nav className="landing-nav">
+        <a className="brand-mark" href="/">
+          <span>St</span>
+          Stimli
+        </a>
+        <div>
+          <a href="#how-it-works">How it works</a>
+          <a href="#sample-report">Sample report</a>
+          <a href="/legal">Trust</a>
+        </div>
+        <a className="nav-cta" href="/app">
+          Start free analysis
+        </a>
+      </nav>
+
+      <section className="landing-hero">
+        <div className="hero-copy">
+          <p className="eyebrow">Pre-spend creative intelligence</p>
+          <h1>Know which creative to ship before you spend.</h1>
+          <p>
+            Stimli compares scripts, pages, images, audio, and video with TRIBE-backed response signals, then turns the
+            evidence into one decision and the exact edits to make next.
+          </p>
+          <div className="landing-actions">
+            <a className="button primary" href="/app">
+              <Play size={18} />
+              Start free analysis
+            </a>
+            <a className="button ghost" href="#sample-report">
+              <FileText size={18} />
+              View sample report
+            </a>
+          </div>
+          <div className="hero-signals">
+            <span>Free to start</span>
+            <span>Real TRIBE inference</span>
+            <span>Private uploads</span>
+            <span>Passkey accounts</span>
+          </div>
+        </div>
+        <LandingProductScene />
+      </section>
+
+      <section className="landing-section proof-strip">
+        <span>Built for DTC growth teams</span>
+        <span>Comparison-first workflow</span>
+        <span>Timestamped edit cards</span>
+        <span>Outcome calibration</span>
+      </section>
+
+      <section className="landing-section product-section">
+        <div>
+          <p className="eyebrow">Product workflow</p>
+          <h2>One clean path from variant chaos to a shipping decision.</h2>
+        </div>
+        <div className="workflow-grid" id="how-it-works">
+          <article>
+            <Upload size={20} />
+            <h3>Upload variants</h3>
+            <p>Bring scripts, landing pages, static creative, audio, or short video into one comparison set.</p>
+          </article>
+          <article>
+            <Activity size={20} />
+            <h3>Predict response</h3>
+            <p>Blend brain-response timelines with hook, pacing, CTA, brand cue, offer, and clarity scoring.</p>
+          </article>
+          <article>
+            <Target size={20} />
+            <h3>Ship or edit</h3>
+            <p>Get the winner, the confidence, and concrete edits your team can apply before buying media.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section multimodal-section">
+        <div>
+          <p className="eyebrow">Multimodal inputs</p>
+          <h2>Creative intelligence before the ad account ever sees spend.</h2>
+        </div>
+        <div className="input-matrix">
+          {["Script", "Landing page", "Static creative", "Audio", "Video"].map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-section trust-section">
+        <div>
+          <p className="eyebrow">Free-first infrastructure</p>
+          <h2>Clean enough for customers, light enough for a founder budget.</h2>
+        </div>
+        <div className="trust-grid">
+          <article>
+            <KeyRound size={20} />
+            <strong>Passkey accounts</strong>
+            <p>No paid auth provider required. Sessions and teams live in Postgres.</p>
+          </article>
+          <article>
+            <ShieldCheck size={20} />
+            <strong>Private uploads</strong>
+            <p>Media goes to private Blob storage and is hidden from public report payloads.</p>
+          </article>
+          <article>
+            <Gauge size={20} />
+            <strong>Free-tier controls</strong>
+            <p>Conservative quotas, one Modal container, and billing disabled until deliberately configured.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section report-preview" id="sample-report">
+        <div>
+          <p className="eyebrow">Sample decision report</p>
+          <h2>Every answer ends with what to do next.</h2>
+          <p>
+            Reports package the winner, score deltas, timeline evidence, and edit cards into a shareable artifact for
+            creative, growth, and founder review.
+          </p>
+          <a className="button secondary" href="/app">
+            Run your first comparison
+          </a>
+        </div>
+        <div className="report-card">
+          <span>Recommendation</span>
+          <h3>Ship Variant A with one CTA edit</h3>
+          <div className="report-score-row">
+            <b>84</b>
+            <p>Variant A wins on hook strength, memory, and offer clarity. CTA is late by 4 seconds.</p>
+          </div>
+          <div className="report-edits">
+            <p>Move offer into first 3 seconds.</p>
+            <p>Show brand cue before proof claim.</p>
+            <p>Replace generic close with starter-kit CTA.</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-final">
+        <h2>Stop guessing which creative deserves budget.</h2>
+        <a className="button primary" href="/app">
+          Start free analysis
+        </a>
+      </section>
+    </main>
+  );
+}
+
+function LandingProductScene() {
+  const bars = [
+    [88, 70, 30],
+    [76, 78, 42],
+    [92, 82, 36],
+    [80, 86, 44],
+    [68, 72, 52],
+    [74, 80, 38]
+  ];
+  return (
+    <div className="product-scene" role="img" aria-label="Stimli creative comparison preview">
+      <div className="scene-window">
+        <div className="scene-toolbar">
+          <span>Creative decision</span>
+          <strong>Processing complete</strong>
+        </div>
+        <div className="scene-decision">
+          <p>Recommendation</p>
+          <h2>Ship Variant A</h2>
+          <div>
+            <b>84</b>
+            <span>92% confidence</span>
+          </div>
+        </div>
+        <div className="scene-grid">
+          <article className="scene-variant winner">
+            <span>Variant A</span>
+            <strong>Pain-led hook</strong>
+            <small>+14 pts ahead</small>
+          </article>
+          <article className="scene-variant">
+            <span>Variant B</span>
+            <strong>Generic product story</strong>
+            <small>Revise hook</small>
+          </article>
+        </div>
+        <div className="scene-timeline">
+          {bars.map(([attention, memory, load], index) => (
+            <div key={index}>
+              <i style={{ height: `${attention}%` }} />
+              <i style={{ height: `${memory}%` }} />
+              <i style={{ height: `${load}%` }} />
+            </div>
+          ))}
+        </div>
+        <div className="scene-edits">
+          <p>Move the offer into the first 3 seconds.</p>
+          <p>Add brand cue before the proof claim.</p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function WorkspaceApp() {
@@ -155,6 +363,8 @@ function WorkspaceApp() {
     () => (activeProjectId ? comparisons.filter((item) => item.project_id === activeProjectId) : comparisons),
     [activeProjectId, comparisons]
   );
+  const activeProjectName =
+    selectedProjectId === "all" ? "All projects" : projects.find((project) => project.id === selectedProjectId)?.name ?? "Project";
   const selectedAssets = useMemo(() => visibleAssets.filter((asset) => selected.includes(asset.id)), [visibleAssets, selected]);
   const brief = useMemo<CreativeBrief>(
     () => ({
@@ -448,12 +658,14 @@ function WorkspaceApp() {
 
   return (
     <main className="app-shell">
-      <section className="top-band">
+      <AppHeader session={session} projectName={activeProjectName} />
+
+      <section className="top-band app-intro">
         <div>
-          <p className="eyebrow">Pre-spend creative intelligence</p>
-          <h1>Stimli decides which creative ships next.</h1>
+          <p className="eyebrow">Creative command center</p>
+          <h1>Compare variants, pick the winner, and ship the edit list.</h1>
           <p className="subhead">
-            Compare scripts, pages, static ads, audio, and video notes with predicted response signals and practical edit cards.
+            A compact workspace for multimodal uploads, TRIBE-backed response signals, project history, and shareable decision reports.
           </p>
           {learning && <LearningSnapshot learning={learning} />}
           {providers.length > 0 && <ProviderSnapshot providers={providers} />}
@@ -618,7 +830,7 @@ function WorkspaceApp() {
 
           <div className="asset-list">
             {visibleAssets.length === 0 ? (
-              <EmptyState />
+              <EmptyState onSeed={handleSeed} busy={busy} />
             ) : (
               visibleAssets.map((asset) => (
                 <button
@@ -781,7 +993,7 @@ function InvitePage({ token }: { token: string }) {
     setError(null);
     try {
       await acceptInvite(token);
-      window.location.assign("/");
+      window.location.assign("/app");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not accept invite.");
       setBusy(false);
@@ -1049,6 +1261,31 @@ function AuthPanel({
   );
 }
 
+function AppHeader({ session, projectName }: { session: AuthSession | null; projectName: string }) {
+  return (
+    <header className="app-header">
+      <a className="brand-mark app-brand" href="/">
+        <span>St</span>
+        Stimli
+      </a>
+      <div className="app-context">
+        <span>
+          Team
+          <strong>{session?.team?.name ?? "Trial workspace"}</strong>
+        </span>
+        <span>
+          Project
+          <strong>{projectName}</strong>
+        </span>
+      </div>
+      <nav>
+        <a href="/">Landing</a>
+        <a href="/legal">Trust</a>
+      </nav>
+    </header>
+  );
+}
+
 function BillingPanel({
   billing,
   busy,
@@ -1086,11 +1323,22 @@ function BillingPanel({
   );
 }
 
-function EmptyState() {
+function EmptyState({ onSeed, busy }: { onSeed?: () => Promise<void>; busy?: boolean }) {
   return (
     <div className="empty-state">
       <FileText size={34} />
-      <p>Add variants or load the demo set.</p>
+      <h3>Start with your first comparison.</h3>
+      <p>Add variants manually or load a realistic skincare launch set to see the full recommendation flow.</p>
+      <div className="empty-examples">
+        <span>Variant A: pain-led hook</span>
+        <span>Variant B: proof-led hook</span>
+      </div>
+      {onSeed && (
+        <button className="button secondary" onClick={onSeed} disabled={busy}>
+          {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+          Load demo assets
+        </button>
+      )}
     </div>
   );
 }
@@ -1230,6 +1478,7 @@ function FailedComparison({ comparison }: { comparison: Comparison }) {
 function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Comparison; onOutcomeSaved: () => Promise<void> }) {
   const winner = comparison.variants.find((variant) => variant.asset.id === comparison.recommendation.winner_asset_id);
   const [reportBusy, setReportBusy] = useState(false);
+  const [reportNotice, setReportNotice] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
   const [challengerBusy, setChallengerBusy] = useState(false);
@@ -1262,17 +1511,34 @@ function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Co
             <span>overall</span>
           </div>
         )}
-        <button className="button report-button" onClick={() => exportReport(comparison.id, setReportBusy)} disabled={reportBusy}>
+        <button
+          className="button report-button"
+          onClick={async () => {
+            await exportReport(comparison.id, setReportBusy);
+            setReportNotice("JSON report downloaded");
+          }}
+          disabled={reportBusy}
+        >
           {reportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
           JSON
         </button>
-        <button className="button report-button" onClick={() => exportMarkdownReport(comparison.id, setReportBusy)} disabled={reportBusy}>
+        <button
+          className="button report-button"
+          onClick={async () => {
+            await exportMarkdownReport(comparison.id, setReportBusy);
+            setReportNotice("Markdown report downloaded");
+          }}
+          disabled={reportBusy}
+        >
           {reportBusy ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
           Markdown
         </button>
         <button
           className="button report-button"
-          onClick={async () => setShareUrl(await shareReport(comparison.id, setShareBusy))}
+          onClick={async () => {
+            setShareUrl(await shareReport(comparison.id, setShareBusy));
+            setReportNotice("Share link copied");
+          }}
           disabled={shareBusy}
         >
           {shareBusy ? <Loader2 className="spin" size={18} /> : <Share2 size={18} />}
@@ -1283,6 +1549,7 @@ function CompleteComparisonView({ comparison, onOutcomeSaved }: { comparison: Co
             Link copied
           </a>
         )}
+        {reportNotice && <span className="report-notice">{reportNotice}</span>}
       </section>
 
       <section className="panel challenger-panel">
