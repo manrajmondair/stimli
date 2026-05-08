@@ -86,6 +86,8 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [newClaim, setNewClaim] = useState("");
   const [newForbidden, setNewForbidden] = useState("");
+  const [pollNote, setPollNote] = useState<string | null>(null);
+  const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
   const progressTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -137,19 +139,26 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     if (progressTimerRef.current !== null) {
       window.clearInterval(progressTimerRef.current);
     }
-    setProgress(0);
-    let p = 0;
+    setProgress(2);
+    let p = 2;
+    // Pre-comparison animation: ramp toward ~30% while we wait for the initial POST
+    // to return. Once we have real status from the backend we drive progress from
+    // job state instead of the timer.
     progressTimerRef.current = window.setInterval(() => {
-      p = Math.min(94, p + 4 + Math.random() * 4);
+      p = Math.min(30, p + 1.5 + Math.random() * 1.5);
       setProgress(Math.round(p));
-    }, 220);
+    }, 320);
   }
 
-  function finishProgressAnimation() {
+  function stopProgressAnimation() {
     if (progressTimerRef.current !== null) {
       window.clearInterval(progressTimerRef.current);
       progressTimerRef.current = null;
     }
+  }
+
+  function finishProgressAnimation() {
+    stopProgressAnimation();
     setProgress(100);
   }
 
@@ -217,12 +226,15 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     }
     setBusy(true);
     setComparison(null);
+    setPollNote(null);
     setStep("analyzing");
+    setPollStartedAt(Date.now());
     startProgressAnimation();
     try {
       const next = await createBriefComparisonForProject(selected, FALLBACK_OBJECTIVE, brief, null);
       setComparison(next);
       if (next.status === "processing") {
+        applyJobProgress(next);
         await pollComparison(next.id);
       } else {
         finishProgressAnimation();
@@ -241,32 +253,86 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     }
   }
 
+  function applyJobProgress(snapshot: Comparison) {
+    // Stop the timer-based ramp once the backend gives us real status.
+    stopProgressAnimation();
+    const next = computeProgress(snapshot);
+    setProgress((current) => Math.max(current, next));
+  }
+
   async function pollComparison(comparisonId: string) {
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      await delay(Math.min(2200 + attempt * 250, 7000));
+    let consecutiveErrors = 0;
+    const start = Date.now();
+    // Keep polling for ~15 minutes. Modal video jobs can take a while; we'd rather
+    // wait than time the user out at 5 minutes with no result.
+    const MAX_MS = 15 * 60 * 1000;
+    let attempt = 0;
+    while (Date.now() - start < MAX_MS) {
+      const wait = Math.min(2500 + attempt * 200, 6000);
+      await delay(wait);
+      attempt += 1;
       try {
         const fresh = await getComparison(comparisonId);
+        consecutiveErrors = 0;
         setComparison(fresh);
+        applyJobProgress(fresh);
         if (fresh.status === "complete") {
           finishProgressAnimation();
+          setPollNote(null);
           setStep("result");
           setActiveVariantIdx(0);
           await refreshComparisons();
           return;
         }
-        if (fresh.status === "failed" || fresh.status === "cancelled") {
+        if (fresh.status === "failed") {
           finishProgressAnimation();
           setStep("inventory");
-          flash({ kind: "error", message: `Analysis ${fresh.status}.` });
+          const reason = fresh.recommendation?.reasons?.[0] || "Analysis failed.";
+          flash({ kind: "error", message: reason });
+          await refreshComparisons();
           return;
         }
+        if (fresh.status === "cancelled") {
+          finishProgressAnimation();
+          setStep("inventory");
+          flash({ kind: "info", message: "Analysis was cancelled." });
+          await refreshComparisons();
+          return;
+        }
+        // Still processing — surface waiting context after long stretches.
+        const elapsedSec = Math.round((Date.now() - start) / 1000);
+        if (elapsedSec > 90) {
+          setPollNote(
+            `Still working. Hosted model jobs for video can take a few minutes. (${elapsedSec}s elapsed)`
+          );
+        }
       } catch (err) {
-        console.warn(err);
+        consecutiveErrors += 1;
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        setPollNote(
+          consecutiveErrors > 2
+            ? `Network is being flaky — retrying. (${msg})`
+            : `Refreshing status… (${msg})`
+        );
+        if (consecutiveErrors > 8) {
+          // After repeated failures, fall back rather than spin forever.
+          finishProgressAnimation();
+          setStep("inventory");
+          flash({ kind: "error", message: `Could not refresh comparison: ${msg}` });
+          return;
+        }
       }
     }
+    // Timed out client-side; the comparison may still finish on the backend, so
+    // surface it in Recent decisions instead of erroring out the user.
     finishProgressAnimation();
     setStep("inventory");
-    flash({ kind: "error", message: "Analysis is taking longer than expected." });
+    flash({
+      kind: "info",
+      message:
+        "Still running on the backend — we moved it to Recent decisions. Re-open later to see the result."
+    });
+    await refreshComparisons();
   }
 
   async function handleCancel() {
@@ -356,6 +422,50 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     setComparison(null);
     setStep("inventory");
     setProgress(0);
+    setPollNote(null);
+    setPollStartedAt(null);
+  }
+
+  function continueInBackground() {
+    // Stop showing the analyzing view but keep the comparison id so the user
+    // can pick it up from Recent decisions when ready.
+    stopProgressAnimation();
+    setStep("inventory");
+    setPollNote(null);
+    flash({
+      kind: "info",
+      message: "Comparison is still running. We'll surface it under Recent decisions when it lands."
+    });
+    void refreshComparisons();
+  }
+
+  async function openRecent(comparisonId: string) {
+    setBusy(true);
+    try {
+      const fresh = await getComparison(comparisonId);
+      setComparison(fresh);
+      if (fresh.status === "complete") {
+        setStep("result");
+        setActiveVariantIdx(0);
+        return;
+      }
+      if (fresh.status === "processing") {
+        setPollStartedAt(Date.now());
+        setStep("analyzing");
+        startProgressAnimation();
+        applyJobProgress(fresh);
+        await pollComparison(fresh.id);
+        return;
+      }
+      flash({
+        kind: "info",
+        message: `Comparison ${fresh.status}. Recreate from the inventory to retry.`
+      });
+    } catch (err) {
+      flash({ kind: "error", message: err instanceof Error ? err.message : "Could not open comparison." });
+    } finally {
+      setBusy(false);
+    }
   }
 
   const selectedAssets = useMemo(
@@ -429,6 +539,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
           toggleSelect={toggleSelect}
           onSeed={handleSeed}
           recents={recentComparisons}
+          onOpenRecent={openRecent}
         />
         <ResultsColumn
           step={step}
@@ -445,6 +556,10 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
           onExport={handleExport}
           onDraftChallenger={handleDraftChallenger}
           onLogOutcome={handleLogOutcome}
+          onCancel={handleCancel}
+          onContinueInBackground={continueInBackground}
+          pollNote={pollNote}
+          pollStartedAt={pollStartedAt}
         />
       </div>
 
@@ -689,13 +804,15 @@ function InventoryPanel({
   selected,
   toggleSelect,
   onSeed,
-  recents
+  recents,
+  onOpenRecent
 }: {
   assets: Asset[];
   selected: string[];
   toggleSelect: (id: string) => void;
   onSeed: () => void;
   recents: Comparison[];
+  onOpenRecent: (comparisonId: string) => void;
 }) {
   return (
     <section className="wb-col wb-col-inventory">
@@ -773,19 +890,47 @@ function InventoryPanel({
           recents.map((recent) => {
             const winner = recent.variants.find((v) => v.asset.id === recent.recommendation.winner_asset_id);
             const verb = recent.recommendation.verdict === "ship" ? "Ship" : "Revise";
+            const isOpen = recent.status === "processing" || recent.status === "complete";
+            const accent = recent.status === "processing"
+              ? "var(--butter)"
+              : recent.status === "failed" || recent.status === "cancelled"
+              ? "var(--ink-faint)"
+              : winner
+              ? "var(--tomato)"
+              : "var(--ink)";
+            const headline = recent.status === "processing"
+              ? "Still analyzing…"
+              : recent.status === "failed"
+              ? "Analysis failed."
+              : recent.status === "cancelled"
+              ? "Analysis cancelled."
+              : `${verb} ${winner?.asset.name?.split("·")[0]?.trim() ?? "—"}.`;
             return (
-              <div
+              <button
                 key={recent.id}
                 className="recent-row"
-                style={{ borderLeftColor: winner ? "var(--tomato)" : "var(--ink)" }}
+                onClick={() => onOpenRecent(recent.id)}
+                disabled={!isOpen}
+                style={{
+                  borderLeftColor: accent,
+                  cursor: isOpen ? "pointer" : "default",
+                  background: "var(--paper-warm)",
+                  border: 0,
+                  borderLeft: `4px solid ${accent}`,
+                  textAlign: "left",
+                  font: "inherit",
+                  color: "inherit",
+                  width: "100%"
+                }}
               >
-                <strong>
-                  {verb} {winner?.asset.name?.split("·")[0]?.trim() ?? "—"}.
-                </strong>
+                <strong>{headline}</strong>
                 <span>
-                  {Math.round((recent.recommendation.confidence ?? 0) * 100)}% · {formatRelative(recent.created_at)}
+                  {recent.status === "complete"
+                    ? `${Math.round((recent.recommendation.confidence ?? 0) * 100)}%`
+                    : recent.status}{" "}
+                  · {formatRelative(recent.created_at)}
                 </span>
-              </div>
+              </button>
             );
           })
         )}
@@ -808,7 +953,11 @@ function ResultsColumn({
   onShare,
   onExport,
   onDraftChallenger,
-  onLogOutcome
+  onLogOutcome,
+  onCancel,
+  onContinueInBackground,
+  pollNote,
+  pollStartedAt
 }: {
   step: Step;
   progress: number;
@@ -824,12 +973,26 @@ function ResultsColumn({
   onExport: () => void;
   onDraftChallenger: () => void;
   onLogOutcome: (assetId: string) => void;
+  onCancel: () => void;
+  onContinueInBackground: () => void;
+  pollNote: string | null;
+  pollStartedAt: number | null;
 }) {
   if (step === "intake" || step === "inventory") {
     return <PreCompare selectedAssets={selectedAssets} onSeed={onSeed} />;
   }
   if (step === "analyzing") {
-    return <Analyzing progress={progress} selectedAssets={selectedAssets} />;
+    return (
+      <Analyzing
+        progress={progress}
+        selectedAssets={selectedAssets}
+        comparison={comparison}
+        pollNote={pollNote}
+        pollStartedAt={pollStartedAt}
+        onCancel={onCancel}
+        onContinueInBackground={onContinueInBackground}
+      />
+    );
   }
   if (!comparison || !activeVariant) {
     return <PreCompare selectedAssets={selectedAssets} onSeed={onSeed} />;
@@ -916,22 +1079,40 @@ function PreCompare({ selectedAssets, onSeed }: { selectedAssets: Asset[]; onSee
   );
 }
 
-function Analyzing({ progress, selectedAssets }: { progress: number; selectedAssets: Asset[] }) {
-  const stages = [
-    "Reading the words",
-    "Sampling brain response",
-    "Tracing the timeline",
-    "Tasting the offer",
-    "Composing the verdict"
-  ];
-  const stageIdx = Math.min(stages.length - 1, Math.floor((progress / 100) * stages.length));
+function Analyzing({
+  progress,
+  selectedAssets,
+  comparison,
+  pollNote,
+  pollStartedAt,
+  onCancel,
+  onContinueInBackground
+}: {
+  progress: number;
+  selectedAssets: Asset[];
+  comparison: Comparison | null;
+  pollNote: string | null;
+  pollStartedAt: number | null;
+  onCancel: () => void;
+  onContinueInBackground: () => void;
+}) {
+  const variantSource = (comparison?.variants?.length ?? 0) > 0
+    ? comparison!.variants.map((variant) => variant.asset)
+    : selectedAssets;
+  const jobByAssetId = new Map((comparison?.jobs ?? []).map((job) => [job.asset_id, job]));
+  const elapsed = pollStartedAt ? Math.round((Date.now() - pollStartedAt) / 1000) : 0;
+  const showLongRunning = elapsed > 60;
+  const stageLabels = labelsForProgress(progress, comparison);
+
   return (
     <section className="wb-col wb-col-results">
       <div className="panel-card analyze-card">
-        <span className="kicker">analyzing · {progress}%</span>
+        <span className="kicker">
+          analyzing · {progress}%{showLongRunning ? ` · ${elapsed}s elapsed` : ""}
+        </span>
         <h2 className="big-h">Growing thought-trails…</h2>
         <p className="big-p">
-          Stimli is reading {selectedAssets.length} variants second-by-second and braiding the signals.
+          Stimli is reading {variantSource.length} variants second-by-second and braiding the signals.
         </p>
 
         <div className="analyze-stage">
@@ -941,7 +1122,7 @@ function Analyzing({ progress, selectedAssets }: { progress: number; selectedAss
           <div className="bob" style={{ ["--rot" as string]: "8deg" } as CSSProperties}>
             <BrainBlob size={120} color="var(--pistachio)" eyes />
           </div>
-          {selectedAssets.length > 2 ? (
+          {variantSource.length > 2 ? (
             <div className="bob slow" style={{ ["--rot" as string]: "-4deg" } as CSSProperties}>
               <BrainBlob size={94} color="var(--butter)" />
             </div>
@@ -954,16 +1135,124 @@ function Analyzing({ progress, selectedAssets }: { progress: number; selectedAss
         </div>
 
         <ul className="stage-list">
-          {stages.map((label, i) => (
-            <li key={label} className={i < stageIdx ? "done" : i === stageIdx ? "live" : ""}>
+          {stageLabels.map((stage) => (
+            <li key={stage.label} className={stage.state}>
               <span className="stage-dot" />
-              {label}
+              {stage.label}
             </li>
           ))}
         </ul>
+
+        {variantSource.length > 0 ? (
+          <ul style={{ listStyle: "none", padding: 0, margin: "20px 0 0", display: "flex", flexDirection: "column", gap: 8 }}>
+            {variantSource.map((asset, idx) => {
+              const job = jobByAssetId.get(asset.id);
+              const status = job?.status ?? comparison?.variants[idx]?.analysis.status ?? "queued";
+              const accent = COLOR_CYCLE[idx % COLOR_CYCLE.length];
+              const error = job?.error;
+              return (
+                <li
+                  key={asset.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "32px 1fr auto",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: "8px 12px",
+                    background: "var(--paper-warm)",
+                    border: "1.5px solid var(--ink)",
+                    borderRadius: 12
+                  }}
+                >
+                  <BrainBlob size={28} color={accent} />
+                  <div style={{ minWidth: 0 }}>
+                    <strong style={{ fontFamily: "var(--body)", fontWeight: 600, fontSize: 13 }}>{asset.name}</strong>
+                    {error ? (
+                      <p style={{ margin: 0, fontSize: 11.5, color: "var(--tomato-ink)" }}>{error}</p>
+                    ) : (
+                      <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-soft)" }}>
+                        {jobStatusBlurb(status, asset.type)}
+                      </p>
+                    )}
+                  </div>
+                  <span
+                    className="claim-pill"
+                    style={statusPillStyle(status)}
+                  >
+                    {status}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+
+        {pollNote ? (
+          <div className="banner" style={{ marginTop: 18 }}>
+            {pollNote}
+          </div>
+        ) : null}
+
+        {showLongRunning ? (
+          <div style={{ marginTop: 18, display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <button className="btn ghost" onClick={onContinueInBackground}>
+              Continue in background
+            </button>
+            <button className="btn cream" onClick={onCancel}>
+              Cancel analysis
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
+}
+
+function labelsForProgress(progress: number, comparison: Comparison | null): Array<{ label: string; state: string }> {
+  const stages = [
+    "Reading the words",
+    "Sampling brain response",
+    "Tracing the timeline",
+    "Tasting the offer",
+    "Composing the verdict"
+  ];
+  const jobs = comparison?.jobs ?? [];
+  const completedJobs = jobs.filter((job) => job.status === "complete").length;
+  const totalJobs = jobs.length;
+  let liveIdx = Math.min(stages.length - 1, Math.floor((progress / 100) * stages.length));
+  if (totalJobs > 0) {
+    if (completedJobs === 0) liveIdx = 1;
+    else if (completedJobs < totalJobs) liveIdx = 2;
+    else liveIdx = 4;
+  }
+  return stages.map((label, i) => ({
+    label,
+    state: i < liveIdx ? "done" : i === liveIdx ? "live" : ""
+  }));
+}
+
+function jobStatusBlurb(status: string, type: AssetType): string {
+  if (status === "complete") return "Brain trace ready.";
+  if (status === "failed") return "Job failed.";
+  if (status === "cancelled") return "Job cancelled.";
+  if (status === "queued") return type === "video" || type === "audio" ? "Queued for hosted Modal job." : "Waiting in line.";
+  if (status === "running") return "Modal GPU is sampling responses.";
+  if (status === "processing") return type === "video" ? "Extracting frames + transcript." : "Processing on the brain model.";
+  if (status === "retrying") return "Hosted job retrying after a transient error.";
+  return "Working…";
+}
+
+function statusPillStyle(status: string): CSSProperties {
+  if (status === "complete") {
+    return { background: "var(--pistachio-soft)", borderColor: "var(--pistachio-ink)", color: "var(--pistachio-ink)" };
+  }
+  if (status === "failed" || status === "cancelled") {
+    return { background: "var(--tomato-soft)", borderColor: "var(--tomato-ink)", color: "var(--tomato-ink)" };
+  }
+  if (status === "running" || status === "processing") {
+    return { background: "var(--butter-soft)", borderColor: "var(--butter-ink)", color: "var(--butter-ink)" };
+  }
+  return { background: "var(--paper-warm)", borderColor: "var(--ink)", color: "var(--ink-soft)" };
 }
 
 function Result({
@@ -1301,6 +1590,31 @@ function fallbackEdits(variant: VariantResult): Array<{ title: string; detail: s
     });
   }
   return list.slice(0, 4);
+}
+
+function computeProgress(comparison: Comparison | null): number {
+  if (!comparison) return 0;
+  if (comparison.status === "complete") return 100;
+  if (comparison.status === "failed" || comparison.status === "cancelled") return 100;
+  const jobs = comparison.jobs ?? [];
+  if (jobs.length === 0) {
+    // Server hasn't surfaced jobs yet (sync or pre-job-creation). Cap below 60% so
+    // we don't pretend to be near done.
+    return 35;
+  }
+  const weights: Record<string, number> = {
+    queued: 10,
+    retrying: 30,
+    processing: 50,
+    running: 65,
+    complete: 100,
+    failed: 0,
+    cancelled: 0
+  };
+  const total = jobs.reduce((sum, job) => sum + (weights[job.status] ?? 25), 0);
+  // Reserve the top 5% for the post-job scoring step.
+  const ratio = (total / (jobs.length * 100)) * 95;
+  return Math.max(35, Math.min(95, Math.round(ratio)));
 }
 
 function delay(ms: number): Promise<void> {
