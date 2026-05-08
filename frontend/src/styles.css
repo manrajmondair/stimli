@@ -293,22 +293,22 @@ h1, h2, h3, .display {
   text-align: center;
   line-height: 1;
   pointer-events: none;
-  padding: 0 22%;
+  padding: 0 16%;
   transform: rotate(-12deg);
   transform-origin: center;
 }
 .sticker-bubble strong {
   display: block;
-  font-size: 24px;
+  font-size: 32px;
   line-height: 1;
   letter-spacing: -0.01em;
 }
 .sticker-bubble span {
   display: block;
-  margin-top: 3px;
+  margin-top: 4px;
   font-family: var(--body);
   font-weight: 600;
-  font-size: 9.5px;
+  font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: lowercase;
   opacity: 0.85;
@@ -362,12 +362,14 @@ h1, h2, h3, .display {
   color: var(--ink-soft);
 }
 
-.signals { padding: 80px 64px 40px; position: relative; z-index: 3; max-width: 1280px; margin: 0 auto; }
+.signals { padding: 80px 64px 40px; position: relative; z-index: 3; max-width: 1280px; margin-inline: auto; }
 .signals-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 22px;
   align-items: stretch;
+  max-width: 1152px;
+  margin-inline: auto;
 }
 .signal-card {
   background: var(--paper);
@@ -402,11 +404,13 @@ h1, h2, h3, .display {
   margin: 0;
 }
 
-.inputs-section { padding: 80px 64px 40px; position: relative; z-index: 3; max-width: 1280px; margin: 0 auto; }
+.inputs-section { padding: 80px 64px 40px; position: relative; z-index: 3; max-width: 1280px; margin-inline: auto; }
 .inputs-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 18px;
+  max-width: 1152px;
+  margin-inline: auto;
 }
 .input-card {
   border: 2px solid var(--ink);

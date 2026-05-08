@@ -93,8 +93,8 @@ export function Landing() {
               <span className="orbit-label">Hook</span>
             </div>
 
-            <div className="sticker-callout" style={{ top: "38%", right: "16px" }}>
-              <StickerStar color="var(--butter)" size={84} rot={-12} />
+            <div className="sticker-callout" style={{ top: "34%", right: "10px" }}>
+              <StickerStar color="var(--butter)" size={128} rot={-12} />
               <div className="sticker-bubble">
                 <strong>92%</strong>
                 <span>confidence</span>
@@ -171,10 +171,11 @@ export function Landing() {
       <section className="inputs-section" id="inputs">
         <div className="section-head">
           <span className="kicker">03 — bring anything</span>
-          <h2>Not just video. Not just copy.</h2>
+          <h2>Hand us whatever you've got.</h2>
           <p>
-            Stimli takes the messy inputs growth teams actually have on hand — a founder script,
-            a landing-page link, a static ad, a voiceover, or a rough cut.
+            Script, landing page, static ad, voiceover, rough cut — Stimli reads the messy
+            inputs growth teams actually have on hand and grades them on the same brain-aware
+            timeline.
           </p>
         </div>
         <div className="inputs-grid">
