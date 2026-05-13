@@ -898,13 +898,16 @@ function InventoryPanel({
               : winner
               ? "var(--tomato)"
               : "var(--ink)";
+            const winnerLabel = winner?.asset.name.split("·")[0]?.trim();
             const headline = recent.status === "processing"
               ? "Still analyzing…"
               : recent.status === "failed"
               ? "Analysis failed."
               : recent.status === "cancelled"
               ? "Analysis cancelled."
-              : `${verb} ${winner?.asset.name?.split("·")[0]?.trim() ?? "—"}.`;
+              : winnerLabel
+              ? `${verb} ${winnerLabel}.`
+              : `${verb} the leading variant.`;
             return (
               <button
                 key={recent.id}
