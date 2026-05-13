@@ -471,10 +471,46 @@ export async function acceptInvite(token: string): Promise<AuthSession> {
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with ${response.status}`);
+    const raw = await response.text();
+    throw new Error(extractErrorMessage(raw) || `Request failed with ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+function extractErrorMessage(raw: string): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const candidate = pickErrorString(parsed);
+      if (candidate) return candidate;
+    } catch {
+      /* fall through */
+    }
+  }
+  return trimmed;
+}
+
+function pickErrorString(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = pickErrorString(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["detail", "message", "error", "msg"]) {
+      if (key in record) {
+        const found = pickErrorString(record[key]);
+        if (found) return found;
+      }
+    }
+  }
+  return "";
 }
 
 function jsonHeaders(): HeadersInit {

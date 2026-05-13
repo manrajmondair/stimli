@@ -1,6 +1,7 @@
-backend/.data
-backend/.venv
-backend/.pytest_cache
+backend/
+inference/
+docs/
+tests/
 frontend/dist
 frontend/node_modules
 node_modules
@@ -12,3 +13,4 @@ node_modules
 __pycache__
 *.pyc
 *.tsbuildinfo
+docker-compose.yml

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import {
   acceptInvite,
   createBrandProfile,
@@ -27,7 +27,7 @@ import type {
   TeamInvite,
   TeamMember
 } from "./types";
-import { BrainBlob, MarbleBlob, ScribbleUnderline, Sparkle, ThoughtTrail } from "./art";
+import { BrainBlob } from "./art";
 import { Workbench } from "./Workbench";
 
 type View = "workbench" | "library" | "brands" | "outcomes" | "team";

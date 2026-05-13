@@ -1100,7 +1100,13 @@ function Analyzing({
     ? comparison!.variants.map((variant) => variant.asset)
     : selectedAssets;
   const jobByAssetId = new Map((comparison?.jobs ?? []).map((job) => [job.asset_id, job]));
-  const elapsed = pollStartedAt ? Math.round((Date.now() - pollStartedAt) / 1000) : 0;
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!pollStartedAt) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [pollStartedAt]);
+  const elapsed = pollStartedAt ? Math.max(0, Math.round((nowTick - pollStartedAt) / 1000)) : 0;
   const showLongRunning = elapsed > 60;
   const stageLabels = labelsForProgress(progress, comparison);
 
