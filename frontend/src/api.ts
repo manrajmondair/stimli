@@ -486,7 +486,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function extractErrorMessage(raw: string): string {
+export function extractErrorMessage(raw: string): string {
   if (!raw) return "";
   const trimmed = raw.trim();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {

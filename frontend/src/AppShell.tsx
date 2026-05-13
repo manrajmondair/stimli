@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   acceptInvite,
   createBrandProfile,
@@ -225,10 +225,41 @@ function AuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthen
   const [teamName, setTeamName] = useState("My team");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusables = collectFocusable(modalRef.current);
+    focusables[0]?.focus();
+    return () => {
+      previousFocusRef.current?.focus();
+    };
+  }, []);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && !busy) onClose();
+      if (e.key === "Escape" && !busy) {
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusables = collectFocusable(modalRef.current);
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey && (active === first || !modalRef.current?.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -251,7 +282,7 @@ function AuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthen
 
   return (
     <div className="auth-overlay" onClick={onClose} role="presentation">
-      <div className="auth-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div ref={modalRef} className="auth-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
         <button className="auth-close" onClick={onClose} aria-label="Close sign-in dialog">
           ×
         </button>
@@ -844,6 +875,19 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
       </div>
     </>
   );
+}
+
+function collectFocusable(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  const selector = [
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled]):not([type='hidden'])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])"
+  ].join(",");
+  return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter((el) => !el.hasAttribute("inert"));
 }
 
 export function LegalPage() {

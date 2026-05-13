@@ -106,20 +106,24 @@ Production uploads use private Vercel Blob storage. Browser uploads go through t
 
 ## Local Development
 
-### Full Vercel Product
+There are two local-dev paths. Pick by whether you need production parity or fast iteration.
 
-Use this path when you want the same API surface as production: passkeys, teams, projects, private uploads, share links, billing guardrails, and serverless report routes.
+### Path A — Vercel CLI (production parity, recommended)
+
+Use this when you're touching anything that lives only in the serverless API: passkeys, teams, projects, private uploads, share links, billing guardrails, brand profiles, governance, imports, validation benchmarks.
 
 ```bash
 npm install
 npm run dev:vercel
 ```
 
-The app will be available at `http://localhost:5173`, with the Vercel API mounted at same-origin `/api/*`.
+The app runs at `http://localhost:5173` with the same `/api/*` handlers Vercel would serve in production. First run prompts you to `vercel login` and link the project.
 
-### Python Research API
+### Path B — Vite + FastAPI (fast iteration on workbench + analysis)
 
-The FastAPI service is still useful for model-provider experimentation and focused backend tests, but it is not the full production API surface.
+Use this when you're iterating on the React shell, the comparison pipeline, or the brain-response heuristics, and you don't need the enterprise API surface.
+
+In one terminal start the Python research backend:
 
 ```bash
 cd backend
@@ -129,17 +133,16 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-The API will be available at `http://localhost:8000`.
-
-### Frontend
+In another terminal start the Vite dev server:
 
 ```bash
-cd frontend
 npm install
-npm run dev
+npm run dev:frontend
 ```
 
-The standalone Vite app will be available at `http://localhost:5173`. For the complete product API, prefer the root `npm run dev:vercel` command above.
+The frontend runs at `http://localhost:5173`. `vite.config.ts` proxies `/api/*` to `http://127.0.0.1:8000` (configurable via the `STIMLI_API_PROXY` env var), stripping the `/api` prefix so requests land on the FastAPI routes directly.
+
+What works in Path B: assets, comparisons, demo seed, learning summary, reports, challengers, outcomes. What 404s: passkey auth, teams, projects, private blob upload, share links, brand profiles, governance, imports, validation, billing. The UI handles those gracefully — you'll see "Sign in" remain available and Brands / Library / Team views surface a friendly error instead of breaking.
 
 ### Docker
 
@@ -147,7 +150,7 @@ The standalone Vite app will be available at `http://localhost:5173`. For the co
 docker compose up --build
 ```
 
-Then open `http://localhost:5173`.
+Then open `http://localhost:5173`. This brings up the same Vite + FastAPI pair as Path B.
 
 ## Demo Flow
 

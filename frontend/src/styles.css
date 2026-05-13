@@ -1016,6 +1016,17 @@ h1, h2, h3, .display {
   place-items: center;
 }
 
+.outcome-modal { max-width: 520px; }
+.outcome-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+}
+.outcome-grid .field { margin: 0; }
+@media (max-width: 480px) {
+  .outcome-grid { grid-template-columns: 1fr; }
+}
+
 
 /* ============ SECONDARY VIEWS ============ */
 .list-grid {

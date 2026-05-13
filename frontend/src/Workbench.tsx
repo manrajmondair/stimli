@@ -88,6 +88,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   const [newForbidden, setNewForbidden] = useState("");
   const [pollNote, setPollNote] = useState<string | null>(null);
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
+  const [outcomeFor, setOutcomeFor] = useState<string | null>(null);
   const progressTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -396,22 +397,31 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     }
   }
 
-  async function handleLogOutcome(assetId: string) {
+  function handleLogOutcome(assetId: string) {
     if (!comparison) return;
-    const spend = window.prompt("Reported spend (USD)?", "1500");
-    if (!spend) return;
-    const revenue = window.prompt("Reported revenue (USD)?", "2400");
-    if (!revenue) return;
+    setOutcomeFor(assetId);
+  }
+
+  async function submitOutcome(payload: {
+    spend: number;
+    revenue: number;
+    impressions: number;
+    clicks: number;
+    conversions: number;
+    notes: string;
+  }) {
+    if (!comparison || !outcomeFor) return;
     try {
       await createOutcome(comparison.id, {
-        asset_id: assetId,
-        spend: Number(spend) || 0,
-        impressions: 0,
-        clicks: 0,
-        conversions: 0,
-        revenue: Number(revenue) || 0,
-        notes: "Logged from workbench"
+        asset_id: outcomeFor,
+        spend: payload.spend,
+        impressions: payload.impressions,
+        clicks: payload.clicks,
+        conversions: payload.conversions,
+        revenue: payload.revenue,
+        notes: payload.notes
       });
+      setOutcomeFor(null);
       flash({ kind: "success", message: "Outcome logged." });
     } catch (err) {
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not log outcome." });
@@ -564,12 +574,174 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
       </div>
 
       {toast ? (
-        <div className={`error-toast ${toast.kind === "error" ? "" : ""}`} style={toast.kind === "success" ? { background: "var(--pistachio-ink)" } : toast.kind === "info" ? { background: "var(--ink)" } : {}}>
+        <div className="error-toast" style={toast.kind === "success" ? { background: "var(--pistachio-ink)" } : toast.kind === "info" ? { background: "var(--ink)" } : {}}>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)}>×</button>
         </div>
       ) : null}
+
+      {outcomeFor && comparison ? (
+        <OutcomeModal
+          assetName={comparison.variants.find((v) => v.asset.id === outcomeFor)?.asset.name ?? "this variant"}
+          onClose={() => setOutcomeFor(null)}
+          onSubmit={submitOutcome}
+        />
+      ) : null}
     </>
+  );
+}
+
+function OutcomeModal({
+  assetName,
+  onClose,
+  onSubmit
+}: {
+  assetName: string;
+  onClose: () => void;
+  onSubmit: (payload: {
+    spend: number;
+    revenue: number;
+    impressions: number;
+    clicks: number;
+    conversions: number;
+    notes: string;
+  }) => Promise<void>;
+}) {
+  const [spend, setSpend] = useState("");
+  const [revenue, setRevenue] = useState("");
+  const [impressions, setImpressions] = useState("");
+  const [clicks, setClicks] = useState("");
+  const [conversions, setConversions] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusables = collectFocusable(modalRef.current);
+    focusables[0]?.focus();
+    return () => {
+      previousFocusRef.current?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !busy) {
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusables = collectFocusable(modalRef.current);
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey && (active === first || !modalRef.current?.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [busy, onClose]);
+
+  function num(value: string): number {
+    const cleaned = value.replace(/[,$\s]/g, "");
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  async function submit() {
+    if (!spend.trim() && !revenue.trim() && !impressions.trim() && !clicks.trim() && !conversions.trim()) {
+      setError("Add at least one metric.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await onSubmit({
+        spend: num(spend),
+        revenue: num(revenue),
+        impressions: num(impressions),
+        clicks: num(clicks),
+        conversions: num(conversions),
+        notes: notes.trim() || "Logged from workbench"
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not log outcome.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="auth-overlay" onClick={onClose} role="presentation">
+      <div
+        ref={modalRef}
+        className="auth-modal outcome-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="outcome-modal-title"
+      >
+        <button className="auth-close" onClick={onClose} aria-label="Close outcome dialog">
+          ×
+        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <BrainBlob size={48} color="var(--plum)" eyes mouth />
+          <h2 id="outcome-modal-title">Log outcome</h2>
+        </div>
+        <p className="lead">
+          Logging real spend and revenue for <strong>{assetName}</strong> calibrates Stimli's future
+          predictions for your workspace. Leave any field blank if you don't have it.
+        </p>
+        <div className="outcome-grid">
+          <label className="field">
+            <span>Spend (USD)</span>
+            <input value={spend} onChange={(e) => setSpend(e.target.value)} inputMode="decimal" placeholder="1500" />
+          </label>
+          <label className="field">
+            <span>Revenue (USD)</span>
+            <input value={revenue} onChange={(e) => setRevenue(e.target.value)} inputMode="decimal" placeholder="2400" />
+          </label>
+          <label className="field">
+            <span>Impressions</span>
+            <input value={impressions} onChange={(e) => setImpressions(e.target.value)} inputMode="numeric" placeholder="42000" />
+          </label>
+          <label className="field">
+            <span>Clicks</span>
+            <input value={clicks} onChange={(e) => setClicks(e.target.value)} inputMode="numeric" placeholder="980" />
+          </label>
+          <label className="field">
+            <span>Conversions</span>
+            <input value={conversions} onChange={(e) => setConversions(e.target.value)} inputMode="numeric" placeholder="38" />
+          </label>
+        </div>
+        <label className="field">
+          <span>Notes (optional)</span>
+          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Channel, audience, dates…" />
+        </label>
+        {error ? <div className="auth-error">{error}</div> : null}
+        <div className="form-actions" style={{ justifyContent: "flex-end" }}>
+          <button className="btn ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={submit} disabled={busy}>
+            {busy ? "Saving…" : "Save outcome"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1628,6 +1800,19 @@ function computeProgress(comparison: Comparison | null): number {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function collectFocusable(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  const selector = [
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled]):not([type='hidden'])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])"
+  ].join(",");
+  return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter((el) => !el.hasAttribute("inert"));
 }
 
 function formatRelative(timestamp: string): string {
