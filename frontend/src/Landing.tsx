@@ -65,7 +65,7 @@ export function Landing() {
 
         <div className="hero-art">
           <div className="brain-stage">
-            <svg viewBox="0 0 600 600" className="hero-ribbons" preserveAspectRatio="none">
+            <svg viewBox="0 0 600 600" className="hero-ribbons" preserveAspectRatio="none" aria-hidden="true" focusable="false">
               <path d="M 30 320 Q 180 240 320 320 T 580 320" stroke="var(--tomato)" strokeWidth="12" fill="none" strokeLinecap="round" opacity="0.55" />
               <path d="M 30 360 Q 180 290 320 360 T 580 360" stroke="var(--pistachio)" strokeWidth="10" fill="none" strokeLinecap="round" opacity="0.55" />
               <path d="M 30 400 Q 180 340 320 400 T 580 400" stroke="var(--butter)" strokeWidth="9" fill="none" strokeLinecap="round" opacity="0.55" />

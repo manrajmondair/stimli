@@ -226,6 +226,14 @@ function AuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthen
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !busy) onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [busy, onClose]);
+
   async function submit() {
     setBusy(true);
     setError(null);
@@ -242,14 +250,14 @@ function AuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthen
   }
 
   return (
-    <div className="auth-overlay" onClick={onClose}>
-      <div className="auth-modal" onClick={(e) => e.stopPropagation()}>
-        <button className="auth-close" onClick={onClose}>
+    <div className="auth-overlay" onClick={onClose} role="presentation">
+      <div className="auth-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+        <button className="auth-close" onClick={onClose} aria-label="Close sign-in dialog">
           ×
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <BrainBlob size={48} color="var(--tomato)" eyes mouth />
-          <h2>Sign in to Stimli</h2>
+          <h2 id="auth-modal-title">Sign in to Stimli</h2>
         </div>
         <p className="lead">
           Passkey accounts work on most modern browsers. No passwords, no setup. Use one passkey across all your

@@ -29,6 +29,8 @@ export function BrainBlob({
       height={size}
       viewBox="0 0 220 220"
       style={{ overflow: "visible", transform: `rotate(${rotation}deg)`, ...style }}
+      aria-hidden="true"
+      focusable="false"
     >
       <defs>
         <clipPath id={clipId}>
@@ -184,6 +186,8 @@ export function Ribbon({
       viewBox={`0 0 ${width} ${height}`}
       className={className}
       style={{ overflow: "visible", ...style }}
+      aria-hidden="true"
+      focusable="false"
     >
       <path d={d} stroke="var(--ink)" strokeWidth={thickness + 4} strokeLinecap="round" fill="none" />
       <path
@@ -208,7 +212,7 @@ export function Sparkle({
   style?: CSSProperties;
 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 40 40" style={style}>
+    <svg width={size} height={size} viewBox="0 0 40 40" style={style} aria-hidden="true" focusable="false">
       <path
         d="M 20 2 Q 22 18 38 20 Q 22 22 20 38 Q 18 22 2 20 Q 18 18 20 2 Z"
         fill={color}
@@ -235,7 +239,7 @@ export function StickerStar({
 }) {
   return (
     <div style={{ position: "relative", display: "inline-block", transform: `rotate(${rot}deg)`, ...style }}>
-      <svg width={size} height={size} viewBox="0 0 60 60">
+      <svg width={size} height={size} viewBox="0 0 60 60" aria-hidden="true" focusable="false">
         <path
           d="M 30 2 L 36 22 L 58 24 L 40 36 L 48 58 L 30 46 L 12 58 L 20 36 L 2 24 L 24 22 Z"
           fill={color}
@@ -273,7 +277,7 @@ export function ScribbleUnderline({
   style?: CSSProperties;
 }) {
   return (
-    <svg width={width} height="14" viewBox="0 0 200 14" preserveAspectRatio="none" style={style}>
+    <svg width={width} height="14" viewBox="0 0 200 14" preserveAspectRatio="none" style={style} aria-hidden="true" focusable="false">
       <path d="M 4 8 Q 50 2 100 8 T 196 8" stroke={color} strokeWidth="3.5" strokeLinecap="round" fill="none" />
     </svg>
   );
@@ -296,6 +300,8 @@ export function MarbleBlob({
       height={size}
       viewBox="0 0 200 200"
       style={{ position: "absolute", overflow: "visible", transform: `rotate(${rot}deg)`, ...style }}
+      aria-hidden="true"
+      focusable="false"
     >
       <path
         d="M 60 20 C 110 6 178 28 184 80 C 192 134 156 184 100 188 C 50 192 8 156 12 100 C 16 54 34 30 60 20 Z"
@@ -374,7 +380,14 @@ export function BraidedTrail({ scores, width = 720, height = 220 }: { scores: Br
     return d;
   }
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} style={{ overflow: "visible" }}>
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      width="100%"
+      height={height}
+      style={{ overflow: "visible" }}
+      role="img"
+      aria-label="Brain signal thought-trail visualization"
+    >
       {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
         <line
           key={i}
