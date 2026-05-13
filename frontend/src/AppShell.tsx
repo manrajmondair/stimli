@@ -590,7 +590,17 @@ function OutcomesView() {
       {error ? <div className="banner error">{error}</div> : null}
       {loading ? (
         <div className="banner">Loading…</div>
-      ) : !summary ? null : (
+      ) : !summary ? null : summary.outcome_count === 0 ? (
+        <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
+          <BrainBlob size={120} color="var(--plum)" eyes mouth />
+          <h4>No launch outcomes logged yet.</h4>
+          <p>
+            After you run an ad, open its decision report and click <strong>Log outcome</strong> to record
+            spend and revenue. Once a few are in, this page will show how often Stimli's predictions match
+            real spend results.
+          </p>
+        </div>
+      ) : (
         <div className="wb-col">
           <div className="panel-card">
             <div className="panel-head">

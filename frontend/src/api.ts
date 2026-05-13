@@ -81,35 +81,44 @@ export async function createTextAsset(input: {
   if (input.projectId) form.append("project_id", input.projectId);
   if (input.file) form.append("file", input.file);
   if (input.file && shouldUseDirectBlobUpload()) {
-    const blob = await upload(blobPath(input.file.name), input.file, {
-      access: "private",
-      handleUploadUrl: `${API_BASE}/blob/upload`,
-      clientPayload: JSON.stringify({ workspace_id: getWorkspaceId() }),
-      contentType: input.file.type || undefined,
-      multipart: input.file.size > 8 * 1024 * 1024,
-      onUploadProgress: (progress) => input.onUploadProgress?.(Math.round(progress.percentage))
-    });
-    const fileText = input.text || (input.assetType === "script" ? await input.file.text() : "");
-    const response = await fetch(`${API_BASE}/assets`, {
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({
-        asset_type: input.assetType,
-        name: input.name,
-        text: fileText,
-        url: input.url,
-        duration_seconds: input.durationSeconds,
-        project_id: input.projectId || null,
-        blob: {
-          ...blob,
-          original_filename: input.file.name,
-          file_size: input.file.size,
-          content_type: input.file.type || "application/octet-stream"
-        }
-      })
-    });
-    const payload = await parseResponse<{ asset: Asset }>(response);
-    return payload.asset;
+    try {
+      const blob = await upload(blobPath(input.file.name), input.file, {
+        access: "private",
+        handleUploadUrl: `${API_BASE}/blob/upload`,
+        clientPayload: JSON.stringify({ workspace_id: getWorkspaceId() }),
+        contentType: input.file.type || undefined,
+        multipart: input.file.size > 8 * 1024 * 1024,
+        onUploadProgress: (progress) => input.onUploadProgress?.(Math.round(progress.percentage))
+      });
+      const fileText = input.text || (input.assetType === "script" ? await input.file.text() : "");
+      const response = await fetch(`${API_BASE}/assets`, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          asset_type: input.assetType,
+          name: input.name,
+          text: fileText,
+          url: input.url,
+          duration_seconds: input.durationSeconds,
+          project_id: input.projectId || null,
+          blob: {
+            ...blob,
+            original_filename: input.file.name,
+            file_size: input.file.size,
+            content_type: input.file.type || "application/octet-stream"
+          }
+        })
+      });
+      const payload = await parseResponse<{ asset: Asset }>(response);
+      return payload.asset;
+    } catch (err) {
+      // Direct-to-blob fails when BLOB_READ_WRITE_TOKEN isn't configured (typical
+      // for local FastAPI dev). Fall back to multipart upload through /api/assets
+      // so smaller files still work; large files will surface the upstream limit.
+      if (input.file.size > 8 * 1024 * 1024) {
+        throw err;
+      }
+    }
   }
   const response = await fetch(`${API_BASE}/assets`, { method: "POST", headers: workspaceHeaders(), body: form });
   const payload = await parseResponse<{ asset: Asset }>(response);
