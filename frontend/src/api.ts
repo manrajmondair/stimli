@@ -25,7 +25,8 @@ import type {
   TeamMember,
   TeamRole,
   ValidationCalibration,
-  WorkspaceExport
+  WorkspaceExport,
+  WorkspaceOutcome
 } from "./types";
 
 // Use logical OR (not ??) so an empty-string env var falls back to the
@@ -91,6 +92,17 @@ export async function createProject(input: { name: string; description?: string 
 export async function listAssets(): Promise<Asset[]> {
   const response = await fetch(`${API_BASE}/assets`, { headers: await workspaceHeaders() });
   return parseResponse(response);
+}
+
+export async function deleteAsset(assetId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/assets/${encodeURIComponent(assetId)}`, {
+    method: "DELETE",
+    headers: await workspaceHeaders()
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
+  }
 }
 
 export async function createTextAsset(input: {
@@ -220,6 +232,11 @@ export async function getLearningSummary(): Promise<LearningSummary> {
   return parseResponse(response);
 }
 
+export async function listWorkspaceOutcomes(): Promise<WorkspaceOutcome[]> {
+  const response = await fetch(`${API_BASE}/outcomes`, { headers: await workspaceHeaders() });
+  return parseResponse(response);
+}
+
 export async function getBrainProviders(): Promise<BrainProviderHealth[]> {
   const response = await fetch(`${API_BASE}/brain/providers`);
   return parseResponse(response);
@@ -254,13 +271,40 @@ export async function getSession(): Promise<AuthSession> {
   return session;
 }
 
-export async function createTeamInvite(input: { email?: string; role?: TeamRole }): Promise<TeamInvite> {
+export async function createTeamInvite(input: { email?: string; role?: TeamRole }): Promise<TeamInvite & { url?: string; token?: string }> {
   const response = await fetch(`${API_BASE}/teams/invites`, {
     method: "POST",
     headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
+}
+
+export async function listTeamInvites(): Promise<TeamInvite[]> {
+  const response = await fetch(`${API_BASE}/teams/invites`, { headers: await workspaceHeaders() });
+  return parseResponse(response);
+}
+
+export async function revokeTeamInvite(inviteId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/teams/invites/${encodeURIComponent(inviteId)}`, {
+    method: "DELETE",
+    headers: await workspaceHeaders()
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
+  }
+}
+
+export async function removeTeamMember(userId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/teams/members/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
+    headers: await workspaceHeaders()
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
+  }
 }
 
 export async function listTeamMembers(): Promise<TeamMember[]> {
@@ -320,6 +364,24 @@ export async function updateBrandProfile(id: string, input: Partial<BrandProfile
     method: "PATCH",
     headers: await jsonHeaders(),
     body: JSON.stringify(input)
+  });
+  return parseResponse(response);
+}
+
+export async function deleteBrandProfile(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/brand-profiles/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: await workspaceHeaders()
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
+  }
+}
+
+export async function exportBrandProfile(id: string): Promise<{ schema: string; exported_at: string; profile: BrandProfile }> {
+  const response = await fetch(`${API_BASE}/brand-profiles/${encodeURIComponent(id)}/export`, {
+    headers: await workspaceHeaders()
   });
   return parseResponse(response);
 }

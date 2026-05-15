@@ -128,6 +128,13 @@ export type Outcome = OutcomeCreate & {
   created_at: string;
 };
 
+export type WorkspaceOutcome = Outcome & {
+  comparison_objective: string | null;
+  comparison_status: string | null;
+  asset_name: string | null;
+  profit: number | null;
+};
+
 export type ChallengerResponse = {
   asset: Asset;
   source_asset_id: string;

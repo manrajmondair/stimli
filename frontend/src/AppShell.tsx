@@ -1,31 +1,143 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
   createBrandProfile,
   createTeamInvite,
+  deleteAsset,
+  deleteBrandProfile,
+  exportBrandProfile,
   getInvite,
   getLearningSummary,
   getSession,
   getSharedReport,
   listAuditEvents,
   listBrandProfiles,
+  listComparisons,
   listLibraryAssets,
-  listTeamMembers
+  listTeamInvites,
+  listTeamMembers,
+  listWorkspaceOutcomes,
+  removeTeamMember,
+  revokeTeamInvite,
+  updateBrandProfile,
+  updateTeamMemberRole
 } from "./api";
 import type {
+  AssetType,
   AuditEvent,
   AuthSession,
   BrandProfile,
+  Comparison,
   CreativeBrief,
   LearningSummary,
   LibraryAsset,
+  OutcomeCreate,
   Report,
   TeamInvite,
-  TeamMember
+  TeamMember,
+  TeamRole,
+  WorkspaceOutcome
 } from "./types";
 import { BrainBlob } from "./art";
 import { Workbench } from "./Workbench";
+
+const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
+
+const ASSET_TYPE_LABEL: Record<AssetType, string> = {
+  script: "Script",
+  landing_page: "Landing page",
+  image: "Static ad",
+  audio: "Audio",
+  video: "Video"
+};
+const ASSET_TYPE_ORDER: AssetType[] = ["script", "landing_page", "image", "audio", "video"];
+
+type ToastKind = "info" | "success" | "error";
+type ToastState = { id: number; kind: ToastKind; message: string };
+
+function useLocalToast() {
+  const [toast, setToast] = useState<ToastState | null>(null);
+  function show(kind: ToastKind, message: string) {
+    const id = Date.now();
+    setToast({ id, kind, message });
+    window.setTimeout(() => {
+      setToast((current) => (current && current.id === id ? null : current));
+    }, 4500);
+  }
+  return { toast, show, dismiss: () => setToast(null) } as const;
+}
+
+function ToastBar({ toast, onDismiss }: { toast: ToastState | null; onDismiss: () => void }) {
+  if (!toast) return null;
+  const bg =
+    toast.kind === "success"
+      ? "var(--pistachio-ink)"
+      : toast.kind === "error"
+      ? "var(--tomato-ink)"
+      : "var(--ink)";
+  return (
+    <div className="error-toast" style={{ background: bg }} role="status" aria-live="polite">
+      <span>{toast.message}</span>
+      <button onClick={onDismiss}>×</button>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = "Confirm",
+  confirmKind = "danger",
+  onConfirm,
+  onCancel
+}: {
+  open: boolean;
+  title: string;
+  message: ReactNode;
+  confirmLabel?: string;
+  confirmKind?: "danger" | "primary";
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+      if (e.key === "Enter") onConfirm();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [open, onCancel, onConfirm]);
+
+  if (!open) return null;
+  return (
+    <div className="auth-overlay" onClick={onCancel} role="presentation">
+      <div
+        className="auth-modal confirm-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="alertdialog"
+        aria-modal="true"
+      >
+        <h2 style={{ marginTop: 0 }}>{title}</h2>
+        <div className="lead">{message}</div>
+        <div className="form-actions" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+          <button className="btn ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            className={confirmKind === "danger" ? "btn primary danger" : "btn primary"}
+            onClick={onConfirm}
+            autoFocus
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type View = "workbench" | "library" | "brands" | "outcomes" | "team";
 
@@ -263,6 +375,20 @@ function LibraryView() {
   const [items, setItems] = useState<LibraryAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | AssetType>("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<LibraryAsset | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const { toast, show, dismiss } = useLocalToast();
+
+  function refresh() {
+    setLoading(true);
+    setError(null);
+    listLibraryAssets()
+      .then((res) => setItems(res.assets))
+      .catch((err) => setError(err instanceof Error ? err.message : "Could not load library."))
+      .finally(() => setLoading(false));
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -283,6 +409,29 @@ function LibraryView() {
     };
   }, []);
 
+  async function performDelete(asset: LibraryAsset) {
+    setBusyId(asset.id);
+    try {
+      await deleteAsset(asset.id);
+      setItems((current) => current.filter((item) => item.id !== asset.id));
+      if (expandedId === asset.id) setExpandedId(null);
+      show("success", `Deleted "${asset.name}".`);
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not delete asset.");
+    } finally {
+      setBusyId(null);
+      setConfirmDelete(null);
+    }
+  }
+
+  const counts = useMemo(() => {
+    const tally: Record<string, number> = { all: items.length };
+    for (const item of items) tally[item.type] = (tally[item.type] || 0) + 1;
+    return tally;
+  }, [items]);
+
+  const visible = filter === "all" ? items : items.filter((asset) => asset.type === filter);
+
   return (
     <>
       <header className="wb-top">
@@ -293,44 +442,138 @@ function LibraryView() {
           <span className="wb-crumbs">
             <span className="pill">
               <span className="dot" style={{ background: "var(--pistachio)" }} />
-              {items.length} assets
+              {items.length} {items.length === 1 ? "asset" : "assets"}
             </span>
+            {filter !== "all" ? (
+              <span className="pill">
+                <span className="dot" style={{ background: "var(--butter)" }} />
+                {visible.length} filtered
+              </span>
+            ) : null}
           </span>
         </div>
+        <div className="wb-top-right">
+          <button className="btn cream" onClick={refresh} disabled={loading}>
+            Refresh
+          </button>
+          <a className="btn primary" href="/app">
+            Upload variant
+          </a>
+        </div>
       </header>
+
       {error ? <div className="banner error">{error}</div> : null}
+
+      {items.length > 0 ? (
+        <div className="filter-chips" role="tablist" aria-label="Filter assets by type">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filter === "all"}
+            className={`filter-chip ${filter === "all" ? "active" : ""}`}
+            onClick={() => setFilter("all")}
+          >
+            All · {counts.all || 0}
+          </button>
+          {ASSET_TYPE_ORDER.map((type) => (
+            <button
+              key={type}
+              type="button"
+              role="tab"
+              aria-selected={filter === type}
+              className={`filter-chip ${filter === type ? "active" : ""}`}
+              onClick={() => setFilter(type)}
+              disabled={!counts[type]}
+            >
+              {ASSET_TYPE_LABEL[type]} · {counts[type] || 0}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {loading ? (
         <div className="banner">Loading…</div>
       ) : items.length === 0 ? (
         <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
           <BrainBlob size={120} color="var(--pistachio)" eyes mouth />
           <h4>No saved assets yet.</h4>
-          <p>Variants you upload from the workbench will collect here with extracted text and source metadata.</p>
+          <p>Variants you upload from the workbench collect here with extracted text and source metadata.</p>
+          <a className="btn primary" href="/app">
+            Open the workbench
+          </a>
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="panel-card empty" style={{ paddingTop: 50, paddingBottom: 50 }}>
+          <BrainBlob size={96} color="var(--ink-faint)" />
+          <h4>No assets in this filter.</h4>
+          <p>Try a different type or upload another variant from the workbench.</p>
         </div>
       ) : (
         <div className="list-grid">
-          {items.map((asset, idx) => (
-            <article
-              key={asset.id}
-              className="list-card"
-              style={{ borderLeft: `6px solid ${["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"][idx % 4]}` }}
-            >
-              <span className="meta">
-                {asset.type.replace("_", " ")} · {new Date(asset.created_at).toLocaleDateString()}
-              </span>
-              <h4>{asset.name}</h4>
-              <p>
-                {(asset.extracted_text || "").slice(0, 200)}
-                {asset.extracted_text && asset.extracted_text.length > 200 ? "…" : ""}
-              </p>
-              <div className="row">
-                <span className="kicker">{asset.library.extraction_status}</span>
-                <span className="kicker">{asset.library.text_length} chars</span>
-              </div>
-            </article>
-          ))}
+          {visible.map((asset, idx) => {
+            const accent = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"][idx % 4];
+            const isOpen = expandedId === asset.id;
+            const previewText = (asset.extracted_text || "").trim();
+            return (
+              <article key={asset.id} className="list-card" style={{ borderLeft: `6px solid ${accent}` }}>
+                <span className="meta">
+                  {ASSET_TYPE_LABEL[asset.type]} · {new Date(asset.created_at).toLocaleDateString()}
+                </span>
+                <h4>{asset.name}</h4>
+                <p>
+                  {previewText.slice(0, 200)}
+                  {previewText.length > 200 ? "…" : ""}
+                </p>
+                <div className="row">
+                  <span className="kicker">{asset.library?.extraction_status || "provided"}</span>
+                  <span className="kicker">{asset.library?.text_length ?? previewText.length} chars</span>
+                  {asset.library?.has_private_blob ? <span className="kicker">in r2</span> : null}
+                </div>
+                {isOpen ? <div className="asset-preview-body">{previewText || "(no extracted text)"}</div> : null}
+                <div className="list-card-actions">
+                  <button
+                    type="button"
+                    className="btn cream"
+                    onClick={() => setExpandedId(isOpen ? null : asset.id)}
+                  >
+                    {isOpen ? "Hide" : "View text"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn cream danger"
+                    onClick={() => setConfirmDelete(asset)}
+                    disabled={busyId === asset.id}
+                    style={{ background: "var(--tomato-soft)", borderColor: "var(--tomato-ink)", color: "var(--tomato-ink)" }}
+                  >
+                    {busyId === asset.id ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        title="Delete this asset?"
+        confirmLabel="Delete asset"
+        message={
+          <>
+            <p>
+              <strong>{confirmDelete?.name}</strong> will be removed from your library and from any new
+              comparisons. Existing comparison reports keep their snapshot of this variant.
+            </p>
+            <p style={{ marginTop: 8, color: "var(--ink-soft)", fontSize: 12 }}>
+              This can't be undone.
+            </p>
+          </>
+        }
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && performDelete(confirmDelete)}
+      />
+
+      <ToastBar toast={toast} onDismiss={dismiss} />
     </>
   );
 }
