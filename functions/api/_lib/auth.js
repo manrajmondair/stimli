@@ -55,9 +55,15 @@ export async function getAuthContext(request) {
   }
 
   const token = bearerTokenFromRequest(request);
-  if (!token) return anonymousContext();
+  if (!token) {
+    console.log("[auth] no bearer token on request");
+    return anonymousContext();
+  }
   const client = clerkClient();
-  if (!client) return anonymousContext();
+  if (!client) {
+    console.log("[auth] clerkClient() returned null — CLERK_SECRET_KEY missing?");
+    return anonymousContext();
+  }
 
   let claims;
   try {
@@ -66,17 +72,36 @@ export async function getAuthContext(request) {
       jwtKey: _env.CLERK_JWT_KEY,
       authorizedParties: authorizedPartiesFromEnv()
     });
-  } catch {
+  } catch (err) {
+    console.log("[auth] verifyToken failed:", err && err.message ? err.message : err);
     return anonymousContext();
   }
 
   const clerkUserId = claims.sub;
-  if (!clerkUserId) return anonymousContext();
+  if (!clerkUserId) {
+    console.log("[auth] no sub claim in JWT");
+    return anonymousContext();
+  }
 
-  const user = await ensureStimliUser(clerkUserId, client);
-  if (!user) return anonymousContext();
+  let user;
+  try {
+    user = await ensureStimliUser(clerkUserId, client);
+  } catch (err) {
+    console.log("[auth] ensureStimliUser threw:", err && err.message ? err.message : err);
+    return anonymousContext();
+  }
+  if (!user) {
+    console.log("[auth] ensureStimliUser returned null for", clerkUserId);
+    return anonymousContext();
+  }
 
-  const team = await ensurePersonalTeam(user);
+  let team;
+  try {
+    team = await ensurePersonalTeam(user);
+  } catch (err) {
+    console.log("[auth] ensurePersonalTeam threw:", err && err.message ? err.message : err);
+    return anonymousContext();
+  }
   const membership = await getTeamMember(team.id, user.id);
 
   return {
