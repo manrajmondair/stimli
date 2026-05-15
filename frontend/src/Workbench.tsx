@@ -9,9 +9,12 @@ import {
   getComparison,
   getReportMarkdown,
   listAssets,
+  listBrandProfiles,
   listComparisons,
   seedDemo
 } from "./api";
+
+const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
 import type {
   Asset,
   AssetType,
@@ -89,12 +92,59 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   const [pollNote, setPollNote] = useState<string | null>(null);
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
   const [outcomeFor, setOutcomeFor] = useState<string | null>(null);
+  const [defaultBrandId, setDefaultBrandId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.localStorage.getItem(DEFAULT_BRAND_KEY)
+  );
+  const [defaultBrandName, setDefaultBrandName] = useState<string | null>(null);
   const progressTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     void refreshAssets();
     void refreshComparisons();
   }, []);
+
+  // If the user has set a default brand profile from the Brands view, pre-fill
+  // the brief so they don't have to retype it. The brand_profile_id is also
+  // sent with each comparison so the server can stamp the comparison with the
+  // canonical profile id.
+  useEffect(() => {
+    if (!defaultBrandId) {
+      setDefaultBrandName(null);
+      return;
+    }
+    let cancelled = false;
+    listBrandProfiles()
+      .then((profiles) => {
+        if (cancelled) return;
+        const match = profiles.find((profile) => profile.id === defaultBrandId);
+        if (!match) {
+          // Profile was deleted elsewhere — clear the stale localStorage entry.
+          window.localStorage.removeItem(DEFAULT_BRAND_KEY);
+          setDefaultBrandId(null);
+          setDefaultBrandName(null);
+          return;
+        }
+        setDefaultBrandName(match.name);
+        setBrief({
+          brand_name: match.brief.brand_name || "",
+          audience: match.brief.audience || "",
+          product_category: match.brief.product_category || "",
+          primary_offer: match.brief.primary_offer || "",
+          required_claims: [...(match.brief.required_claims || [])],
+          forbidden_terms: [...(match.brief.forbidden_terms || [])]
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultBrandId]);
+
+  function clearDefaultBrand() {
+    window.localStorage.removeItem(DEFAULT_BRAND_KEY);
+    setDefaultBrandId(null);
+    setDefaultBrandName(null);
+  }
 
   useEffect(() => {
     return () => {
@@ -232,7 +282,13 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     setPollStartedAt(Date.now());
     startProgressAnimation();
     try {
-      const next = await createBriefComparisonForProject(selected, FALLBACK_OBJECTIVE, brief, null);
+      const next = await createBriefComparisonForProject(
+        selected,
+        FALLBACK_OBJECTIVE,
+        brief,
+        null,
+        defaultBrandId
+      );
       setComparison(next);
       if (next.status === "processing") {
         applyJobProgress(next);
@@ -500,16 +556,37 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
           <span className="wb-crumbs">
             <span className="pill">
               <span className="dot" style={{ background: "var(--tomato)" }} />
-              Brief: {brief.brand_name}
+              Brief: {brief.brand_name || "—"}
             </span>
             <span className="pill">
               <span className="dot" style={{ background: "var(--pistachio)" }} />
-              Audience: {brief.audience.split(",")[0].slice(0, 28)}
+              Audience: {brief.audience.split(",")[0].slice(0, 28) || "—"}
             </span>
             <span className="pill">
               <span className="dot" style={{ background: "var(--butter)" }} />
               Brain: {remoteProvider ?? "TRIBE v2"}
             </span>
+            {defaultBrandName ? (
+              <span className="pill" title="Default brand set in the Brands view">
+                <span className="dot" style={{ background: "var(--plum)" }} />
+                Brand: {defaultBrandName}{" "}
+                <button
+                  type="button"
+                  onClick={clearDefaultBrand}
+                  style={{
+                    border: 0,
+                    background: "transparent",
+                    cursor: "pointer",
+                    color: "var(--ink-soft)",
+                    marginLeft: 4,
+                    fontSize: 11
+                  }}
+                  aria-label="Clear default brand"
+                >
+                  ×
+                </button>
+              </span>
+            ) : null}
           </span>
         </div>
         <div className="wb-top-right">
