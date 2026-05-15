@@ -10,13 +10,15 @@ pages_build_output_dir = "frontend/dist"
 binding = "STIMLI_MEDIA"
 bucket_name = "stimli-media"
 
-# Public, non-secret env vars. Secrets (POSTGRES_URL, TRIBE_*, etc.) are set via
-# `wrangler pages secret put <NAME>` or the Pages dashboard.
+# Public, non-secret env vars. Secrets (POSTGRES_URL, TRIBE_*, CLERK_SECRET_KEY)
+# are set via `wrangler pages secret put <NAME>` or the Pages dashboard.
+# CLERK_PUBLISHABLE_KEY is also stored as a secret for parity even though it's
+# a public value — Pages doesn't expose [vars] to /api/* functions otherwise.
 [vars]
 STIMLI_BRAIN_PROVIDER = "tribe-remote"
-STIMLI_RP_ID = "stimli.pages.dev"
 STIMLI_ORIGIN = "https://stimli.pages.dev"
 STIMLI_APP_URL = "https://stimli.pages.dev"
+CLERK_AUTHORIZED_PARTIES = "https://stimli.pages.dev,http://localhost:5173,http://localhost:8788"
 STIMLI_ASSET_LIMIT_PER_HOUR = "40"
 STIMLI_COMPARISON_LIMIT_PER_HOUR = "12"
 STIMLI_MAX_DIRECT_UPLOAD_BYTES = "26214400"
@@ -30,9 +32,9 @@ STIMLI_RATE_LIMIT_WINDOW_MS = "3600000"
 # Preview environment for branch deploys.
 [env.preview.vars]
 STIMLI_BRAIN_PROVIDER = "tribe-remote"
-STIMLI_RP_ID = "stimli.pages.dev"
 STIMLI_ORIGIN = "https://stimli.pages.dev"
 STIMLI_APP_URL = "https://stimli.pages.dev"
+CLERK_AUTHORIZED_PARTIES = "https://stimli.pages.dev,http://localhost:5173,http://localhost:8788"
 STIMLI_ASSET_LIMIT_PER_HOUR = "40"
 STIMLI_COMPARISON_LIMIT_PER_HOUR = "12"
 STIMLI_MAX_DIRECT_UPLOAD_BYTES = "26214400"

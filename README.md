@@ -58,9 +58,20 @@ npm run deploy:pages
 - **R2 bucket** `stimli-media` for private uploaded assets.
 - **Pages secrets** (set via `wrangler pages secret put`):
   - `POSTGRES_URL` — Neon connection string.
+  - `CLERK_SECRET_KEY` — Clerk API secret (sk_test_… / sk_live_…).
+  - `CLERK_PUBLISHABLE_KEY` — Clerk publishable key (pk_test_… / pk_live_…).
   - `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL` — Modal endpoint URLs.
   - `TRIBE_API_KEY` — bearer token shared with the Modal worker.
-- **Public env vars** (in `wrangler.toml [vars]`): `STIMLI_RP_ID`, `STIMLI_ORIGIN`, `STIMLI_APP_URL`, rate limits, retention defaults.
+- **GitHub Actions secrets** (set via `gh secret set` or repo settings → Actions):
+  - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` — used by `wrangler-action`.
+  - `VITE_CLERK_PUBLISHABLE_KEY` — Vite reads this at build time and inlines it into the bundle. Same value as the Clerk publishable key.
+- **Public env vars** (in `wrangler.toml [vars]`): `STIMLI_ORIGIN`, `STIMLI_APP_URL`, `CLERK_AUTHORIZED_PARTIES`, rate limits, retention defaults.
+
+## Authentication (Clerk)
+
+Sign-in uses [Clerk](https://clerk.com). Providers configured: Google, Apple, GitHub, Microsoft, email/password, magic link, and passkey. Configure them in the Clerk dashboard under **User & Authentication → Email, Phone, Username** and **Social Connections**.
+
+On the server, `functions/api/_lib/auth.js` verifies each request's `Authorization: Bearer <jwt>` against Clerk's JWKS via `@clerk/backend`. The verified Clerk `userId` is mapped to a row in `stimli_users` (auto-created on first call) and a personal team (also auto-created). Sessions are owned entirely by Clerk — the API does not issue or store its own cookies.
 
 Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
 

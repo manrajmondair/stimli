@@ -25,7 +25,15 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run build
+      - name: Build frontend
+        env:
+          # Vite reads VITE_* env vars at build time and bakes the values into
+          # the bundle. Without VITE_CLERK_PUBLISHABLE_KEY the app still renders
+          # but auth surfaces show an "unconfigured" banner. Set this secret
+          # alongside CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID.
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+        run: npm run build
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
