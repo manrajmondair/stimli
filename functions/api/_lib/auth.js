@@ -56,13 +56,11 @@ export async function getAuthContext(request) {
 
   const token = bearerTokenFromRequest(request);
   if (!token) {
-    console.log("[auth] no bearer token on request");
-    return anonymousContext();
+    return anonymousContext("no-bearer-token");
   }
   const client = clerkClient();
   if (!client) {
-    console.log("[auth] clerkClient() returned null — CLERK_SECRET_KEY missing?");
-    return anonymousContext();
+    return anonymousContext("clerk-secret-key-missing");
   }
 
   let claims;
@@ -73,34 +71,32 @@ export async function getAuthContext(request) {
       authorizedParties: authorizedPartiesFromEnv()
     });
   } catch (err) {
-    console.log("[auth] verifyToken failed:", err && err.message ? err.message : err);
-    return anonymousContext();
+    const msg = err && err.message ? err.message : String(err);
+    return anonymousContext(`verifyToken-failed: ${msg}`);
   }
 
   const clerkUserId = claims.sub;
   if (!clerkUserId) {
-    console.log("[auth] no sub claim in JWT");
-    return anonymousContext();
+    return anonymousContext("jwt-missing-sub-claim");
   }
 
   let user;
   try {
     user = await ensureStimliUser(clerkUserId, client);
   } catch (err) {
-    console.log("[auth] ensureStimliUser threw:", err && err.message ? err.message : err);
-    return anonymousContext();
+    const msg = err && err.message ? err.message : String(err);
+    return anonymousContext(`ensureStimliUser-threw: ${msg}`);
   }
   if (!user) {
-    console.log("[auth] ensureStimliUser returned null for", clerkUserId);
-    return anonymousContext();
+    return anonymousContext(`ensureStimliUser-returned-null: ${clerkUserId}`);
   }
 
   let team;
   try {
     team = await ensurePersonalTeam(user);
   } catch (err) {
-    console.log("[auth] ensurePersonalTeam threw:", err && err.message ? err.message : err);
-    return anonymousContext();
+    const msg = err && err.message ? err.message : String(err);
+    return anonymousContext(`ensurePersonalTeam-threw: ${msg}`);
   }
   const membership = await getTeamMember(team.id, user.id);
 
@@ -139,7 +135,13 @@ async function synthesizeTestContext(testUserId, request) {
 export async function authSessionPayload(request) {
   const context = await getAuthContext(request);
   if (!context.authenticated) {
-    return { authenticated: false, user: null, team: null, teams: [] };
+    return {
+      authenticated: false,
+      user: null,
+      team: null,
+      teams: [],
+      debug_reason: context.debug_reason || null
+    };
   }
   return {
     authenticated: true,
@@ -252,7 +254,7 @@ function authorizedPartiesFromEnv() {
   return raw.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function anonymousContext() {
+function anonymousContext(debugReason = null) {
   return {
     authenticated: false,
     user: null,
@@ -260,7 +262,8 @@ function anonymousContext() {
     membership: null,
     role: "anonymous",
     permissions: [],
-    workspace_id: null
+    workspace_id: null,
+    debug_reason: debugReason
   };
 }
 

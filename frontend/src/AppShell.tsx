@@ -1399,6 +1399,17 @@ function LogOutcomeModal({
 const ROLE_OPTIONS: TeamRole[] = ["owner", "admin", "analyst", "viewer"];
 
 function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate: () => Promise<void> }) {
+  // Clerk is the source of truth for "is the user signed in" — when the
+  // backend session lookup is still pending (or has briefly failed), we
+  // shouldn't pretend the user is anonymous and hide the team UI.
+  const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
+  const signedIn = Boolean(clerkLoaded && isSignedIn);
+  const clerkUserLabel =
+    clerkUser?.primaryEmailAddress?.emailAddress ||
+    clerkUser?.fullName ||
+    clerkUser?.username ||
+    "you";
+
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [invites, setInvites] = useState<TeamInvite[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
@@ -1413,9 +1424,9 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
   const { toast, show, dismiss } = useLocalToast();
 
   useEffect(() => {
-    if (!session?.authenticated) return;
+    if (!signedIn) return;
     void refresh();
-  }, [session?.team?.id]);
+  }, [signedIn, session?.team?.id]);
 
   async function refresh() {
     try {
@@ -1513,13 +1524,39 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
     }
   }
 
-  if (!session?.authenticated) {
+  if (!signedIn) {
     return (
       <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
         <BrainBlob size={120} color="var(--ink)" eyes mouth />
         <h4>Sign in to manage your team.</h4>
         <p>Once signed in you can invite collaborators, set roles, revoke pending invites, and review audit history.</p>
         <SignInTrigger className="btn primary">Sign in</SignInTrigger>
+      </div>
+    );
+  }
+
+  // Signed in per Clerk, but backend hasn't recognized the JWT yet (or
+  // rejected it). Surface the reason so we can diagnose instead of looping
+  // back to the sign-in prompt (which no-ops when Clerk already has a
+  // session). Once the backend agrees, this branch is skipped.
+  if (!session?.authenticated) {
+    const reason =
+      (session as (AuthSession & { debug_reason?: string | null }) | null)?.debug_reason ||
+      "Pending — backend session not yet established.";
+    return (
+      <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
+        <BrainBlob size={120} color="var(--tomato)" eyes mouth />
+        <h4>Connecting to your workspace…</h4>
+        <p style={{ marginTop: 8, color: "var(--ink-soft)" }}>
+          Signed in as <strong>{clerkUserLabel}</strong>. Waiting for the workspace API to acknowledge the
+          session.
+        </p>
+        <p style={{ marginTop: 12, fontFamily: "monospace", fontSize: 12, color: "var(--ink-soft)" }}>
+          {reason}
+        </p>
+        <button className="btn cream" onClick={() => void onUpdate()} style={{ marginTop: 12 }}>
+          Retry
+        </button>
       </div>
     );
   }
