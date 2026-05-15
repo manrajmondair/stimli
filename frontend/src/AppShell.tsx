@@ -3,6 +3,7 @@ import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
   createBrandProfile,
+  createOutcome,
   createTeamInvite,
   deleteAsset,
   deleteBrandProfile,
@@ -968,15 +969,44 @@ function BrandsView() {
 
 function OutcomesView() {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
+  const [outcomes, setOutcomes] = useState<WorkspaceOutcome[]>([]);
+  const [comparisons, setComparisons] = useState<Comparison[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [logOpen, setLogOpen] = useState(false);
+  const { toast, show, dismiss } = useLocalToast();
+
+  async function refresh() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [s, o, c] = await Promise.all([
+        getLearningSummary(),
+        listWorkspaceOutcomes().catch(() => [] as WorkspaceOutcome[]),
+        listComparisons().catch(() => [] as Comparison[])
+      ]);
+      setSummary(s);
+      setOutcomes(o);
+      setComparisons(c);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load outcomes.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
-    getLearningSummary()
-      .then((res) => {
+    Promise.all([
+      getLearningSummary(),
+      listWorkspaceOutcomes().catch(() => [] as WorkspaceOutcome[]),
+      listComparisons().catch(() => [] as Comparison[])
+    ])
+      .then(([s, o, c]) => {
         if (cancelled) return;
-        setSummary(res);
+        setSummary(s);
+        setOutcomes(o);
+        setComparisons(c);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -990,6 +1020,27 @@ function OutcomesView() {
     };
   }, []);
 
+  const completedComparisons = useMemo(
+    () => comparisons.filter((c) => c.status === "complete"),
+    [comparisons]
+  );
+
+  async function submitOutcome(payload: OutcomeCreate & { comparison_id: string }) {
+    await createOutcome(payload.comparison_id, {
+      asset_id: payload.asset_id,
+      spend: payload.spend,
+      impressions: payload.impressions,
+      clicks: payload.clicks,
+      conversions: payload.conversions,
+      revenue: payload.revenue,
+      notes: payload.notes
+    });
+    show("success", "Outcome logged.");
+    await refresh();
+  }
+
+  const hasOutcomes = outcomes.length > 0 || (summary?.outcome_count ?? 0) > 0;
+
   return (
     <>
       <header className="wb-top">
@@ -1000,99 +1051,348 @@ function OutcomesView() {
           <span className="wb-crumbs">
             <span className="pill">
               <span className="dot" style={{ background: "var(--plum)" }} />
-              Learning loop
+              {summary?.outcome_count ?? 0} {summary?.outcome_count === 1 ? "outcome" : "outcomes"}
             </span>
+            {summary && summary.calibration.evaluated_comparisons > 0 ? (
+              <span className="pill">
+                <span className="dot" style={{ background: "var(--pistachio)" }} />
+                {Math.round(summary.calibration.alignment_rate * 100)}% alignment
+              </span>
+            ) : null}
           </span>
+        </div>
+        <div className="wb-top-right">
+          <button className="btn cream" onClick={refresh} disabled={loading}>
+            Refresh
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => setLogOpen(true)}
+            disabled={completedComparisons.length === 0}
+            title={completedComparisons.length === 0 ? "Run a comparison first" : ""}
+          >
+            Log outcome
+          </button>
         </div>
       </header>
       {error ? <div className="banner error">{error}</div> : null}
-      {loading ? (
+
+      {loading && !summary ? (
         <div className="banner">Loading…</div>
-      ) : !summary ? null : summary.outcome_count === 0 ? (
+      ) : !hasOutcomes ? (
         <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
           <BrainBlob size={120} color="var(--plum)" eyes mouth />
           <h4>No launch outcomes logged yet.</h4>
           <p>
-            After you run an ad, open its decision report and click <strong>Log outcome</strong> to record
-            spend and revenue. Once a few are in, this page will show how often Stimli's predictions match
-            real spend results.
+            After you run an ad, log spend and revenue here. Once a few outcomes are in, Stimli compares its
+            pre-spend prediction against actual performance and surfaces the alignment rate.
           </p>
+          {completedComparisons.length === 0 ? (
+            <a className="btn primary" href="/app">
+              Open the workbench
+            </a>
+          ) : (
+            <button className="btn primary" onClick={() => setLogOpen(true)}>
+              Log your first outcome
+            </button>
+          )}
         </div>
       ) : (
         <div className="wb-col">
           <div className="panel-card">
             <div className="panel-head">
               <h3>Where the brain calls match the spreadsheet</h3>
-              <span className="kicker">{summary.outcome_count} outcomes logged</span>
+              <span className="kicker">{summary?.outcome_count ?? 0} outcomes logged</span>
             </div>
-            <p className="big-p">{summary.insight}</p>
+            <p className="big-p">{summary?.insight}</p>
             <div className="metric-grid">
               <div className="metric">
                 <span>Total spend</span>
-                <strong>${formatNumber(summary.total_spend)}</strong>
+                <strong>${formatNumber(summary?.total_spend ?? 0)}</strong>
               </div>
               <div className="metric">
                 <span>Total revenue</span>
-                <strong>${formatNumber(summary.total_revenue)}</strong>
+                <strong>${formatNumber(summary?.total_revenue ?? 0)}</strong>
               </div>
               <div className="metric">
                 <span>Avg CTR</span>
-                <strong>{(summary.average_ctr * 100).toFixed(2)}%</strong>
+                <strong>{((summary?.average_ctr ?? 0) * 100).toFixed(2)}%</strong>
               </div>
               <div className="metric">
                 <span>Avg CVR</span>
-                <strong>{(summary.average_cvr * 100).toFixed(2)}%</strong>
+                <strong>{((summary?.average_cvr ?? 0) * 100).toFixed(2)}%</strong>
               </div>
             </div>
           </div>
 
+          {summary && summary.calibration.evaluated_comparisons > 0 ? (
+            <div className="panel-card">
+              <div className="panel-head">
+                <h3>Calibration</h3>
+                <span className="kicker">brain prediction vs ad outcomes</span>
+              </div>
+              <div className="metric-grid">
+                <div className="metric">
+                  <span>Comparisons evaluated</span>
+                  <strong>{summary.calibration.evaluated_comparisons}</strong>
+                </div>
+                <div className="metric">
+                  <span>Aligned predictions</span>
+                  <strong>{summary.calibration.aligned_predictions}</strong>
+                </div>
+                <div className="metric">
+                  <span>Alignment rate</span>
+                  <strong>{(summary.calibration.alignment_rate * 100).toFixed(0)}%</strong>
+                </div>
+              </div>
+              {summary.calibration.recent.length ? (
+                <table className="simple-table" style={{ marginTop: 18 }}>
+                  <thead>
+                    <tr>
+                      <th>Comparison</th>
+                      <th>Predicted</th>
+                      <th>Actual best</th>
+                      <th>Aligned</th>
+                      <th>Profit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.calibration.recent.map((row) => (
+                      <tr key={row.comparison_id}>
+                        <td>{row.comparison_id.slice(0, 10)}</td>
+                        <td>{row.predicted_asset_id.slice(0, 8)}</td>
+                        <td>{row.actual_best_asset_id.slice(0, 8)}</td>
+                        <td>{row.aligned ? "✓" : "—"}</td>
+                        <td>${formatNumber(row.actual_profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="panel-card">
             <div className="panel-head">
-              <h3>Calibration</h3>
-              <span className="kicker">brain prediction vs ad outcomes</span>
+              <h3>Recent outcomes</h3>
+              <span className="kicker">latest {Math.min(outcomes.length, 25)} logged</span>
             </div>
-            <div className="metric-grid">
-              <div className="metric">
-                <span>Comparisons evaluated</span>
-                <strong>{summary.calibration.evaluated_comparisons}</strong>
-              </div>
-              <div className="metric">
-                <span>Aligned predictions</span>
-                <strong>{summary.calibration.aligned_predictions}</strong>
-              </div>
-              <div className="metric">
-                <span>Alignment rate</span>
-                <strong>{(summary.calibration.alignment_rate * 100).toFixed(0)}%</strong>
-              </div>
-            </div>
-            {summary.calibration.recent.length ? (
-              <table className="simple-table" style={{ marginTop: 18 }}>
-                <thead>
-                  <tr>
-                    <th>Comparison</th>
-                    <th>Predicted</th>
-                    <th>Actual</th>
-                    <th>Aligned</th>
-                    <th>Profit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.calibration.recent.map((row) => (
-                    <tr key={row.comparison_id}>
-                      <td>{row.comparison_id.slice(0, 8)}</td>
-                      <td>{row.predicted_asset_id.slice(0, 6)}</td>
-                      <td>{row.actual_best_asset_id.slice(0, 6)}</td>
-                      <td>{row.aligned ? "✓" : "—"}</td>
-                      <td>${formatNumber(row.actual_profit)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
+            {outcomes.length === 0 ? (
+              <p className="hint">Outcomes will appear here once you log one.</p>
+            ) : (
+              outcomes.slice(0, 25).map((row) => {
+                const profit = row.profit;
+                const profitClass =
+                  profit === null ? "" : profit >= 0 ? "profit-pos" : "profit-neg";
+                return (
+                  <div key={row.id} className="outcome-summary-row">
+                    <div style={{ minWidth: 0 }}>
+                      <strong>{row.asset_name || row.asset_id.slice(0, 12)}</strong>
+                      <span className="meta" style={{ display: "block", marginTop: 2 }}>
+                        {row.comparison_objective || row.comparison_id.slice(0, 12)} ·{" "}
+                        {new Date(row.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div style={{ textAlign: "right", fontSize: 12 }}>
+                      <div>
+                        <span style={{ color: "var(--ink-soft)" }}>spend</span>{" "}
+                        <strong>${formatNumber(row.spend)}</strong>{" "}
+                        · <span style={{ color: "var(--ink-soft)" }}>rev</span>{" "}
+                        <strong>${formatNumber(row.revenue)}</strong>
+                      </div>
+                      {profit !== null ? (
+                        <div className={profitClass} style={{ marginTop: 4 }}>
+                          profit ${formatNumber(profit)}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
+
+      {logOpen ? (
+        <LogOutcomeModal
+          comparisons={completedComparisons}
+          onClose={() => setLogOpen(false)}
+          onSubmit={async (payload) => {
+            await submitOutcome(payload);
+            setLogOpen(false);
+          }}
+        />
+      ) : null}
+
+      <ToastBar toast={toast} onDismiss={dismiss} />
     </>
+  );
+}
+
+function LogOutcomeModal({
+  comparisons,
+  onClose,
+  onSubmit
+}: {
+  comparisons: Comparison[];
+  onClose: () => void;
+  onSubmit: (payload: OutcomeCreate & { comparison_id: string }) => Promise<void>;
+}) {
+  const [comparisonId, setComparisonId] = useState<string>(comparisons[0]?.id ?? "");
+  const selected = useMemo(
+    () => comparisons.find((c) => c.id === comparisonId) || null,
+    [comparisons, comparisonId]
+  );
+  const [assetId, setAssetId] = useState<string>(
+    selected?.recommendation?.winner_asset_id || selected?.variants[0]?.asset.id || ""
+  );
+  useEffect(() => {
+    if (selected && !selected.variants.some((v) => v.asset.id === assetId)) {
+      setAssetId(selected.recommendation?.winner_asset_id || selected.variants[0]?.asset.id || "");
+    }
+  }, [selected, assetId]);
+
+  const [spend, setSpend] = useState("");
+  const [revenue, setRevenue] = useState("");
+  const [impressions, setImpressions] = useState("");
+  const [clicks, setClicks] = useState("");
+  const [conversions, setConversions] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !busy) onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [busy, onClose]);
+
+  function num(value: string): number {
+    const cleaned = value.replace(/[,$\s]/g, "");
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  async function submit() {
+    if (!comparisonId || !assetId) {
+      setError("Pick a comparison and a variant.");
+      return;
+    }
+    if (!spend.trim() && !revenue.trim() && !impressions.trim() && !clicks.trim() && !conversions.trim()) {
+      setError("Add at least one metric.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await onSubmit({
+        comparison_id: comparisonId,
+        asset_id: assetId,
+        spend: num(spend),
+        revenue: num(revenue),
+        impressions: num(impressions),
+        clicks: num(clicks),
+        conversions: num(conversions),
+        notes: notes.trim() || "Logged from outcomes"
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not log outcome.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="auth-overlay" onClick={onClose} role="presentation">
+      <div
+        className="auth-modal outcome-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="log-outcome-title"
+      >
+        <button className="auth-close" onClick={onClose} aria-label="Close log outcome dialog">
+          ×
+        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+          <BrainBlob size={48} color="var(--plum)" eyes mouth />
+          <h2 id="log-outcome-title">Log outcome</h2>
+        </div>
+        <p className="lead">
+          Logged spend and revenue calibrate the brain's confidence against real campaign performance. Each
+          outcome only takes one metric to be useful — fill what you have.
+        </p>
+        <label className="field">
+          <span>Comparison</span>
+          <select
+            value={comparisonId}
+            onChange={(e) => setComparisonId(e.target.value)}
+            className="member-role-select"
+            style={{ width: "100%", fontSize: 14, padding: 8 }}
+          >
+            {comparisons.map((c) => (
+              <option key={c.id} value={c.id}>
+                {(c.objective || c.id).slice(0, 64)} · {new Date(c.created_at).toLocaleDateString()}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Variant</span>
+          <select
+            value={assetId}
+            onChange={(e) => setAssetId(e.target.value)}
+            className="member-role-select"
+            style={{ width: "100%", fontSize: 14, padding: 8 }}
+          >
+            {selected?.variants.map((variant) => (
+              <option key={variant.asset.id} value={variant.asset.id}>
+                {variant.asset.name}
+                {selected.recommendation?.winner_asset_id === variant.asset.id ? "  (predicted winner)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="outcome-grid">
+          <label className="field">
+            <span>Spend (USD)</span>
+            <input value={spend} onChange={(e) => setSpend(e.target.value)} inputMode="decimal" placeholder="1500" />
+          </label>
+          <label className="field">
+            <span>Revenue (USD)</span>
+            <input value={revenue} onChange={(e) => setRevenue(e.target.value)} inputMode="decimal" placeholder="2400" />
+          </label>
+          <label className="field">
+            <span>Impressions</span>
+            <input value={impressions} onChange={(e) => setImpressions(e.target.value)} inputMode="numeric" placeholder="42000" />
+          </label>
+          <label className="field">
+            <span>Clicks</span>
+            <input value={clicks} onChange={(e) => setClicks(e.target.value)} inputMode="numeric" placeholder="980" />
+          </label>
+          <label className="field">
+            <span>Conversions</span>
+            <input value={conversions} onChange={(e) => setConversions(e.target.value)} inputMode="numeric" placeholder="38" />
+          </label>
+        </div>
+        <label className="field">
+          <span>Notes (optional)</span>
+          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Channel, audience, dates…" />
+        </label>
+        {error ? <div className="auth-error">{error}</div> : null}
+        <div className="form-actions" style={{ justifyContent: "flex-end" }}>
+          <button className="btn ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={submit} disabled={busy}>
+            {busy ? "Saving…" : "Save outcome"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
