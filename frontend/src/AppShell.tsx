@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { SignIn, useAuth, useClerk, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
   createBrandProfile,
@@ -10,11 +11,7 @@ import {
   listAuditEvents,
   listBrandProfiles,
   listLibraryAssets,
-  listTeamMembers,
-  loginWithPasskey,
-  logout,
-  registerWithPasskey,
-  switchTeam
+  listTeamMembers
 } from "./api";
 import type {
   AuditEvent,
@@ -41,32 +38,36 @@ const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
 ];
 
 export function AppShell() {
+  const { isLoaded: clerkLoaded, isSignedIn } = useUser();
+  const { signOut } = useClerk();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [view, setView] = useState<View>("workbench");
   const [authOpen, setAuthOpen] = useState(false);
   const [bootError] = useState<string | null>(null);
 
   useEffect(() => {
-    void boot();
-  }, []);
-
-  async function boot() {
-    try {
-      const next = await getSession();
-      setSession(next);
-    } catch {
-      // Some deployments (e.g. the local FastAPI research backend) do not expose passkey
-      // auth endpoints. Treat that as unauthenticated rather than a hard failure so the
-      // workbench can still seed and run comparisons.
+    if (!clerkLoaded) return;
+    if (!isSignedIn) {
       setSession({ authenticated: false, user: null, team: null, teams: [] });
+      return;
     }
-  }
+    let cancelled = false;
+    getSession()
+      .then((next) => {
+        if (!cancelled) setSession(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSession({ authenticated: false, user: null, team: null, teams: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clerkLoaded, isSignedIn]);
 
   async function handleSignOut() {
     try {
-      await logout();
-      const next = await getSession();
-      setSession(next);
+      await signOut();
+      setSession({ authenticated: false, user: null, team: null, teams: [] });
     } catch (err) {
       console.warn(err);
     }
@@ -89,10 +90,6 @@ export function AppShell() {
         session={session}
         onSignIn={() => setAuthOpen(true)}
         onSignOut={handleSignOut}
-        onSwitchTeam={async (teamId) => {
-          await switchTeam(teamId);
-          await refreshSession();
-        }}
       />
 
       <main className="wb-main">
@@ -112,15 +109,7 @@ export function AppShell() {
         ) : null}
       </main>
 
-      {authOpen ? (
-        <AuthModal
-          onClose={() => setAuthOpen(false)}
-          onAuthenticated={async (next) => {
-            setSession(next);
-            setAuthOpen(false);
-          }}
-        />
-      ) : null}
+      {authOpen ? <AuthModal onClose={() => setAuthOpen(false)} /> : null}
     </div>
   );
 }
@@ -130,15 +119,13 @@ function Sidebar({
   onChange,
   session,
   onSignIn,
-  onSignOut,
-  onSwitchTeam
+  onSignOut
 }: {
   active: View;
   onChange: (view: View) => void;
   session: AuthSession | null;
   onSignIn: () => void;
   onSignOut: () => void;
-  onSwitchTeam: (teamId: string) => void;
 }) {
   return (
     <aside className="wb-side">
@@ -180,27 +167,6 @@ function Sidebar({
           <span style={{ fontSize: 11, color: "var(--ink-soft)", fontFamily: "var(--mono)" }}>
             {session.user.email}
           </span>
-          {session.teams.length > 1 ? (
-            <select
-              value={session.team?.id ?? ""}
-              onChange={(e) => onSwitchTeam(e.target.value)}
-              style={{
-                marginTop: 6,
-                background: "var(--paper-warm)",
-                border: "1.5px solid var(--ink)",
-                borderRadius: 999,
-                padding: "4px 10px",
-                font: "inherit",
-                fontSize: 12
-              }}
-            >
-              {session.teams.map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))}
-            </select>
-          ) : null}
           <button className="btn cream small" onClick={onSignOut} style={{ marginTop: 8 }}>
             Sign out
           </button>
@@ -208,7 +174,7 @@ function Sidebar({
       ) : (
         <div className="side-tip">
           <BrainBlob size={56} color="var(--butter)" eyes mouth />
-          <p>Sign in with a passkey to save variants and share decisions.</p>
+          <p>Sign in to save variants, log outcomes, and share decisions.</p>
           <button className="btn primary small" onClick={onSignIn}>
             Sign in
           </button>
@@ -218,118 +184,82 @@ function Sidebar({
   );
 }
 
-function AuthModal({ onClose, onAuthenticated }: { onClose: () => void; onAuthenticated: (next: AuthSession) => void }) {
-  const [mode, setMode] = useState<"login" | "register">("register");
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
-  const [teamName, setTeamName] = useState("My team");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const modalRef = useRef<HTMLDivElement | null>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusables = collectFocusable(modalRef.current);
-    focusables[0]?.focus();
-    return () => {
-      previousFocusRef.current?.focus();
-    };
-  }, []);
+function AuthModal({ onClose }: { onClose: () => void }) {
+  const { isLoaded, isSignedIn } = useUser();
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && !busy) {
-        onClose();
-        return;
-      }
-      if (e.key === "Tab") {
-        const focusables = collectFocusable(modalRef.current);
-        if (focusables.length === 0) {
-          e.preventDefault();
-          return;
-        }
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        const active = document.activeElement as HTMLElement | null;
-        if (e.shiftKey && (active === first || !modalRef.current?.contains(active))) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && active === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
+      if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [busy, onClose]);
+  }, [onClose]);
 
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    try {
-      const next = mode === "register"
-        ? await registerWithPasskey({ email: email.trim(), name: name.trim() || email.trim(), teamName: teamName.trim() || "My team" })
-        : await loginWithPasskey(email.trim());
-      onAuthenticated(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not authenticate.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  // Auto-close once Clerk reports the user is signed in.
+  useEffect(() => {
+    if (isLoaded && isSignedIn) onClose();
+  }, [isLoaded, isSignedIn, onClose]);
 
   return (
     <div className="auth-overlay" onClick={onClose} role="presentation">
-      <div ref={modalRef} className="auth-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div
+        className="auth-modal clerk-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-modal-title"
+      >
         <button className="auth-close" onClick={onClose} aria-label="Close sign-in dialog">
           ×
         </button>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
           <BrainBlob size={48} color="var(--tomato)" eyes mouth />
           <h2 id="auth-modal-title">Sign in to Stimli</h2>
         </div>
-        <p className="lead">
-          Passkey accounts work on most modern browsers. No passwords, no setup. Use one passkey across all your
-          devices that share an iCloud, Google, or 1Password account.
-        </p>
-        <div className="auth-tabs">
-          <button className={`chip ${mode === "register" ? "active" : ""}`} onClick={() => setMode("register")}>
-            New account
-          </button>
-          <button className={`chip ${mode === "login" ? "active" : ""}`} onClick={() => setMode("login")}>
-            Existing passkey
-          </button>
-        </div>
-
-        <label className="field">
-          <span>Email</span>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@brand.com" type="email" />
-        </label>
-
-        {mode === "register" ? (
-          <>
-            <label className="field">
-              <span>Name</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
-            </label>
-            <label className="field">
-              <span>Team name</span>
-              <input value={teamName} onChange={(e) => setTeamName(e.target.value)} placeholder="My team" />
-            </label>
-          </>
-        ) : null}
-
-        {error ? <div className="auth-error">{error}</div> : null}
-
-        <button className="btn primary wide" onClick={submit} disabled={busy || !email}>
-          {busy ? "Talking to your device…" : mode === "register" ? "Create account" : "Sign in"}
-        </button>
-
-        <p className="hint" style={{ textAlign: "center" }}>
-          Your passkey never leaves your device. Stimli stores creative variants and decisions; nothing else.
-        </p>
+        <SignIn
+          routing="virtual"
+          appearance={{
+            elements: {
+              rootBox: { width: "100%" },
+              card: {
+                boxShadow: "none",
+                border: "none",
+                background: "transparent",
+                padding: 0
+              },
+              headerTitle: { display: "none" },
+              headerSubtitle: { display: "none" },
+              socialButtonsBlockButton: {
+                border: "2px solid var(--ink)",
+                borderRadius: 14,
+                boxShadow: "3px 3px 0 var(--ink)",
+                background: "var(--paper)",
+                fontFamily: "var(--body)",
+                fontWeight: 600
+              },
+              socialButtonsBlockButton__google: { background: "var(--paper)" },
+              socialButtonsBlockButton__apple: { background: "var(--paper)" },
+              socialButtonsBlockButton__github: { background: "var(--paper)" },
+              dividerLine: { background: "var(--ink-faint)" },
+              formFieldInput: {
+                border: "2px solid var(--ink)",
+                borderRadius: 14,
+                background: "var(--paper-warm)",
+                fontFamily: "var(--body)"
+              },
+              formButtonPrimary: {
+                background: "var(--tomato)",
+                color: "var(--paper)",
+                border: "2px solid var(--ink)",
+                borderRadius: 999,
+                boxShadow: "3px 3px 0 var(--ink)",
+                fontFamily: "var(--body)",
+                fontWeight: 600
+              },
+              footerActionLink: { color: "var(--tomato-ink)" }
+            }
+          }}
+        />
       </div>
     </div>
   );
@@ -931,35 +861,24 @@ export function LegalPage() {
 }
 
 export function InvitePage({ token }: { token: string }) {
+  const { isLoaded: clerkLoaded, isSignedIn } = useUser();
   const [invite, setInvite] = useState<TeamInvite | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([getInvite(token), getSession()])
-      .then(([nextInvite, nextSession]) => {
-        setInvite(nextInvite);
-        setSession(nextSession);
-      })
+    getInvite(token)
+      .then(setInvite)
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load invite."));
   }, [token]);
 
-  async function authenticate() {
-    if (!invite) return;
-    const email = window.prompt("Email for the new account", invite.email || "") || "";
-    if (!email) return;
-    setBusy(true);
-    try {
-      await registerWithPasskey({ email, name: email.split("@")[0], teamName: invite.team_name });
-      const next = await getSession();
-      setSession(next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not register.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    if (!clerkLoaded || !isSignedIn) return;
+    getSession()
+      .then(setSession)
+      .catch(() => undefined);
+  }, [clerkLoaded, isSignedIn]);
 
   async function accept() {
     setBusy(true);
@@ -1003,9 +922,9 @@ export function InvitePage({ token }: { token: string }) {
             </button>
           ) : (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button className="btn primary" onClick={authenticate} disabled={busy}>
-                Create account & join
-              </button>
+              <a className="btn primary" href={`/app?invite=${encodeURIComponent(token)}`}>
+                Sign in to accept
+              </a>
               <a className="btn cream" href="/">
                 Cancel
               </a>

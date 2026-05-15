@@ -1,4 +1,3 @@
-import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type {
   Asset,
   AssetType,
@@ -33,31 +32,59 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const WORKSPACE_KEY = "stimli.workspace";
 const TEAM_WORKSPACE_KEY = "stimli.team_workspace";
 
+// Minimal shape of Clerk's window-attached singleton. We only read .session
+// from it. The full type lives in @clerk/clerk-js, which we don't import here
+// (the React SDK pulls it in at runtime).
+type ClerkLike = { session?: { getToken: () => Promise<string | null> } | null };
+
+async function getClerkToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  const clerk = (window as unknown as { Clerk?: ClerkLike }).Clerk;
+  if (!clerk?.session) return null;
+  try {
+    return await clerk.session.getToken();
+  } catch {
+    return null;
+  }
+}
+
+async function workspaceHeaders(): Promise<HeadersInit> {
+  const headers: Record<string, string> = { "X-Stimli-Workspace": getWorkspaceId() };
+  const token = await getClerkToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+async function jsonHeaders(): Promise<HeadersInit> {
+  const base = (await workspaceHeaders()) as Record<string, string>;
+  return { ...base, "Content-Type": "application/json" };
+}
+
 export async function seedDemo(projectId?: string | null): Promise<Asset[]> {
   const response = await fetch(`${API_BASE}/demo/seed`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify({ project_id: projectId || null })
   });
   return parseResponse(response);
 }
 
 export async function listProjects(): Promise<Project[]> {
-  const response = await fetch(`${API_BASE}/projects`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/projects`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function createProject(input: { name: string; description?: string }): Promise<Project> {
   const response = await fetch(`${API_BASE}/projects`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
 }
 
 export async function listAssets(): Promise<Asset[]> {
-  const response = await fetch(`${API_BASE}/assets`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/assets`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
@@ -79,15 +106,11 @@ export async function createTextAsset(input: {
   if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
   if (input.projectId) form.append("project_id", input.projectId);
   if (input.file) form.append("file", input.file);
-  // Cloudflare Pages Function path is /api/assets and accepts multipart directly.
-  // The Worker writes the file to R2 (env.STIMLI_MEDIA) server-side.
   const response = await fetch(`${API_BASE}/assets`, {
     method: "POST",
-    headers: workspaceHeaders(),
+    headers: await workspaceHeaders(),
     body: form
   });
-  // Best-effort upload progress: XHR would expose true progress, but fetch
-  // doesn't. Fire 100% on completion so callers can clear their UI state.
   input.onUploadProgress?.(100);
   const payload = await parseResponse<{ asset: Asset }>(response);
   return payload.asset;
@@ -96,7 +119,7 @@ export async function createTextAsset(input: {
 export async function createComparison(assetIds: string[], objective: string): Promise<Comparison> {
   const response = await fetch(`${API_BASE}/comparisons`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify({ asset_ids: assetIds, objective })
   });
   return parseResponse(response);
@@ -115,40 +138,40 @@ export async function createBriefComparisonForProject(
 ): Promise<Comparison> {
   const response = await fetch(`${API_BASE}/comparisons`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify({ asset_ids: assetIds, objective, brief, project_id: projectId || null, brand_profile_id: brandProfileId || null })
   });
   return parseResponse(response);
 }
 
 export async function listComparisons(): Promise<Comparison[]> {
-  const response = await fetch(`${API_BASE}/comparisons`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/comparisons`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function getComparison(comparisonId: string): Promise<Comparison> {
-  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function cancelComparison(comparisonId: string): Promise<Comparison> {
   const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/cancel`, {
     method: "POST",
-    headers: workspaceHeaders()
+    headers: await workspaceHeaders()
   });
   return parseResponse(response);
 }
 
 export async function getReport(comparisonId: string): Promise<Report> {
-  const response = await fetch(`${API_BASE}/reports/${comparisonId}`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/reports/${comparisonId}`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function getReportMarkdown(comparisonId: string): Promise<string> {
-  const response = await fetch(`${API_BASE}/reports/${comparisonId}/markdown`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/reports/${comparisonId}/markdown`, { headers: await workspaceHeaders() });
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || `Request failed with ${response.status}`);
+    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
   }
   return response.text();
 }
@@ -156,7 +179,7 @@ export async function getReportMarkdown(comparisonId: string): Promise<string> {
 export async function createShareLink(comparisonId: string): Promise<ShareLink> {
   const response = await fetch(`${API_BASE}/reports/${comparisonId}/share`, {
     method: "POST",
-    headers: workspaceHeaders()
+    headers: await workspaceHeaders()
   });
   return parseResponse(response);
 }
@@ -169,7 +192,7 @@ export async function getSharedReport(token: string): Promise<Report> {
 export async function createOutcome(comparisonId: string, outcome: OutcomeCreate): Promise<Outcome> {
   const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/outcomes`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify(outcome)
   });
   return parseResponse(response);
@@ -181,14 +204,14 @@ export async function createChallenger(
 ): Promise<ChallengerResponse> {
   const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/challengers`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
 }
 
 export async function getLearningSummary(): Promise<LearningSummary> {
-  const response = await fetch(`${API_BASE}/learning/summary`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/learning/summary`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
@@ -198,15 +221,14 @@ export async function getBrainProviders(): Promise<BrainProviderHealth[]> {
 }
 
 export async function getBillingStatus(): Promise<BillingStatus> {
-  const response = await fetch(`${API_BASE}/billing/status`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/billing/status`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function startCheckout(plan: string): Promise<{ url: string; id: string }> {
   const response = await fetch(`${API_BASE}/billing/checkout`, {
     method: "POST",
-    headers: jsonHeaders(),
-    credentials: "include",
+    headers: await jsonHeaders(),
     body: JSON.stringify({ plan })
   });
   return parseResponse(response);
@@ -215,75 +237,13 @@ export async function startCheckout(plan: string): Promise<{ url: string; id: st
 export async function openBillingPortal(): Promise<{ url: string }> {
   const response = await fetch(`${API_BASE}/billing/portal`, {
     method: "POST",
-    headers: workspaceHeaders(),
-    credentials: "include"
+    headers: await workspaceHeaders()
   });
   return parseResponse(response);
 }
 
 export async function getSession(): Promise<AuthSession> {
-  const response = await fetch(`${API_BASE}/auth/session`, { credentials: "include" });
-  const session = await parseResponse<AuthSession>(response);
-  setAuthenticatedWorkspace(session.team?.id || null);
-  return session;
-}
-
-export async function registerWithPasskey(input: { email: string; name: string; teamName: string }): Promise<AuthSession> {
-  const optionsResponse = await fetch(`${API_BASE}/auth/register/options`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ email: input.email, name: input.name, team_name: input.teamName })
-  });
-  const optionsPayload = await parseResponse<{ challenge_id: string; options: Parameters<typeof startRegistration>[0]["optionsJSON"] }>(
-    optionsResponse
-  );
-  const credential = await startRegistration({ optionsJSON: optionsPayload.options });
-  const verifyResponse = await fetch(`${API_BASE}/auth/register/verify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ challenge_id: optionsPayload.challenge_id, response: credential })
-  });
-  const session = await parseResponse<AuthSession>(verifyResponse);
-  setAuthenticatedWorkspace(session.team?.id || null);
-  return session;
-}
-
-export async function loginWithPasskey(email: string): Promise<AuthSession> {
-  const optionsResponse = await fetch(`${API_BASE}/auth/login/options`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ email })
-  });
-  const optionsPayload = await parseResponse<{ challenge_id: string; options: Parameters<typeof startAuthentication>[0]["optionsJSON"] }>(
-    optionsResponse
-  );
-  const credential = await startAuthentication({ optionsJSON: optionsPayload.options });
-  const verifyResponse = await fetch(`${API_BASE}/auth/login/verify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ challenge_id: optionsPayload.challenge_id, response: credential })
-  });
-  const session = await parseResponse<AuthSession>(verifyResponse);
-  setAuthenticatedWorkspace(session.team?.id || null);
-  return session;
-}
-
-export async function logout(): Promise<void> {
-  await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
-  setAuthenticatedWorkspace(null);
-}
-
-export async function switchTeam(teamId: string): Promise<AuthSession> {
-  const response = await fetch(`${API_BASE}/auth/team`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ team_id: teamId })
-  });
+  const response = await fetch(`${API_BASE}/auth/session`, { headers: await workspaceHeaders() });
   const session = await parseResponse<AuthSession>(response);
   setAuthenticatedWorkspace(session.team?.id || null);
   return session;
@@ -292,62 +252,59 @@ export async function switchTeam(teamId: string): Promise<AuthSession> {
 export async function createTeamInvite(input: { email?: string; role?: TeamRole }): Promise<TeamInvite> {
   const response = await fetch(`${API_BASE}/teams/invites`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
 }
 
 export async function listTeamMembers(): Promise<TeamMember[]> {
-  const response = await fetch(`${API_BASE}/teams/members`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/teams/members`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function updateTeamMemberRole(userId: string, role: TeamRole): Promise<TeamMember> {
   const response = await fetch(`${API_BASE}/teams/members/${encodeURIComponent(userId)}/role`, {
     method: "PATCH",
-    headers: jsonHeaders(),
-    credentials: "include",
+    headers: await jsonHeaders(),
     body: JSON.stringify({ role })
   });
   return parseResponse(response);
 }
 
 export async function getAdminSummary(): Promise<AdminSummary> {
-  const response = await fetch(`${API_BASE}/admin/summary`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/admin/summary`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function listAdminJobs(status?: string): Promise<Comparison["jobs"]> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
-  const response = await fetch(`${API_BASE}/admin/jobs${suffix}`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/admin/jobs${suffix}`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function retryAdminJob(jobId: string): Promise<Comparison> {
   const response = await fetch(`${API_BASE}/admin/jobs/${encodeURIComponent(jobId)}/retry`, {
     method: "POST",
-    headers: workspaceHeaders(),
-    credentials: "include"
+    headers: await workspaceHeaders()
   });
   return parseResponse(response);
 }
 
 export async function listAuditEvents(): Promise<AuditEvent[]> {
-  const response = await fetch(`${API_BASE}/audit/events`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/audit/events`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function listBrandProfiles(): Promise<BrandProfile[]> {
-  const response = await fetch(`${API_BASE}/brand-profiles`, { headers: workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/brand-profiles`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function createBrandProfile(input: Partial<BrandProfile> & { name: string; brief: CreativeBrief }): Promise<BrandProfile> {
   const response = await fetch(`${API_BASE}/brand-profiles`, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
@@ -356,24 +313,24 @@ export async function createBrandProfile(input: Partial<BrandProfile> & { name: 
 export async function updateBrandProfile(id: string, input: Partial<BrandProfile>): Promise<BrandProfile> {
   const response = await fetch(`${API_BASE}/brand-profiles/${encodeURIComponent(id)}`, {
     method: "PATCH",
-    headers: jsonHeaders(),
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
 }
 
 export async function getGovernancePolicy(): Promise<GovernancePolicy> {
-  const response = await fetch(`${API_BASE}/governance/policy`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/governance/policy`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function exportWorkspace(): Promise<WorkspaceExport> {
-  const response = await fetch(`${API_BASE}/governance/export`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/governance/export`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function listGovernanceRequests(): Promise<GovernanceRequest[]> {
-  const response = await fetch(`${API_BASE}/governance/requests`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/governance/requests`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
@@ -384,15 +341,14 @@ export async function createDeletionRequest(input: {
 }): Promise<GovernanceRequest> {
   const response = await fetch(`${API_BASE}/governance/deletion-requests`, {
     method: "POST",
-    headers: jsonHeaders(),
-    credentials: "include",
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
 }
 
 export async function listLibraryAssets(): Promise<LibraryResponse> {
-  const response = await fetch(`${API_BASE}/library/assets`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/library/assets`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
@@ -404,28 +360,26 @@ export async function createImportJob(input: {
 }): Promise<{ job: ImportJob; assets: Asset[] }> {
   const response = await fetch(`${API_BASE}/imports`, {
     method: "POST",
-    headers: jsonHeaders(),
-    credentials: "include",
+    headers: await jsonHeaders(),
     body: JSON.stringify(input)
   });
   return parseResponse(response);
 }
 
 export async function listImportJobs(): Promise<ImportJob[]> {
-  const response = await fetch(`${API_BASE}/imports`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/imports`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function getValidationCalibration(): Promise<ValidationCalibration> {
-  const response = await fetch(`${API_BASE}/validation/calibration`, { headers: workspaceHeaders(), credentials: "include" });
+  const response = await fetch(`${API_BASE}/validation/calibration`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function runValidationBenchmark(benchmarkId = "dtc-hooks-v1"): Promise<BenchmarkRun> {
   const response = await fetch(`${API_BASE}/validation/benchmarks/run`, {
     method: "POST",
-    headers: jsonHeaders(),
-    credentials: "include",
+    headers: await jsonHeaders(),
     body: JSON.stringify({ benchmark_id: benchmarkId })
   });
   return parseResponse(response);
@@ -439,7 +393,7 @@ export async function getInvite(token: string): Promise<TeamInvite> {
 export async function acceptInvite(token: string): Promise<AuthSession> {
   const response = await fetch(`${API_BASE}/invites/${encodeURIComponent(token)}/accept`, {
     method: "POST",
-    credentials: "include"
+    headers: await workspaceHeaders()
   });
   const session = await parseResponse<AuthSession>(response);
   setAuthenticatedWorkspace(session.team?.id || null);
@@ -490,17 +444,6 @@ function pickErrorString(value: unknown): string {
   return "";
 }
 
-function jsonHeaders(): HeadersInit {
-  return {
-    ...workspaceHeaders(),
-    "Content-Type": "application/json"
-  };
-}
-
-function workspaceHeaders(): HeadersInit {
-  return { "X-Stimli-Workspace": getWorkspaceId() };
-}
-
 function getWorkspaceId(): string {
   if (typeof window === "undefined") {
     return "public";
@@ -529,4 +472,3 @@ function setAuthenticatedWorkspace(teamId: string | null) {
     window.localStorage.removeItem(TEAM_WORKSPACE_KEY);
   }
 }
-

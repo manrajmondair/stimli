@@ -19,8 +19,8 @@
     "test:web": "npm run test --workspace stimli-frontend"
   },
   "dependencies": {
+    "@clerk/backend": "^3.4.8",
     "@neondatabase/serverless": "^1.1.0",
-    "@simplewebauthn/server": "^13.3.0",
     "stripe": "^22.1.1"
   },
   "optionalDependencies": {
