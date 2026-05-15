@@ -578,19 +578,57 @@ function LibraryView() {
   );
 }
 
+type BrandFormState = {
+  name: string;
+  brand_name: string;
+  audience: string;
+  product_category: string;
+  primary_offer: string;
+  voice: string;
+  required_claims: string;
+  forbidden_terms: string;
+};
+
+const EMPTY_BRAND_FORM: BrandFormState = {
+  name: "",
+  brand_name: "",
+  audience: "",
+  product_category: "",
+  primary_offer: "",
+  voice: "specific before abstract, proof before promise",
+  required_claims: "",
+  forbidden_terms: ""
+};
+
+function brandToForm(profile: BrandProfile): BrandFormState {
+  return {
+    name: profile.name,
+    brand_name: profile.brief.brand_name,
+    audience: profile.brief.audience,
+    product_category: profile.brief.product_category,
+    primary_offer: profile.brief.primary_offer,
+    voice: profile.voice_rules.join(", "),
+    required_claims: (profile.brief.required_claims || []).join(", "),
+    forbidden_terms: (profile.brief.forbidden_terms || []).join(", ")
+  };
+}
+
+function csvToList(value: string): string[] {
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
 function BrandsView() {
   const [profiles, setProfiles] = useState<BrandProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    brand_name: "",
-    audience: "",
-    product_category: "",
-    primary_offer: "",
-    voice: "specific before abstract, proof before promise"
-  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<BrandProfile | null>(null);
+  const [defaultId, setDefaultId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.localStorage.getItem(DEFAULT_BRAND_KEY)
+  );
+  const [form, setForm] = useState<BrandFormState>(EMPTY_BRAND_FORM);
+  const { toast, show, dismiss } = useLocalToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -611,6 +649,16 @@ function BrandsView() {
     };
   }, []);
 
+  function setActiveDefault(id: string | null) {
+    setDefaultId(id);
+    if (typeof window === "undefined") return;
+    if (id) {
+      window.localStorage.setItem(DEFAULT_BRAND_KEY, id);
+    } else {
+      window.localStorage.removeItem(DEFAULT_BRAND_KEY);
+    }
+  }
+
   async function save() {
     if (!form.name.trim() || !form.brand_name.trim()) {
       setError("Add a profile name and brand.");
@@ -618,28 +666,94 @@ function BrandsView() {
     }
     setBusy(true);
     setError(null);
+    const brief: CreativeBrief = {
+      brand_name: form.brand_name.trim(),
+      audience: form.audience.trim(),
+      product_category: form.product_category.trim(),
+      primary_offer: form.primary_offer.trim(),
+      required_claims: csvToList(form.required_claims),
+      forbidden_terms: csvToList(form.forbidden_terms)
+    };
+    const voice = csvToList(form.voice);
     try {
-      const profile = await createBrandProfile({
-        name: form.name.trim(),
-        brief: {
-          brand_name: form.brand_name.trim(),
-          audience: form.audience.trim(),
-          product_category: form.product_category.trim(),
-          primary_offer: form.primary_offer.trim(),
-          required_claims: [],
-          forbidden_terms: []
-        } satisfies CreativeBrief,
-        voice_rules: form.voice.split(",").map((part) => part.trim()).filter(Boolean),
-        compliance_notes: []
-      });
-      setProfiles((current) => [profile, ...current]);
-      setForm({ name: "", brand_name: "", audience: "", product_category: "", primary_offer: "", voice: form.voice });
+      if (editingId) {
+        const updated = await updateBrandProfile(editingId, {
+          name: form.name.trim(),
+          brief,
+          voice_rules: voice,
+          compliance_notes: []
+        });
+        setProfiles((current) => current.map((profile) => (profile.id === editingId ? updated : profile)));
+        show("success", `Updated "${updated.name}".`);
+      } else {
+        const profile = await createBrandProfile({
+          name: form.name.trim(),
+          brief,
+          voice_rules: voice,
+          compliance_notes: []
+        });
+        setProfiles((current) => [profile, ...current]);
+        show("success", `Saved "${profile.name}".`);
+      }
+      setForm({ ...EMPTY_BRAND_FORM, voice: form.voice });
+      setEditingId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save profile.");
+      const message = err instanceof Error ? err.message : "Could not save profile.";
+      setError(message);
+      show("error", message);
     } finally {
       setBusy(false);
     }
   }
+
+  function startEdit(profile: BrandProfile) {
+    setEditingId(profile.id);
+    setForm(brandToForm(profile));
+    setError(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm(EMPTY_BRAND_FORM);
+    setError(null);
+  }
+
+  async function performDelete(profile: BrandProfile) {
+    setBusy(true);
+    try {
+      await deleteBrandProfile(profile.id);
+      setProfiles((current) => current.filter((item) => item.id !== profile.id));
+      if (defaultId === profile.id) setActiveDefault(null);
+      if (editingId === profile.id) cancelEdit();
+      show("success", `Deleted "${profile.name}".`);
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not delete profile.");
+    } finally {
+      setBusy(false);
+      setConfirmDelete(null);
+    }
+  }
+
+  async function downloadExport(profile: BrandProfile) {
+    try {
+      const payload = await exportBrandProfile(profile.id);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${profile.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.brand.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      show("success", "Profile exported.");
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not export profile.");
+    }
+  }
+
+  const headingKicker = editingId ? "edit brief" : "re-usable brief";
 
   return (
     <>
@@ -651,8 +765,14 @@ function BrandsView() {
           <span className="wb-crumbs">
             <span className="pill">
               <span className="dot" style={{ background: "var(--butter)" }} />
-              {profiles.length} profiles
+              {profiles.length} {profiles.length === 1 ? "profile" : "profiles"}
             </span>
+            {defaultId ? (
+              <span className="pill">
+                <span className="dot" style={{ background: "var(--pistachio)" }} />
+                default set
+              </span>
+            ) : null}
           </span>
         </div>
       </header>
@@ -660,8 +780,8 @@ function BrandsView() {
       <div className="wb-grid" style={{ gridTemplateColumns: "360px 1fr" }}>
         <section className="panel-card">
           <div className="panel-head">
-            <h3>New brand profile</h3>
-            <span className="kicker">re-usable brief</span>
+            <h3>{editingId ? "Edit profile" : "New brand profile"}</h3>
+            <span className="kicker">{headingKicker}</span>
           </div>
           <div className="add-form">
             <label className="field">
@@ -697,16 +817,37 @@ function BrandsView() {
               />
             </label>
             <label className="field">
-              <span>Voice rules</span>
+              <span>Voice rules · comma separated</span>
+              <textarea rows={2} value={form.voice} onChange={(e) => setForm({ ...form, voice: e.target.value })} />
+            </label>
+            <label className="field">
+              <span>Required claims · comma separated</span>
               <textarea
-                rows={3}
-                value={form.voice}
-                onChange={(e) => setForm({ ...form, voice: e.target.value })}
+                rows={2}
+                value={form.required_claims}
+                onChange={(e) => setForm({ ...form, required_claims: e.target.value })}
+                placeholder="24-hr hydration, dermatologist tested"
               />
             </label>
-            <button className="btn primary wide" onClick={save} disabled={busy}>
-              Save profile
-            </button>
+            <label className="field">
+              <span>Forbidden terms · comma separated</span>
+              <textarea
+                rows={2}
+                value={form.forbidden_terms}
+                onChange={(e) => setForm({ ...form, forbidden_terms: e.target.value })}
+                placeholder="miracle cure, guaranteed"
+              />
+            </label>
+            <div className="form-actions" style={{ justifyContent: "flex-end" }}>
+              {editingId ? (
+                <button className="btn ghost" onClick={cancelEdit} disabled={busy}>
+                  Cancel
+                </button>
+              ) : null}
+              <button className="btn primary" onClick={save} disabled={busy}>
+                {busy ? "Saving…" : editingId ? "Save changes" : "Save profile"}
+              </button>
+            </div>
           </div>
         </section>
 
@@ -721,35 +862,106 @@ function BrandsView() {
             </div>
           ) : (
             <div className="list-grid">
-              {profiles.map((profile, idx) => (
-                <article
-                  key={profile.id}
-                  className="list-card"
-                  style={{ borderTop: `6px solid ${["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"][idx % 4]}` }}
-                >
-                  <span className="meta">{profile.brief.product_category}</span>
-                  <h4>{profile.name}</h4>
-                  <p>
-                    {profile.brief.brand_name} · {profile.brief.audience}
-                  </p>
-                  <p>
-                    Offer: <strong>{profile.brief.primary_offer}</strong>
-                  </p>
-                  {profile.voice_rules.length ? (
-                    <div className="row">
-                      {profile.voice_rules.slice(0, 3).map((rule) => (
-                        <span key={rule} className="claim-pill">
-                          {rule}
-                        </span>
-                      ))}
+              {profiles.map((profile, idx) => {
+                const accent = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"][idx % 4];
+                const isDefault = defaultId === profile.id;
+                const isEditing = editingId === profile.id;
+                return (
+                  <article
+                    key={profile.id}
+                    className="list-card"
+                    style={{ borderTop: `6px solid ${accent}`, opacity: isEditing ? 0.55 : 1 }}
+                  >
+                    {isDefault ? <span className="brand-active-tag">default for next compare</span> : null}
+                    <span className="meta">{profile.brief.product_category || "—"}</span>
+                    <h4>{profile.name}</h4>
+                    <p>
+                      <strong>{profile.brief.brand_name}</strong> · {profile.brief.audience || "(no audience set)"}
+                    </p>
+                    <p>
+                      Offer: <strong>{profile.brief.primary_offer || "—"}</strong>
+                    </p>
+                    {profile.voice_rules.length ? (
+                      <div className="brand-pill-row">
+                        {profile.voice_rules.map((rule) => (
+                          <span key={rule} className="brand-pill voice">
+                            {rule}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {profile.brief.required_claims?.length ? (
+                      <div className="brand-pill-row">
+                        {profile.brief.required_claims.map((claim) => (
+                          <span key={claim} className="brand-pill required">
+                            ✓ {claim}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {profile.brief.forbidden_terms?.length ? (
+                      <div className="brand-pill-row">
+                        {profile.brief.forbidden_terms.map((term) => (
+                          <span key={term} className="brand-pill forbid">
+                            ✕ {term}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="list-card-actions">
+                      <button
+                        type="button"
+                        className={isDefault ? "btn primary" : "btn cream"}
+                        onClick={() => setActiveDefault(isDefault ? null : profile.id)}
+                      >
+                        {isDefault ? "Unset default" : "Set as default"}
+                      </button>
+                      <button type="button" className="btn cream" onClick={() => startEdit(profile)} disabled={busy}>
+                        {isEditing ? "Editing…" : "Edit"}
+                      </button>
+                      <button type="button" className="btn cream" onClick={() => downloadExport(profile)}>
+                        Export
+                      </button>
+                      <button
+                        type="button"
+                        className="btn cream"
+                        onClick={() => setConfirmDelete(profile)}
+                        disabled={busy}
+                        style={{
+                          background: "var(--tomato-soft)",
+                          borderColor: "var(--tomato-ink)",
+                          color: "var(--tomato-ink)"
+                        }}
+                      >
+                        Delete
+                      </button>
                     </div>
-                  ) : null}
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        title="Delete this brand profile?"
+        confirmLabel="Delete profile"
+        message={
+          <>
+            <p>
+              <strong>{confirmDelete?.name}</strong> will be removed. New comparisons can't reference it
+              after deletion; existing comparison reports keep their snapshot of this brief.
+            </p>
+            <p style={{ marginTop: 8, color: "var(--ink-soft)", fontSize: 12 }}>This can't be undone.</p>
+          </>
+        }
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && performDelete(confirmDelete)}
+      />
+
+      <ToastBar toast={toast} onDismiss={dismiss} />
     </>
   );
 }
