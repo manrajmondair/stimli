@@ -348,8 +348,16 @@ export async function rebindUserId(oldId, newId, patch = {}) {
     const updated = { ...existing, ...patch, id: newId };
     memoryStore.users.delete(oldId);
     memoryStore.users.set(newId, updated);
-    for (const member of memoryStore.teamMembers.values()) {
-      if (member.user_id === oldId) member.user_id = newId;
+    // The teamMembers map keys on `${team_id}:${user_id}`, so we have to
+    // re-key any matching rows rather than mutating their user_id in place.
+    const reKeys = [];
+    for (const [key, member] of memoryStore.teamMembers.entries()) {
+      if (member.user_id === oldId) reKeys.push({ key, member });
+    }
+    for (const { key, member } of reKeys) {
+      memoryStore.teamMembers.delete(key);
+      const next = { ...member, user_id: newId };
+      memoryStore.teamMembers.set(`${next.team_id}:${newId}`, next);
     }
     return updated;
   }

@@ -18,6 +18,9 @@ import { nowIso } from "../functions/api/_lib/analysis.js";
 import {
   configureStore,
   getTeamMember,
+  getUser,
+  getUserByEmail,
+  rebindUserId,
   saveTeam,
   saveTeamMember,
   saveUser
@@ -51,6 +54,45 @@ test("allows credentialed local CORS without opening arbitrary origins", async (
   const blocked = await call("OPTIONS", "/api/health", null, { origin: "https://example.invalid" });
   assert.equal(blocked.statusCode, 204);
   assert.equal(blocked.headers["access-control-allow-origin"], undefined);
+});
+
+test("rebindUserId migrates a legacy user row onto a new id and cascades memberships", async () => {
+  // Reproduces the regression where ensureStimliUser would INSERT a new row
+  // for a Clerk id while a legacy row with the same email already existed,
+  // tripping stimli_users_email_key. The fix is to rebind the legacy row
+  // in place — this test pins that behavior.
+  const legacyId = `legacy_${crypto.randomUUID().slice(0, 8)}`;
+  const newId = `user_${crypto.randomUUID().slice(0, 8)}`;
+  const email = `${crypto.randomUUID().slice(0, 8)}@migration.test`;
+  const team = {
+    id: `team_${crypto.randomUUID().slice(0, 8)}`,
+    name: "Migration Team",
+    created_at: nowIso()
+  };
+
+  await saveUser({ id: legacyId, email, name: "Legacy Name", created_at: nowIso() });
+  await saveTeam(team);
+  await saveTeamMember({ team_id: team.id, user_id: legacyId, role: "owner", created_at: nowIso() });
+
+  const migrated = await rebindUserId(legacyId, newId, { name: "Clerk Name" });
+  assert.ok(migrated);
+  assert.equal(migrated.id, newId);
+  assert.equal(migrated.email, email);
+  assert.equal(migrated.name, "Clerk Name");
+
+  // Old id no longer resolves.
+  assert.equal(await getUser(legacyId), null);
+  // New id resolves to the rebound user.
+  const fetched = await getUser(newId);
+  assert.equal(fetched?.email, email);
+  // Email still unique — getUserByEmail finds exactly the new row.
+  const byEmail = await getUserByEmail(email);
+  assert.equal(byEmail?.id, newId);
+  // Membership cascaded.
+  const member = await getTeamMember(team.id, newId);
+  assert.equal(member?.role, "owner");
+  const orphan = await getTeamMember(team.id, legacyId);
+  assert.equal(orphan, null);
 });
 
 test("returns an anonymous session without a Clerk JWT", async () => {
