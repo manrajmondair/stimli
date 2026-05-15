@@ -18,7 +18,6 @@ import { nowIso } from "../functions/api/_lib/analysis.js";
 import {
   configureStore,
   getTeamMember,
-  saveSession,
   saveTeam,
   saveTeamMember,
   saveUser
@@ -26,7 +25,11 @@ import {
 
 const testEnv = {
   STIMLI_RP_ID: "stimli.test",
-  STIMLI_ORIGIN: "https://stimli.test"
+  STIMLI_ORIGIN: "https://stimli.test",
+  STIMLI_APP_URL: "https://stimli.test",
+  // STIMLI_TEST_MODE turns on the test-only auth bypass in functions/api/_lib/auth.js
+  // so we can drive multi-role scenarios via an X-Stimli-Test-User header.
+  STIMLI_TEST_MODE: "1"
 };
 
 // Activate memory-mode storage for direct calls to saveUser / saveTeam etc.
@@ -50,20 +53,21 @@ test("allows credentialed local CORS without opening arbitrary origins", async (
   assert.equal(blocked.headers["access-control-allow-origin"], undefined);
 });
 
-test("starts passkey registration without an authenticated session", async () => {
+test("returns an anonymous session without a Clerk JWT", async () => {
   const session = await call("GET", "/api/auth/session");
   assert.equal(session.statusCode, 200);
   assert.equal(session.json.authenticated, false);
+  assert.equal(session.json.user, null);
+  assert.equal(session.json.team, null);
+});
 
-  const options = await call("POST", "/api/auth/register/options", {
-    email: `founder-${crypto.randomUUID().slice(0, 8)}@example.com`,
-    name: "Founder",
-    team_name: "Founding Team"
-  });
-  assert.equal(options.statusCode, 200);
-  assert.ok(options.json.challenge_id);
-  assert.ok(options.json.options.challenge);
-  assert.equal(options.json.options.rp.name, "Stimli");
+test("synthesizes a test-mode session from the X-Stimli-Test-User header", async () => {
+  const account = await testAccount("Synth Test Team", "owner");
+  const session = await call("GET", "/api/auth/session", null, { cookie: account.cookie });
+  assert.equal(session.statusCode, 200);
+  assert.equal(session.json.authenticated, true);
+  assert.equal(session.json.user.id, account.user.id);
+  assert.equal(session.json.team.id, account.team.id);
 });
 
 test("exposes billing and license status", async () => {
@@ -100,7 +104,7 @@ test("creates free team invite links and switches invited users into the team", 
   assert.equal(accepted.statusCode, 200);
   assert.equal(accepted.json.team.id, owner.team.id);
   assert.equal(accepted.json.teams.some((team) => team.id === owner.team.id), true);
-  assert.equal(Boolean(accepted.headers["set-cookie"]), true);
+  // Clerk owns the session cookie now; the API no longer issues its own.
   assert.equal((await getTeamMember(owner.team.id, invited.user.id)).role, "analyst");
 });
 
@@ -646,9 +650,19 @@ test("retries failed hosted inference jobs from admin controls", async () => {
 
 async function call(method, url, body = null, headers = {}) {
   const hasBody = body !== null && body !== undefined && method !== "GET" && method !== "HEAD";
+  // testAccount() and sessionCookie() return a Clerk user id wrapped as
+  // `cookie`. Translate it to the test-mode auth header so the new auth.js
+  // synthesizes the right context.
+  const normalized = { ...headers };
+  if (normalized.cookie && !String(normalized.cookie).includes("=")) {
+    const [userId, teamId] = String(normalized.cookie).split("::");
+    normalized["x-stimli-test-user"] = userId;
+    if (teamId) normalized["x-stimli-test-team"] = teamId;
+    delete normalized.cookie;
+  }
   const init = {
     method,
-    headers: { ...(hasBody ? { "content-type": "application/json" } : {}), ...headers }
+    headers: { ...(hasBody ? { "content-type": "application/json" } : {}), ...normalized }
   };
   if (hasBody) {
     init.body = JSON.stringify(body);
@@ -693,30 +707,20 @@ async function testAccount(teamName, role) {
     name: teamName,
     created_at: createdAt
   };
-  const token = crypto.randomBytes(32).toString("base64url");
   await saveUser(user);
   await saveTeam(team);
   await saveTeamMember({ team_id: team.id, user_id: user.id, role: "owner", created_at: createdAt });
-  await saveSession({
-    token_hash: crypto.createHash("sha256").update(token).digest("hex"),
-    user_id: user.id,
-    team_id: team.id,
-    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    created_at: createdAt
-  });
-  return { user, team, cookie: `stimli_session=${token}` };
+  // In Clerk production, requests carry an Authorization: Bearer JWT. In tests,
+  // STIMLI_TEST_MODE makes the API honor an X-Stimli-Test-User header. We store
+  // the value under the `cookie` field for naming continuity with the old
+  // passkey tests; call() translates it transparently.
+  return { user, team, cookie: user.id };
 }
 
 async function sessionCookie(userId, teamId) {
-  const token = crypto.randomBytes(32).toString("base64url");
-  await saveSession({
-    token_hash: crypto.createHash("sha256").update(token).digest("hex"),
-    user_id: userId,
-    team_id: teamId,
-    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    created_at: nowIso()
-  });
-  return `stimli_session=${token}`;
+  // Encodes both ids so call() can drive the test-only auth header AND override
+  // the active team. Tests use this when a user belongs to multiple teams.
+  return teamId ? `${userId}::${teamId}` : userId;
 }
 
 function jsonResponse(payload, status = 200) {

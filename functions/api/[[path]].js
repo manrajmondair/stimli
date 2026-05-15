@@ -28,18 +28,7 @@ import {
   shouldCreateAsyncComparison,
   startBrainJob
 } from "./_lib/analysis.js";
-import {
-  authenticationOptions,
-  authSessionPayload,
-  configureAuth,
-  getAuthContext,
-  hashToken,
-  logout,
-  registrationOptions,
-  switchTeam,
-  verifyAuthentication,
-  verifyRegistration
-} from "./_lib/auth.js";
+import { authSessionPayload, configureAuth, getAuthContext, permissionsForRole } from "./_lib/auth.js";
 import {
   billingStatus,
   configureBilling,
@@ -54,6 +43,7 @@ import {
   getBrandProfile,
   getComparison,
   getProject,
+  getTeam,
   countUsageEvents,
   getTeamInviteByTokenHash,
   getTeamMember,
@@ -67,6 +57,7 @@ import {
   listOutcomes,
   listProjects,
   listTeamMembers,
+  listTeamsForUser,
   listTeamInvites,
   getShareLink,
   saveAuditEvent,
@@ -235,28 +226,11 @@ async function handleProjects(request, segments, workspaceId, authContext, heade
 }
 
 async function handleAuth(request, cookies, segments, headers) {
-  const payload = request.method === "POST" ? await parseJson(request) : {};
-
+  // Auth is owned by Clerk. The only route the API exposes is /session, which
+  // verifies the bearer token and returns the user's team + permissions so the
+  // frontend can render the workbench shell with the right scoping.
   if (request.method === "GET" && segments[1] === "session") {
     return sendJson(200, await authSessionPayload(request), headers, cookies);
-  }
-  if (request.method === "POST" && segments[1] === "register" && segments[2] === "options") {
-    return sendJson(200, await registrationOptions(request, payload), headers, cookies);
-  }
-  if (request.method === "POST" && segments[1] === "register" && segments[2] === "verify") {
-    return sendJson(200, await verifyRegistration(request, cookies, payload), headers, cookies);
-  }
-  if (request.method === "POST" && segments[1] === "login" && segments[2] === "options") {
-    return sendJson(200, await authenticationOptions(request, payload), headers, cookies);
-  }
-  if (request.method === "POST" && segments[1] === "login" && segments[2] === "verify") {
-    return sendJson(200, await verifyAuthentication(request, cookies, payload), headers, cookies);
-  }
-  if (request.method === "POST" && segments[1] === "logout") {
-    return sendJson(200, await logout(request, cookies), headers, cookies);
-  }
-  if (request.method === "POST" && segments[1] === "team") {
-    return sendJson(200, await switchTeam(request, cookies, payload), headers, cookies);
   }
   return sendJson(404, { detail: "Not found" }, headers, cookies);
 }
@@ -276,7 +250,7 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
       const token = randomBase64url(24);
       const invite = {
         id: newId("invite"),
-        token_hash: await hashToken(token),
+        token_hash: await sha256Hex(token),
         team_id: authContext.team.id,
         team_name: authContext.team.name,
         email: normalizeInviteEmail(payload.email),
@@ -323,7 +297,7 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
 
 async function handleInvites(request, cookies, segments, authContext, headers) {
   const token = segments[1] || "";
-  const invite = token ? await getTeamInviteByTokenHash(await hashToken(token)) : null;
+  const invite = token ? await getTeamInviteByTokenHash(await sha256Hex(token)) : null;
   if (!invite) {
     throw httpError(404, "Invite not found or expired.");
   }
@@ -353,7 +327,23 @@ async function handleInvites(request, cookies, segments, authContext, headers) {
     await audit(invite.team_id, authContext.user, "invite.accepted", "invite", invite.id, {
       role: invite.role
     });
-    return sendJson(200, await switchTeam(request, cookies, { team_id: invite.team_id }), headers, cookies);
+    // Return a session payload anchored to the team the invite belongs to, so
+    // the frontend can switch the active workspace to the freshly-joined team.
+    const acceptedTeam = await getTeam(invite.team_id);
+    const teams = await listTeamsForUser(authContext.user.id);
+    return sendJson(200, {
+      authenticated: true,
+      user: {
+        id: authContext.user.id,
+        email: authContext.user.email,
+        name: authContext.user.name,
+        created_at: authContext.user.created_at
+      },
+      team: acceptedTeam || teams[0] || null,
+      role: invite.role,
+      permissions: permissionsForRole(invite.role),
+      teams
+    }, headers, cookies);
   }
   return sendJson(405, { detail: "Method not allowed" }, headers, cookies);
 }
@@ -1914,6 +1904,11 @@ function bytesToHex(bytes) {
   let hex = "";
   for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, "0");
   return hex;
+}
+
+async function sha256Hex(token) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(token || "")));
+  return bytesToHex(new Uint8Array(buf));
 }
 
 class CookieSink {
