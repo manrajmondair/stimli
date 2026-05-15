@@ -28,7 +28,12 @@ import type {
   WorkspaceExport
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
+// Use logical OR (not ??) so an empty-string env var falls back to the
+// default. GitHub Actions substitutes ${{ secrets.X }} as "" when the secret
+// is unset, and ?? wouldn't catch that — leading to URLs like /library/assets
+// instead of /api/library/assets, which Cloudflare Pages then serves the SPA
+// for, breaking JSON parsing in the secondary workbench tabs.
+const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 const WORKSPACE_KEY = "stimli.workspace";
 const TEAM_WORKSPACE_KEY = "stimli.team_workspace";
 
