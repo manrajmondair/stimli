@@ -39,11 +39,16 @@ import {
 } from "./_lib/billing.js";
 import {
   configureStore,
+  deleteAsset,
+  deleteBrandProfile,
+  deleteTeamInvite,
+  deleteTeamMember,
   getAsset,
   getBrandProfile,
   getComparison,
   getProject,
   getTeam,
+  getTeamInviteById,
   countUsageEvents,
   getTeamInviteByTokenHash,
   getTeamMember,
@@ -186,6 +191,31 @@ export async function onRequest(context) {
       return sendJson(200, learningSummary(outcomes, comparisons), headers, cookies);
     }
 
+    if (request.method === "GET" && apiPath === "/outcomes") {
+      // Workspace-wide outcomes list with comparison + asset names joined in
+      // so the Outcomes view can render a table without N+1 lookups.
+      const [outcomes, comparisons] = await Promise.all([
+        listOutcomes(null, workspaceId),
+        listComparisons(workspaceId)
+      ]);
+      const comparisonsById = new Map(comparisons.map((c) => [c.id, c]));
+      const enriched = outcomes.map((outcome) => {
+        const comparison = comparisonsById.get(outcome.comparison_id);
+        const variant = comparison?.variants?.find((v) => v.asset?.id === outcome.asset_id);
+        return {
+          ...outcome,
+          comparison_objective: comparison?.objective || null,
+          comparison_status: comparison?.status || null,
+          asset_name: variant?.asset?.name || null,
+          profit:
+            Number.isFinite(Number(outcome.revenue)) && Number.isFinite(Number(outcome.spend))
+              ? round(Number(outcome.revenue) - Number(outcome.spend), 2)
+              : null
+        };
+      });
+      return sendJson(200, enriched, headers, cookies);
+    }
+
     return sendJson(404, { detail: "Not found" }, headers, cookies);
   } catch (error) {
     const status = Number(error.statusCode || error.status || 500);
@@ -271,6 +301,24 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
         token
       }, headers, cookies);
     }
+    if (request.method === "DELETE" && segments[2]) {
+      const inviteId = segments[2];
+      const existing = await getTeamInviteById(inviteId, authContext.team.id);
+      if (!existing) {
+        throw httpError(404, "Invite not found.");
+      }
+      if (existing.accepted_at) {
+        throw httpError(409, "Invite has already been accepted.");
+      }
+      const removed = await deleteTeamInvite(inviteId, authContext.team.id);
+      if (!removed) {
+        throw httpError(404, "Invite not found.");
+      }
+      await audit(authContext.team.id, authContext.user, "invite.revoked", "invite", inviteId, {
+        email: existing.email || null
+      });
+      return sendJson(200, { revoked: inviteId }, headers, cookies);
+    }
   }
   if (segments[1] === "members") {
     requirePermission(authContext, "members:manage");
@@ -290,6 +338,31 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
       }
       await audit(authContext.team.id, authContext.user, "member.role_updated", "user", segments[2], { role });
       return sendJson(200, publicMember(updated), headers, cookies);
+    }
+    if (request.method === "DELETE" && segments[2] && segments.length === 3) {
+      const targetUserId = segments[2];
+      if (targetUserId === authContext.user.id) {
+        throw httpError(400, "You can't remove yourself from the team — use account → sign out instead.");
+      }
+      const members = await listTeamMembers(authContext.team.id);
+      const target = members.find((m) => m.user_id === targetUserId);
+      if (!target) {
+        throw httpError(404, "Team member not found.");
+      }
+      if ((target.role || "viewer") === "owner") {
+        const ownerCount = members.filter((m) => (m.role || "viewer") === "owner").length;
+        if (ownerCount <= 1) {
+          throw httpError(409, "Can't remove the team's last owner.");
+        }
+      }
+      const removed = await deleteTeamMember(authContext.team.id, targetUserId);
+      if (!removed) {
+        throw httpError(404, "Team member not found.");
+      }
+      await audit(authContext.team.id, authContext.user, "member.removed", "user", targetUserId, {
+        role: target.role || "viewer"
+      });
+      return sendJson(200, { removed: targetUserId }, headers, cookies);
     }
   }
   return sendJson(404, { detail: "Not found" }, headers, cookies);
@@ -486,6 +559,17 @@ async function handleBrandProfiles(request, segments, authContext, workspaceId, 
       exported_at: nowIso(),
       profile: existing
     }, headers, cookies);
+  }
+  if (request.method === "DELETE" && segments.length === 2) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const removed = await deleteBrandProfile(existing.id, workspaceId);
+    if (!removed) {
+      throw httpError(404, "Brand profile not found.");
+    }
+    await audit(workspaceId, authContext.user, "brand_profile.deleted", "brand_profile", existing.id, {
+      name: existing.name
+    });
+    return sendJson(200, { deleted: existing.id }, headers, cookies);
   }
   return sendJson(405, { detail: "Method not allowed" }, headers, cookies);
 }
@@ -710,6 +794,35 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
       project_id: asset.project_id || null
     });
     return sendJson(200, { asset: publicAsset(asset) }, headers, cookies);
+  }
+
+  if (request.method === "DELETE" && segments.length === 2 && segments[1]) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const assetId = segments[1];
+    const existing = await getAsset(assetId, workspaceId);
+    if (!existing) {
+      throw httpError(404, "Asset not found.");
+    }
+    // Best-effort R2 cleanup. If the binding isn't present (R2 disabled) or
+    // the key is missing, skip silently — the asset row is the source of
+    // truth and that's what gets removed.
+    const r2Key = existing.metadata?.r2_key || existing.metadata?.blob_pathname;
+    if (r2Key && env?.STIMLI_MEDIA?.delete) {
+      try {
+        await env.STIMLI_MEDIA.delete(r2Key);
+      } catch (e) {
+        console.warn("R2 delete failed for", r2Key, e.message);
+      }
+    }
+    const removed = await deleteAsset(assetId, workspaceId);
+    if (!removed) {
+      throw httpError(404, "Asset not found.");
+    }
+    await audit(workspaceId, authContext.user, "asset.deleted", "asset", assetId, {
+      name: existing.name,
+      type: existing.type
+    });
+    return sendJson(200, { deleted: assetId }, headers, cookies);
   }
 
   return sendJson(405, { detail: "Method not allowed" }, headers, cookies);

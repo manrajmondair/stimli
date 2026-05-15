@@ -99,6 +99,19 @@ export async function getAsset(assetId, workspaceId = "public") {
   return rows[0]?.payload || null;
 }
 
+export async function deleteAsset(assetId, workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    const asset = memoryStore.assets.get(assetId) || null;
+    if (!asset || workspaceForPayload(asset) !== workspaceId) return false;
+    memoryStore.assets.delete(assetId);
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`delete from stimli_assets where id = ${assetId} and workspace_id = ${workspaceId} returning id`;
+  return rows.length > 0;
+}
+
 export async function saveProject(project) {
   const sql = getSql();
   const workspaceId = workspaceForPayload(project);
@@ -474,6 +487,61 @@ export async function listTeamInvites(teamId) {
   return rows.map((row) => row.payload);
 }
 
+export async function getTeamInviteById(inviteId, teamId) {
+  const sql = getSql();
+  if (!sql) {
+    const match = [...memoryStore.teamInvites.values()].find(
+      (invite) => invite.id === inviteId && invite.team_id === teamId
+    );
+    return match || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select payload from stimli_team_invites
+    where team_id = ${teamId} and payload->>'id' = ${inviteId}
+    limit 1
+  `;
+  return rows[0]?.payload || null;
+}
+
+export async function deleteTeamInvite(inviteId, teamId) {
+  const sql = getSql();
+  if (!sql) {
+    let removedHash = null;
+    for (const [hash, invite] of memoryStore.teamInvites.entries()) {
+      if (invite.id === inviteId && invite.team_id === teamId) {
+        removedHash = hash;
+        break;
+      }
+    }
+    if (!removedHash) return false;
+    memoryStore.teamInvites.delete(removedHash);
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    delete from stimli_team_invites
+    where team_id = ${teamId} and payload->>'id' = ${inviteId}
+    returning token_hash
+  `;
+  return rows.length > 0;
+}
+
+export async function deleteTeamMember(teamId, userId) {
+  const sql = getSql();
+  const key = `${teamId}:${userId}`;
+  if (!sql) {
+    if (!memoryStore.teamMembers.has(key)) return false;
+    memoryStore.teamMembers.delete(key);
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    delete from stimli_team_members where team_id = ${teamId} and user_id = ${userId} returning user_id
+  `;
+  return rows.length > 0;
+}
+
 export async function saveAuthenticator(authenticator) {
   const sql = getSql();
   if (!sql) {
@@ -697,6 +765,19 @@ export async function getBrandProfile(profileId, workspaceId = "public") {
   await ensureTables(sql);
   const rows = await sql`select payload from stimli_brand_profiles where id = ${profileId} and workspace_id = ${workspaceId} limit 1`;
   return rows[0]?.payload || null;
+}
+
+export async function deleteBrandProfile(profileId, workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    const profile = memoryStore.brandProfiles.get(profileId) || null;
+    if (!profile || workspaceForPayload(profile) !== workspaceId) return false;
+    memoryStore.brandProfiles.delete(profileId);
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`delete from stimli_brand_profiles where id = ${profileId} and workspace_id = ${workspaceId} returning id`;
+  return rows.length > 0;
 }
 
 export async function saveGovernanceRequest(request) {

@@ -601,6 +601,117 @@ test("exposes enterprise controls for brands, governance, validation, imports, a
   assert.equal(audit.json.some((event) => event.action === "validation.benchmark_run"), true);
 });
 
+test("deletes an asset and removes it from the library listing", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const created = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Soon to delete", text: "Stop weak hooks before launch. Try the starter kit today." },
+    headers
+  );
+  assert.equal(created.statusCode, 200);
+  const before = await call("GET", "/api/assets", null, headers);
+  assert.equal(before.json.some((a) => a.id === created.json.asset.id), true);
+
+  const removed = await call("DELETE", `/api/assets/${created.json.asset.id}`, null, headers);
+  assert.equal(removed.statusCode, 200);
+  assert.equal(removed.json.deleted, created.json.asset.id);
+
+  const after = await call("GET", "/api/assets", null, headers);
+  assert.equal(after.json.some((a) => a.id === created.json.asset.id), false);
+
+  const notFound = await call("DELETE", `/api/assets/${created.json.asset.id}`, null, headers);
+  assert.equal(notFound.statusCode, 404);
+});
+
+test("deletes a brand profile", async () => {
+  const owner = await testAccount("Brand Delete Team", "owner");
+  const headers = { cookie: owner.cookie };
+  const profile = await call(
+    "POST",
+    "/api/brand-profiles",
+    {
+      name: "Disposable",
+      brief: { brand_name: "Disposable", audience: "test", product_category: "demo", primary_offer: "test" }
+    },
+    headers
+  );
+  assert.equal(profile.statusCode, 200);
+  const removed = await call("DELETE", `/api/brand-profiles/${profile.json.id}`, null, headers);
+  assert.equal(removed.statusCode, 200);
+  const list = await call("GET", "/api/brand-profiles", null, headers);
+  assert.equal(list.json.some((p) => p.id === profile.json.id), false);
+});
+
+test("revokes an unaccepted invite", async () => {
+  const owner = await testAccount("Revoke Team", "owner");
+  const headers = { cookie: owner.cookie, host: "stimli.test", "x-forwarded-proto": "https" };
+  const invite = await call("POST", "/api/teams/invites", { email: "newhire@example.com", role: "analyst" }, headers);
+  assert.equal(invite.statusCode, 200);
+
+  const revoked = await call("DELETE", `/api/teams/invites/${invite.json.id}`, null, headers);
+  assert.equal(revoked.statusCode, 200);
+  assert.equal(revoked.json.revoked, invite.json.id);
+
+  // Looking up the token should now fail.
+  const lookup = await call("GET", `/api/invites/${invite.json.token}`);
+  assert.equal(lookup.statusCode, 404);
+});
+
+test("removes a team member but blocks self-removal and last-owner removal", async () => {
+  const owner = await testAccount("Remove Team", "owner");
+  const member = await testAccount("Member Default Team", "analyst");
+  await saveTeamMember({
+    team_id: owner.team.id,
+    user_id: member.user.id,
+    role: "analyst",
+    created_at: nowIso()
+  });
+  const ownerHeaders = { cookie: owner.cookie };
+
+  // Can't remove yourself
+  const selfRemoval = await call("DELETE", `/api/teams/members/${owner.user.id}`, null, ownerHeaders);
+  assert.equal(selfRemoval.statusCode, 400);
+
+  // Remove the member
+  const removeOther = await call("DELETE", `/api/teams/members/${member.user.id}`, null, ownerHeaders);
+  assert.equal(removeOther.statusCode, 200);
+
+  // Removing already-gone member is 404
+  const notFound = await call("DELETE", `/api/teams/members/${member.user.id}`, null, ownerHeaders);
+  assert.equal(notFound.statusCode, 404);
+});
+
+test("/api/outcomes returns workspace-wide outcomes joined with comparison + asset", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const cmp = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((a) => a.id), objective: "outcome listing" },
+    headers
+  );
+  const winner = cmp.json.recommendation.winner_asset_id;
+  await call(
+    "POST",
+    `/api/comparisons/${cmp.json.id}/outcomes`,
+    { asset_id: winner, spend: 150, impressions: 12000, clicks: 600, conversions: 30, revenue: 1200 },
+    headers
+  );
+
+  const list = await call("GET", "/api/outcomes", null, headers);
+  assert.equal(list.statusCode, 200);
+  assert.equal(Array.isArray(list.json), true);
+  assert.equal(list.json.length >= 1, true);
+  const row = list.json.find((r) => r.asset_id === winner);
+  assert.ok(row, "winner outcome row present");
+  assert.equal(row.comparison_id, cmp.json.id);
+  assert.equal(row.profit, 1050);
+  assert.ok(row.asset_name, "asset_name joined in");
+});
+
 test("retries failed hosted inference jobs from admin controls", async () => {
   const originalFetch = globalThis.fetch;
   const owner = await testAccount("Retry Team", "owner");
