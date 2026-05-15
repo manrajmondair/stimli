@@ -16,6 +16,7 @@ import {
   getUser,
   getUserByEmail,
   listTeamsForUser,
+  rebindUserId,
   saveTeam,
   saveTeamMember,
   saveUser
@@ -180,14 +181,16 @@ async function ensureStimliUser(clerkUserId, client) {
   if (email) {
     const byEmail = await getUserByEmail(email);
     if (byEmail) {
-      // Migrate the existing row to use the Clerk id so future lookups skip
-      // the email join. Keep the original created_at.
-      if (byEmail.id !== clerkUserId) {
-        const migrated = { ...byEmail, id: clerkUserId, name: name || byEmail.name };
-        await saveUser(migrated);
-        return migrated;
-      }
-      return byEmail;
+      if (byEmail.id === clerkUserId) return byEmail;
+      // Row exists under a different id (legacy id, prior Clerk session,
+      // etc.). Rebind the row onto the current Clerk id rather than INSERT a
+      // new row — INSERTing would violate stimli_users_email_key. The helper
+      // also cascades stimli_team_members.user_id so existing memberships
+      // continue to resolve.
+      const migrated = await rebindUserId(byEmail.id, clerkUserId, {
+        name: name || byEmail.name
+      });
+      if (migrated) return migrated;
     }
   }
 

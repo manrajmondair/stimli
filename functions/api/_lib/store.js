@@ -327,6 +327,48 @@ export async function getUserByEmail(email) {
   return rows[0]?.payload || null;
 }
 
+// Move an existing user row (matched by `oldId`) onto `newId` and cascade to
+// the only foreign-key-like reference we care about for auth (team
+// memberships). The audit log keeps its historical actor_id values — those
+// are append-only history, not consulted for live access control.
+//
+// Why this exists: when the auth backend switched from passkeys to Clerk,
+// stimli_users rows already existed keyed by the legacy id. On the next sign
+// in we see a Clerk user id that doesn't match anything in the table; the
+// email lookup finds the existing row, and we want to attach the row to the
+// Clerk id so subsequent direct lookups by id succeed.
+export async function rebindUserId(oldId, newId, patch = {}) {
+  if (!oldId || !newId || oldId === newId) {
+    return await getUser(newId);
+  }
+  const sql = getSql();
+  if (!sql) {
+    const existing = memoryStore.users.get(oldId);
+    if (!existing) return null;
+    const updated = { ...existing, ...patch, id: newId };
+    memoryStore.users.delete(oldId);
+    memoryStore.users.set(newId, updated);
+    for (const member of memoryStore.teamMembers.values()) {
+      if (member.user_id === oldId) member.user_id = newId;
+    }
+    return updated;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_users where id = ${oldId} limit 1`;
+  const existing = rows[0]?.payload;
+  if (!existing) return null;
+  const updated = { ...existing, ...patch, id: newId };
+  await sql`
+    update stimli_users
+    set id = ${newId},
+        name = ${updated.name},
+        payload = ${JSON.stringify(updated)}::jsonb
+    where id = ${oldId}
+  `;
+  await sql`update stimli_team_members set user_id = ${newId} where user_id = ${oldId}`;
+  return updated;
+}
+
 export async function saveTeam(team) {
   const sql = getSql();
   if (!sql) {
