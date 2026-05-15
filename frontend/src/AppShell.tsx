@@ -1396,13 +1396,21 @@ function LogOutcomeModal({
   );
 }
 
+const ROLE_OPTIONS: TeamRole[] = ["owner", "admin", "analyst", "viewer"];
+
 function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate: () => Promise<void> }) {
   const [members, setMembers] = useState<TeamMember[]>([]);
+  const [invites, setInvites] = useState<TeamInvite[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [busy, setBusy] = useState(false);
-  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviteRole, setInviteRole] = useState<TeamRole>("analyst");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [confirmRemove, setConfirmRemove] = useState<TeamMember | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<TeamInvite | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { toast, show, dismiss } = useLocalToast();
 
   useEffect(() => {
     if (!session?.authenticated) return;
@@ -1411,11 +1419,13 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
 
   async function refresh() {
     try {
-      const [membersList, events] = await Promise.all([
+      const [membersList, invitesList, events] = await Promise.all([
         listTeamMembers().catch(() => [] as TeamMember[]),
+        listTeamInvites().catch(() => [] as TeamInvite[]),
         listAuditEvents().catch(() => [] as AuditEvent[])
       ]);
       setMembers(membersList);
+      setInvites(invitesList);
       setAudit(events);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load team.");
@@ -1425,16 +1435,81 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
   async function invite() {
     setBusy(true);
     setError(null);
-    setInviteUrl(null);
     try {
-      const result = await createTeamInvite({ email: inviteEmail.trim() || undefined, role: "analyst" });
-      setInviteUrl(result.url ?? null);
-      if (result.url) await navigator.clipboard?.writeText(result.url).catch(() => null);
+      const result = await createTeamInvite({ email: inviteEmail.trim() || undefined, role: inviteRole });
+      setLastInviteUrl(result.url ?? null);
+      setCopyState("idle");
+      setInviteEmail("");
+      if (result.url) {
+        try {
+          await navigator.clipboard.writeText(result.url);
+          setCopyState("copied");
+          show("success", "Invite link copied to clipboard.");
+        } catch {
+          show("info", "Invite link created — copy from the banner below.");
+        }
+      }
       await onUpdate();
+      await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create invite.");
+      const message = err instanceof Error ? err.message : "Could not create invite.";
+      setError(message);
+      show("error", message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyAgain() {
+    if (!lastInviteUrl) return;
+    try {
+      await navigator.clipboard.writeText(lastInviteUrl);
+      setCopyState("copied");
+      show("success", "Invite link copied.");
+    } catch {
+      show("error", "Could not copy. Select the link manually.");
+    }
+  }
+
+  async function changeRole(member: TeamMember, role: TeamRole) {
+    if (member.role === role) return;
+    setBusy(true);
+    try {
+      const updated = await updateTeamMemberRole(member.user_id, role);
+      setMembers((current) => current.map((m) => (m.user_id === member.user_id ? updated : m)));
+      show("success", `${member.name || member.email} is now ${role}.`);
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not update role.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function performRemove(member: TeamMember) {
+    setBusy(true);
+    try {
+      await removeTeamMember(member.user_id);
+      setMembers((current) => current.filter((m) => m.user_id !== member.user_id));
+      show("success", `Removed ${member.name || member.email}.`);
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not remove member.");
+    } finally {
+      setBusy(false);
+      setConfirmRemove(null);
+    }
+  }
+
+  async function performRevoke(invite: TeamInvite) {
+    setBusy(true);
+    try {
+      await revokeTeamInvite(invite.id);
+      setInvites((current) => current.filter((i) => i.id !== invite.id));
+      show("success", "Invite revoked.");
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not revoke invite.");
+    } finally {
+      setBusy(false);
+      setConfirmRevoke(null);
     }
   }
 
@@ -1443,10 +1518,13 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
       <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
         <BrainBlob size={120} color="var(--ink)" eyes mouth />
         <h4>Sign in to manage your team.</h4>
-        <p>Once signed in you can invite collaborators, set roles, and review audit history.</p>
+        <p>Once signed in you can invite collaborators, set roles, revoke pending invites, and review audit history.</p>
+        <SignInTrigger className="btn primary">Sign in</SignInTrigger>
       </div>
     );
   }
+
+  const pendingInvites = invites.filter((invite) => !invite.accepted_at);
 
   return (
     <>
@@ -1458,39 +1536,123 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
           <span className="wb-crumbs">
             <span className="pill">
               <span className="dot" style={{ background: "var(--ink)" }} />
-              {members.length} members
+              {members.length} {members.length === 1 ? "member" : "members"}
             </span>
+            {pendingInvites.length > 0 ? (
+              <span className="pill">
+                <span className="dot" style={{ background: "var(--butter)" }} />
+                {pendingInvites.length} pending {pendingInvites.length === 1 ? "invite" : "invites"}
+              </span>
+            ) : null}
             <span className="pill">
               <span className="dot" style={{ background: "var(--tomato)" }} />
               {session.team?.name}
             </span>
           </span>
         </div>
+        <div className="wb-top-right">
+          <button className="btn cream" onClick={refresh} disabled={busy}>
+            Refresh
+          </button>
+        </div>
       </header>
       {error ? <div className="banner error">{error}</div> : null}
       <div className="wb-grid" style={{ gridTemplateColumns: "360px 1fr" }}>
         <section className="panel-card">
           <div className="panel-head">
-            <h3>Invite an analyst</h3>
-            <span className="kicker">link copies to clipboard</span>
+            <h3>Invite collaborator</h3>
+            <span className="kicker">expires in 14 days</span>
           </div>
           <div className="add-form">
             <label className="field">
               <span>Email (optional)</span>
-              <input value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="teammate@brand.com" />
+              <input
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                placeholder="teammate@brand.com"
+                type="email"
+              />
             </label>
+            <label className="field">
+              <span>Role</span>
+              <select
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value as TeamRole)}
+                className="member-role-select"
+                style={{ width: "100%", fontSize: 14, padding: "10px 12px" }}
+              >
+                {ROLE_OPTIONS.map((role) => (
+                  <option key={role} value={role}>
+                    {role}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="hint" style={{ fontSize: 11.5, margin: 0 }}>
+              <strong>owner</strong> · full control · <strong>admin</strong> · members + jobs ·{" "}
+              <strong>analyst</strong> · run comparisons · <strong>viewer</strong> · read only
+            </p>
             <button className="btn primary wide" onClick={invite} disabled={busy}>
               Create invite link
             </button>
-            {inviteUrl ? (
-              <div className="banner success" style={{ wordBreak: "break-all", fontSize: 12 }}>
-                {inviteUrl}
+            {lastInviteUrl ? (
+              <div className="invite-banner">
+                <code>{lastInviteUrl}</code>
+                <button className="btn cream small" onClick={copyAgain} type="button">
+                  {copyState === "copied" ? "Copied" : "Copy"}
+                </button>
               </div>
             ) : null}
           </div>
         </section>
 
         <section className="wb-col">
+          {pendingInvites.length > 0 ? (
+            <div className="panel-card">
+              <div className="panel-head">
+                <h3>Pending invites</h3>
+                <span className="kicker">{pendingInvites.length}</span>
+              </div>
+              <table className="simple-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Expires</th>
+                    <th>Sent</th>
+                    <th aria-label="actions" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingInvites.map((invite) => (
+                    <tr key={invite.id}>
+                      <td>{invite.email || <em style={{ color: "var(--ink-soft)" }}>(any email)</em>}</td>
+                      <td>
+                        <span className="claim-pill">{invite.role}</span>
+                      </td>
+                      <td>{new Date(invite.expires_at).toLocaleDateString()}</td>
+                      <td>{new Date(invite.created_at).toLocaleDateString()}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          className="btn cream small"
+                          onClick={() => setConfirmRevoke(invite)}
+                          disabled={busy}
+                          style={{
+                            background: "var(--tomato-soft)",
+                            borderColor: "var(--tomato-ink)",
+                            color: "var(--tomato-ink)"
+                          }}
+                        >
+                          Revoke
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
           <div className="panel-card">
             <div className="panel-head">
               <h3>Members</h3>
@@ -1503,19 +1665,53 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
                   <th>Email</th>
                   <th>Role</th>
                   <th>Joined</th>
+                  <th aria-label="actions" />
                 </tr>
               </thead>
               <tbody>
-                {members.map((member) => (
-                  <tr key={member.user_id}>
-                    <td>{member.name}</td>
-                    <td>{member.email}</td>
-                    <td>
-                      <span className="claim-pill">{member.role}</span>
-                    </td>
-                    <td>{new Date(member.created_at).toLocaleDateString()}</td>
-                  </tr>
-                ))}
+                {members.map((member) => {
+                  const isSelf = member.user_id === session.user?.id;
+                  return (
+                    <tr key={member.user_id}>
+                      <td>{member.name || <em style={{ color: "var(--ink-soft)" }}>—</em>}</td>
+                      <td>{member.email}</td>
+                      <td>
+                        <select
+                          className="member-role-select"
+                          value={member.role}
+                          onChange={(e) => changeRole(member, e.target.value as TeamRole)}
+                          disabled={busy || isSelf}
+                          title={isSelf ? "Change your own role from your account settings" : ""}
+                        >
+                          {ROLE_OPTIONS.map((role) => (
+                            <option key={role} value={role}>
+                              {role}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>{new Date(member.created_at).toLocaleDateString()}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {isSelf ? (
+                          <span className="hint" style={{ fontSize: 11 }}>that's you</span>
+                        ) : (
+                          <button
+                            className="btn cream small"
+                            onClick={() => setConfirmRemove(member)}
+                            disabled={busy}
+                            style={{
+                              background: "var(--tomato-soft)",
+                              borderColor: "var(--tomato-ink)",
+                              color: "var(--tomato-ink)"
+                            }}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1523,7 +1719,7 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
           <div className="panel-card">
             <div className="panel-head">
               <h3>Audit log</h3>
-              <span className="kicker">last {audit.length} events</span>
+              <span className="kicker">last {Math.min(audit.length, 25)} events</span>
             </div>
             {audit.length === 0 ? (
               <p className="hint">No audit events yet. Adding variants and running comparisons will start the trail.</p>
@@ -1538,7 +1734,7 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
                   </tr>
                 </thead>
                 <tbody>
-                  {audit.slice(0, 12).map((event) => (
+                  {audit.slice(0, 25).map((event) => (
                     <tr key={event.id}>
                       <td>{new Date(event.created_at).toLocaleString()}</td>
                       <td>{event.actor_email || "—"}</td>
@@ -1552,6 +1748,37 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
           </div>
         </section>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(confirmRemove)}
+        title="Remove this member?"
+        confirmLabel="Remove member"
+        message={
+          <p>
+            <strong>{confirmRemove?.name || confirmRemove?.email}</strong> will lose access to{" "}
+            <strong>{session.team?.name}</strong>. Their personal team and any other team memberships are
+            unaffected.
+          </p>
+        }
+        onCancel={() => setConfirmRemove(null)}
+        onConfirm={() => confirmRemove && performRemove(confirmRemove)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmRevoke)}
+        title="Revoke this invite?"
+        confirmLabel="Revoke invite"
+        message={
+          <p>
+            The invite link {confirmRevoke?.email ? <>for <strong>{confirmRevoke.email}</strong> </> : null}
+            will stop working immediately. You can always create a new one.
+          </p>
+        }
+        onCancel={() => setConfirmRevoke(null)}
+        onConfirm={() => confirmRevoke && performRevoke(confirmRevoke)}
+      />
+
+      <ToastBar toast={toast} onDismiss={dismiss} />
     </>
   );
 }
