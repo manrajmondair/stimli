@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SignIn, useAuth, useClerk, useUser } from "@clerk/clerk-react";
+import { SignInButton, useClerk, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
   createBrandProfile,
@@ -42,7 +42,6 @@ export function AppShell() {
   const { signOut } = useClerk();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [view, setView] = useState<View>("workbench");
-  const [authOpen, setAuthOpen] = useState(false);
   const [bootError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -66,7 +65,7 @@ export function AppShell() {
 
   async function handleSignOut() {
     try {
-      await signOut();
+      await signOut({ redirectUrl: "/" });
       setSession({ authenticated: false, user: null, team: null, teams: [] });
     } catch (err) {
       console.warn(err);
@@ -88,7 +87,6 @@ export function AppShell() {
         active={view}
         onChange={setView}
         session={session}
-        onSignIn={() => setAuthOpen(true)}
         onSignOut={handleSignOut}
       />
 
@@ -96,7 +94,9 @@ export function AppShell() {
         {bootError ? <div className="banner error">{bootError}</div> : null}
         {view === "workbench" ? (
           <Workbench
-            onRequireAuth={() => setAuthOpen(true)}
+            onRequireAuth={() => {
+              /* Sign-in is now driven by Clerk's <SignInButton mode="modal"> elsewhere */
+            }}
             remoteProvider={null}
             briefDefaults={undefined}
           />
@@ -108,8 +108,6 @@ export function AppShell() {
           <TeamView session={session} onUpdate={refreshSession} />
         ) : null}
       </main>
-
-      {authOpen ? <AuthModal onClose={() => setAuthOpen(false)} /> : null}
     </div>
   );
 }
@@ -118,13 +116,11 @@ function Sidebar({
   active,
   onChange,
   session,
-  onSignIn,
   onSignOut
 }: {
   active: View;
   onChange: (view: View) => void;
   session: AuthSession | null;
-  onSignIn: () => void;
   onSignOut: () => void;
 }) {
   return (
@@ -175,95 +171,15 @@ function Sidebar({
         <div className="side-tip">
           <BrainBlob size={56} color="var(--butter)" eyes mouth />
           <p>Sign in to save variants, log outcomes, and share decisions.</p>
-          <button className="btn primary small" onClick={onSignIn}>
-            Sign in
-          </button>
+          <SignInButton mode="modal">
+            <button className="btn primary small">Sign in</button>
+          </SignInButton>
         </div>
       )}
     </aside>
   );
 }
 
-function AuthModal({ onClose }: { onClose: () => void }) {
-  const { isLoaded, isSignedIn } = useUser();
-
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
-
-  // Auto-close once Clerk reports the user is signed in.
-  useEffect(() => {
-    if (isLoaded && isSignedIn) onClose();
-  }, [isLoaded, isSignedIn, onClose]);
-
-  return (
-    <div className="auth-overlay" onClick={onClose} role="presentation">
-      <div
-        className="auth-modal clerk-modal"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="auth-modal-title"
-      >
-        <button className="auth-close" onClick={onClose} aria-label="Close sign-in dialog">
-          ×
-        </button>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-          <BrainBlob size={48} color="var(--tomato)" eyes mouth />
-          <h2 id="auth-modal-title">Sign in to Stimli</h2>
-        </div>
-        <SignIn
-          routing="virtual"
-          appearance={{
-            elements: {
-              rootBox: { width: "100%" },
-              card: {
-                boxShadow: "none",
-                border: "none",
-                background: "transparent",
-                padding: 0
-              },
-              headerTitle: { display: "none" },
-              headerSubtitle: { display: "none" },
-              socialButtonsBlockButton: {
-                border: "2px solid var(--ink)",
-                borderRadius: 14,
-                boxShadow: "3px 3px 0 var(--ink)",
-                background: "var(--paper)",
-                fontFamily: "var(--body)",
-                fontWeight: 600
-              },
-              socialButtonsBlockButton__google: { background: "var(--paper)" },
-              socialButtonsBlockButton__apple: { background: "var(--paper)" },
-              socialButtonsBlockButton__github: { background: "var(--paper)" },
-              dividerLine: { background: "var(--ink-faint)" },
-              formFieldInput: {
-                border: "2px solid var(--ink)",
-                borderRadius: 14,
-                background: "var(--paper-warm)",
-                fontFamily: "var(--body)"
-              },
-              formButtonPrimary: {
-                background: "var(--tomato)",
-                color: "var(--paper)",
-                border: "2px solid var(--ink)",
-                borderRadius: 999,
-                boxShadow: "3px 3px 0 var(--ink)",
-                fontFamily: "var(--body)",
-                fontWeight: 600
-              },
-              footerActionLink: { color: "var(--tomato-ink)" }
-            }
-          }}
-        />
-      </div>
-    </div>
-  );
-}
 
 function LibraryView() {
   const [items, setItems] = useState<LibraryAsset[]>([]);
@@ -805,19 +721,6 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
       </div>
     </>
   );
-}
-
-function collectFocusable(root: HTMLElement | null): HTMLElement[] {
-  if (!root) return [];
-  const selector = [
-    "a[href]",
-    "button:not([disabled])",
-    "input:not([disabled]):not([type='hidden'])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    "[tabindex]:not([tabindex='-1'])"
-  ].join(",");
-  return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter((el) => !el.hasAttribute("inert"));
 }
 
 export function LegalPage() {

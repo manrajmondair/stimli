@@ -184,6 +184,15 @@ h1, h2, h3, .display {
   font-size: 30px;
   letter-spacing: -0.02em;
 }
+.nav-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nav-actions .btn.ghost {
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  background: var(--paper);
+  padding: 10px 18px;
+  font-size: 14px;
+}
+.nav-actions .btn.ghost:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); background: var(--butter-soft); }
 .nav-links { display: flex; gap: 28px; }
 .nav-links a {
   color: var(--ink);

@@ -1,4 +1,7 @@
+import { SignInButton, useUser } from "@clerk/clerk-react";
 import { BrainBlob, MarbleBlob, ScribbleUnderline, Sparkle, StickerStar, Ribbon, ThoughtTrail } from "./art";
+
+const clerkConfigured = Boolean(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
 
 export function Landing() {
   return (
@@ -20,7 +23,10 @@ export function Landing() {
           <a href="#report">Report</a>
           <a href="/legal">Trust</a>
         </div>
-        <a className="btn cream" href="/app">Open the workbench →</a>
+        <div className="nav-actions">
+          {clerkConfigured ? <LandingSignInButton /> : null}
+          <a className="btn cream" href="/app">Open the workbench →</a>
+        </div>
       </nav>
 
       <section className="hero">
@@ -271,5 +277,21 @@ export function Landing() {
         <a href="/legal">Trust & license</a>
       </footer>
     </div>
+  );
+}
+
+function LandingSignInButton() {
+  const { isLoaded, isSignedIn } = useUser();
+  if (isLoaded && isSignedIn) {
+    return (
+      <a className="btn ghost" href="/app">
+        Open app
+      </a>
+    );
+  }
+  return (
+    <SignInButton mode="modal">
+      <button className="btn ghost">Sign in</button>
+    </SignInButton>
   );
 }
