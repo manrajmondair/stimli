@@ -1,4 +1,3 @@
-import { upload } from "@vercel/blob/client";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type {
   Asset,
@@ -80,47 +79,16 @@ export async function createTextAsset(input: {
   if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
   if (input.projectId) form.append("project_id", input.projectId);
   if (input.file) form.append("file", input.file);
-  if (input.file && shouldUseDirectBlobUpload()) {
-    try {
-      const blob = await upload(blobPath(input.file.name), input.file, {
-        access: "private",
-        handleUploadUrl: `${API_BASE}/blob/upload`,
-        clientPayload: JSON.stringify({ workspace_id: getWorkspaceId() }),
-        contentType: input.file.type || undefined,
-        multipart: input.file.size > 8 * 1024 * 1024,
-        onUploadProgress: (progress) => input.onUploadProgress?.(Math.round(progress.percentage))
-      });
-      const fileText = input.text || (input.assetType === "script" ? await input.file.text() : "");
-      const response = await fetch(`${API_BASE}/assets`, {
-        method: "POST",
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          asset_type: input.assetType,
-          name: input.name,
-          text: fileText,
-          url: input.url,
-          duration_seconds: input.durationSeconds,
-          project_id: input.projectId || null,
-          blob: {
-            ...blob,
-            original_filename: input.file.name,
-            file_size: input.file.size,
-            content_type: input.file.type || "application/octet-stream"
-          }
-        })
-      });
-      const payload = await parseResponse<{ asset: Asset }>(response);
-      return payload.asset;
-    } catch (err) {
-      // Direct-to-blob fails when BLOB_READ_WRITE_TOKEN isn't configured (typical
-      // for local FastAPI dev). Fall back to multipart upload through /api/assets
-      // so smaller files still work; large files will surface the upstream limit.
-      if (input.file.size > 8 * 1024 * 1024) {
-        throw err;
-      }
-    }
-  }
-  const response = await fetch(`${API_BASE}/assets`, { method: "POST", headers: workspaceHeaders(), body: form });
+  // Cloudflare Pages Function path is /api/assets and accepts multipart directly.
+  // The Worker writes the file to R2 (env.STIMLI_MEDIA) server-side.
+  const response = await fetch(`${API_BASE}/assets`, {
+    method: "POST",
+    headers: workspaceHeaders(),
+    body: form
+  });
+  // Best-effort upload progress: XHR would expose true progress, but fetch
+  // doesn't. Fire 100% on completion so callers can clear their UI state.
+  input.onUploadProgress?.(100);
   const payload = await parseResponse<{ asset: Asset }>(response);
   return payload.asset;
 }
@@ -562,15 +530,3 @@ function setAuthenticatedWorkspace(teamId: string | null) {
   }
 }
 
-function shouldUseDirectBlobUpload(): boolean {
-  return API_BASE.startsWith("/api") || API_BASE.includes("stimli.vercel.app");
-}
-
-function blobPath(filename: string): string {
-  return `workspaces/${getWorkspaceId()}/uploads/${Date.now()}-${safeUploadName(filename)}`;
-}
-
-function safeUploadName(filename: string): string {
-  const basename = filename.split(/[\\/]/).pop() || "upload.bin";
-  return basename.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "upload.bin";
-}

@@ -64,7 +64,7 @@
   </g>
 
   <!-- footer URL -->
-  <text x="80" y="570" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="22" fill="#3a3528" font-weight="500">stimli.vercel.app</text>
+  <text x="80" y="570" font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="22" fill="#3a3528" font-weight="500">stimli.pages.dev</text>
   <text x="1120" y="570" font-family="system-ui, sans-serif" font-size="18" fill="#3a3528" text-anchor="end" font-weight="500">© 2026 Stimli · pretest, don't guess</text>
 
   <!-- decorative dashes -->

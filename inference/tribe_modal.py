@@ -71,7 +71,6 @@ _transformers_auth_patched = False
     secrets=[
         modal.Secret.from_name("stimli-huggingface"),
         modal.Secret.from_name("stimli-modal-auth"),
-        modal.Secret.from_name("stimli-vercel-blob"),
     ],
 )
 @modal.fastapi_endpoint(method="POST", label="stimli-tribe", docs=True)
@@ -130,7 +129,6 @@ def control(payload: dict[str, Any], authorization: str | None = Header(default=
     secrets=[
         modal.Secret.from_name("stimli-huggingface"),
         modal.Secret.from_name("stimli-modal-auth"),
-        modal.Secret.from_name("stimli-vercel-blob"),
     ],
 )
 def run_prediction_job(job_id: str, asset: dict[str, Any], attempt: int = 0) -> dict[str, Any]:
@@ -178,7 +176,6 @@ def run_prediction_job(job_id: str, asset: dict[str, Any], attempt: int = 0) -> 
     volumes={CACHE_PATH: cache_volume},
     secrets=[
         modal.Secret.from_name("stimli-modal-auth"),
-        modal.Secret.from_name("stimli-vercel-blob"),
     ],
 )
 @modal.fastapi_endpoint(method="POST", label="stimli-extract", docs=True)
@@ -206,7 +203,6 @@ def warm() -> dict[str, Any]:
     secrets=[
         modal.Secret.from_name("stimli-huggingface"),
         modal.Secret.from_name("stimli-modal-auth"),
-        modal.Secret.from_name("stimli-vercel-blob"),
     ],
 )
 def secret_status() -> dict[str, Any]:
@@ -214,7 +210,6 @@ def secret_status() -> dict[str, Any]:
     hf_token = os.getenv("HF_TOKEN") or ""
     hub_token = os.getenv("HUGGING_FACE_HUB_TOKEN") or ""
     auth_token = os.getenv("STIMLI_MODAL_API_KEY") or ""
-    blob_token = os.getenv("BLOB_READ_WRITE_TOKEN") or ""
     hub_status = _hf_hub_status(hf_token or hub_token)
     return {
         "hf_token_present": bool(hf_token),
@@ -222,7 +217,6 @@ def secret_status() -> dict[str, Any]:
         "hub_token_present": bool(hub_token),
         "hub_token_prefix_ok": hub_token.startswith("hf_"),
         "auth_token_present": bool(auth_token),
-        "blob_token_present": bool(blob_token),
         **hub_status,
     }
 
@@ -567,34 +561,21 @@ def _events_for_asset(model, asset: dict[str, Any]):
 
 
 def _asset_file(asset: dict[str, Any]) -> Path | None:
+    # Modal receives the file as base64 inline in asset.metadata.file_base64
+    # (the Pages function writes the file to R2 and also inlines bytes when
+    # the file is small enough to fit STIMLI_MAX_INLINE_FILE_BYTES). Larger
+    # files don't include bytes and Modal falls back to filename-derived text.
     metadata = asset.get("metadata") or {}
     encoded = metadata.get("file_base64")
+    if not encoded:
+        return None
     suffix = Path(metadata.get("original_filename") or "").suffix
     if not suffix:
         suffix = _suffix_for_type(asset.get("type"))
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    if encoded:
-        handle.write(base64.b64decode(encoded))
-    elif metadata.get("blob_url") or metadata.get("blob_download_url"):
-        handle.write(_download_blob(metadata.get("blob_url") or metadata.get("blob_download_url")))
-    else:
-        handle.close()
-        Path(handle.name).unlink(missing_ok=True)
-        return None
+    handle.write(base64.b64decode(encoded))
     handle.close()
     return Path(handle.name)
-
-
-def _download_blob(url: str) -> bytes:
-    import urllib.request
-
-    headers = {}
-    token = os.getenv("BLOB_READ_WRITE_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=180) as response:
-        return response.read()
 
 
 def _suffix_for_type(asset_type: str | None) -> str:

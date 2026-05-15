@@ -12,9 +12,9 @@ Select two or more variants and run the comparison. Stimli produces a direct dec
 
 ## 1:15-2:10 Architecture
 
-The production product is a single Vercel app: a React/Vite interface with same-origin serverless API routes, Postgres persistence, private Blob uploads, passkey accounts, team workspaces, projects, share links, and billing/license guardrails. A separate FastAPI service remains available for local research-model experimentation.
+The production product is a single Cloudflare Pages app: a React/Vite interface with same-origin Pages Functions, Postgres persistence via Neon's serverless driver, private R2 uploads, passkey accounts, team workspaces, projects, share links, and billing/license guardrails. A separate FastAPI service remains available for local research-model experimentation.
 
-The analysis combines hosted TRIBE-compatible response curves when configured with creative heuristics: hook, clarity, CTA, brand cue, pacing, offer strength, audience fit, attention, memory, and cognitive load. Modal handles GPU inference and extraction outside the Vercel request path.
+The analysis combines hosted TRIBE-compatible response curves when configured with creative heuristics: hook, clarity, CTA, brand cue, pacing, offer strength, audience fit, attention, memory, and cognitive load. Modal handles GPU inference and extraction outside the request path.
 
 ## 2:10-2:45 Product Loop
 

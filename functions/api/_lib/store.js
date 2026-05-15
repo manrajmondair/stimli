@@ -1,15 +1,14 @@
-// Cloudflare Pages Functions port of api/_lib/store.js.
+// Persistence layer for the Stimli API.
 //
-// Differences from the Vercel version:
-// - Uses @neondatabase/serverless (HTTP transport) instead of the `postgres`
-//   npm package, because Workers cannot open raw TCP sockets.
-// - sql.json(x) is rewritten to ${JSON.stringify(x)}::jsonb inline because the
-//   neon tagged-template helper does not expose a .json() method.
-// - configureStore(env) is called by the Pages Function entry point before any
-//   store calls so the module-level connection captures the request's env.
-// - ensureTables runs sequential CREATE IF NOT EXISTS statements instead of a
-//   transaction, since the neon HTTP transport does not support multi-statement
-//   transactions. CREATE IF NOT EXISTS is idempotent so this is safe.
+// Uses @neondatabase/serverless (HTTP transport) so it runs in the Cloudflare
+// Workers runtime without raw TCP. JSONB columns are written with
+// ${JSON.stringify(x)}::jsonb (the tagged-template helper doesn't expose a
+// .json() method). configureStore(env) is called once per request from the
+// Pages Function entry so the module-level connection picks up POSTGRES_URL.
+// ensureTables runs sequential CREATE IF NOT EXISTS statements (idempotent —
+// the HTTP transport doesn't support multi-statement transactions). When no
+// POSTGRES_URL is configured, the store falls back to globalThis-scoped
+// in-memory maps so tests and dev sessions work offline.
 
 import { neon } from "@neondatabase/serverless";
 

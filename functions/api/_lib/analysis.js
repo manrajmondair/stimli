@@ -1,9 +1,10 @@
-// Cloudflare Pages Functions port of api/_lib/analysis.js.
+// Brain-aware creative analysis for the Stimli API.
 //
-// Differences from the Vercel version:
-// - configureAnalysis(env) sets the module-level env, replacing process.env.X.
-// - Uses globalThis.crypto.randomUUID() (Web Crypto, available natively in Workers).
-// - Otherwise pure analysis code with no Node-specific APIs.
+// configureAnalysis(env) is called once per request from the Pages Function
+// entry point so TRIBE_INFERENCE_URL / TRIBE_CONTROL_URL / STIMLI_EXTRACT_URL /
+// TRIBE_API_KEY come from the runtime env. UUIDs use globalThis.crypto.randomUUID.
+// Otherwise pure analysis code: deterministic heuristic timeline when no
+// remote provider is configured, hosted TRIBE timeline when it is.
 
 const ctaWords = new Set(["buy", "shop", "try", "start", "get", "claim", "book", "subscribe", "download", "order"]);
 const hookWords = new Set(["stop", "why", "secret", "mistake", "before", "after", "new", "finally", "without", "save"]);

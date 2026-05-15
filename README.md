@@ -1,157 +1,118 @@
 # Stimli
 
+[![deploy-pages](https://github.com/manrajmondair/stimli/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/manrajmondair/stimli/actions/workflows/deploy-pages.yml)
+[![stimli.pages.dev](https://img.shields.io/badge/live-stimli.pages.dev-e96a3d)](https://stimli.pages.dev)
+
 Stimli is a brain-aware creative decision engine for DTC growth teams. Upload two or more scripts, landing pages, static ads, audio clips, or short videos, then get a direct recommendation on which variant to ship and what to edit before spending media budget.
 
-## What It Does
+> Live at **https://stimli.pages.dev**.
+
+## What it does
 
 - Compares creative variants side by side instead of burying the answer in charts.
-- Produces a ship / revise recommendation with confidence and evidence.
+- Produces a ship / revise recommendation with a confidence score and the evidence behind it.
 - Converts attention, memory, cognitive load, hook, clarity, CTA, and brand-cue signals into concrete edit cards.
 - Scores against a campaign brief: brand, audience, category, offer, required claims, and forbidden terms.
-- Extracts landing-page text from URLs when available, with a reliable fallback when a site blocks automated fetches.
+- Extracts landing-page text from URLs, with a reliable fallback when a site blocks automated fetches.
 - Persists comparison history and launch outcomes so future versions can calibrate prediction quality against spend results.
 - Supports passkey accounts, team workspaces, free invite links, project ownership, and public report sharing.
 - Adds enterprise controls for team roles, audit events, hosted-job observability, retry recovery, workspace export, deletion review, validation benchmarks, brand profiles, creative library, and bulk imports.
 - Works with a deterministic local brain-response provider for reproducible demos, with a clean adapter boundary for TRIBE-style model inference.
 - Exports a report payload suitable for a short project demo or client-style review.
 
-## Project Structure
+## Project structure
 
 ```text
-api/         Vercel serverless API routes and production storage adapter
-backend/     FastAPI service, analysis pipeline, SQLite storage, tests
-frontend/    React/Vite dashboard for upload, comparison, and reports
-.github/     CI workflow
+functions/        Cloudflare Pages Functions — production API
+  api/
+    [[path]].js    main router
+    _lib/          analysis, auth, billing, store helpers
+frontend/         React/Vite dashboard (builds to frontend/dist)
+inference/        Modal app for hosted TRIBE inference + extraction
+backend/          FastAPI research backend (local experimentation only)
+tests/            Node test suite for the Pages Function
+wrangler.toml     Cloudflare Pages config (compatibility flags, env, R2)
+.github/workflows/
+  deploy-pages.yml  Auto-deploy to Cloudflare Pages on push to main
 ```
 
-## Deploy On Cloudflare Pages (current production target)
+## Architecture in one paragraph
 
-Stimli runs on Cloudflare Pages at **https://stimli.pages.dev**. The React dashboard builds to `frontend/dist` and the API is a Pages Function at `functions/api/[[path]].js`. The same handlers, helpers, and Postgres data shape as the Vercel version — adapted for the Workers runtime.
+The browser hits **Cloudflare Pages** at `stimli.pages.dev`. Static assets are served straight from R2's edge cache. Anything under `/api/*` is dispatched to a single **Pages Function** (`functions/api/[[path]].js`) that handles auth, projects, assets, comparisons, reports, sharing, billing, governance, validation, library, imports, and admin. Persistence is **Neon Postgres** via the `@neondatabase/serverless` HTTP driver (Workers can't open raw TCP). Private uploads go to **Cloudflare R2** (`env.STIMLI_MEDIA.put(...)`). Brain-response inference is optional — when `TRIBE_INFERENCE_URL` and `TRIBE_CONTROL_URL` point at the **Modal** app in `inference/tribe_modal.py`, comparisons go async and stream results from a GPU; otherwise a deterministic in-process heuristic produces the timeline.
+
+## Deploy
+
+Production deploys happen automatically on every push to `main` via the GitHub Action at `.github/workflows/deploy-pages.yml`. The Action installs deps, builds the frontend, and runs `wrangler pages deploy frontend/dist --project-name=stimli`.
+
+Manual deploy (from a clean checkout):
 
 ```bash
 npm install
-npx wrangler login           # one-time, opens browser
-npm run deploy:pages         # build + deploy frontend/dist + functions/
+npx wrangler login          # one-time
+npm run deploy:pages
 ```
 
-`wrangler.toml` carries the runtime config (compatibility flags, env vars, R2 binding once enabled). Secrets are stored encrypted in the Pages project and set via:
+### Required Cloudflare resources
 
-```bash
-npx wrangler pages secret put POSTGRES_URL --project-name=stimli
-npx wrangler pages secret put TRIBE_INFERENCE_URL --project-name=stimli
-# ...etc.
-```
+- **Pages project** `stimli` (production branch `main`, output dir `frontend/dist`, build `npm run build`).
+- **R2 bucket** `stimli-media` for private uploaded assets.
+- **Pages secrets** (set via `wrangler pages secret put`):
+  - `POSTGRES_URL` — Neon connection string.
+  - `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL` — Modal endpoint URLs.
+  - `TRIBE_API_KEY` — bearer token shared with the Modal worker.
+- **Public env vars** (in `wrangler.toml [vars]`): `STIMLI_RP_ID`, `STIMLI_ORIGIN`, `STIMLI_APP_URL`, rate limits, retention defaults.
 
-Pages Functions runtime substitutions vs. the Vercel handler:
+Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
 
-- **Postgres driver**: `@neondatabase/serverless` over HTTPS (Workers can't open raw TCP). Same Neon database, drop-in for the connection.
-- **File storage**: Cloudflare R2 (`env.STIMLI_MEDIA.put(...)`) replaces `@vercel/blob`. Enable R2 in the dashboard, run `wrangler r2 bucket create stimli-media`, then uncomment the binding in `wrangler.toml`. Without R2, file uploads ≤8 MB are inlined as base64 in asset metadata; larger files are dropped with a flag.
-- **Crypto**: Web Crypto (`crypto.subtle`, `crypto.getRandomValues`) instead of `node:crypto`.
-- **Multipart**: native `request.formData()` instead of `busboy`.
-- **Auth cookies**: a `CookieSink` helper collects `Set-Cookie` values and the response builder applies them — same wire behaviour, different shape.
+### Optional integrations
 
-The Vercel deploy (`api/[...path].js`) is kept in the repo as a coexisting backup and as a reference. Pushes to `main` deploy to both targets.
+- `STRIPE_SECRET_KEY` + `STRIPE_GROWTH_PRICE_ID` / `STRIPE_SCALE_PRICE_ID` / `STRIPE_WEBHOOK_SECRET` to enable paid plans. Stripe is lazy-imported so the bundle stays small when billing is off.
+- `STIMLI_TRIBE_COMMERCIAL_LICENSE=1` flips the license badge to `commercial-ready` for surfaces that gate commerce on the brain provider's license terms.
 
-## Deploy On Vercel (legacy backup)
+## Modal GPU inference
 
-Stimli is configured as one Vercel project: the React dashboard builds to `frontend/dist`, and the product API runs from same-origin `/api/*` serverless functions. There is no separate hosted frontend/backend split required for production.
+The Modal app in `inference/tribe_modal.py` exposes three endpoints:
 
-```bash
-npm install
-npm run build
-npx vercel deploy --prod
-```
+- `https://<workspace>--stimli-tribe.modal.run` — sync TRIBE inference (`TRIBE_INFERENCE_URL`).
+- `https://<workspace>--stimli-tribe-control.modal.run` — async job control for media (`TRIBE_CONTROL_URL`).
+- `https://<workspace>--stimli-extract.modal.run` — OCR/transcript extraction (`STIMLI_EXTRACT_URL`).
 
-Vercel uses the root `vercel.json`:
-
-- Build command: `npm run build`
-- Output directory: `frontend/dist`
-- API runtime: `api/[...path].js`
-- SPA routing: all non-API routes fall back to `index.html`
-
-The recommended production path is to connect the GitHub repo to Vercel and let pushes to `main` deploy automatically. The CLI command above is useful for a manual production deployment after `vercel login`.
-
-Production environment variables:
-
-- `POSTGRES_URL` or `DATABASE_URL`: enables persistent production storage. Without it, Vercel uses warm-function memory only, which is useful for previews but not durable.
-- `BLOB_READ_WRITE_TOKEN`: enables private Vercel Blob storage for uploaded files. Without it, small files can still be inlined for local workflows, but production media uploads are not durable.
-- `TRIBE_INFERENCE_URL`: optional hosted TRIBE-compatible inference endpoint. The Vercel app calls this endpoint for brain-response timelines when configured.
-- `TRIBE_CONTROL_URL`: optional hosted job-control endpoint for async media inference. When configured, audio/video comparisons return quickly with `status=processing` and finalize as the hosted jobs complete.
-- `STIMLI_EXTRACT_URL`: optional hosted media-extraction endpoint for OCR and transcript text on image, audio, and video uploads.
-- `TRIBE_API_KEY`: optional bearer token for the hosted inference endpoint.
-- `STIMLI_BRAIN_PROVIDER=tribe-remote`: optional strict mode that fails instead of falling back when the remote inference endpoint is unavailable.
-- `STIMLI_ASSET_LIMIT_PER_HOUR` and `STIMLI_COMPARISON_LIMIT_PER_HOUR`: optional per-workspace/client quotas for the public API.
-- `STIMLI_RP_ID` and `STIMLI_ORIGIN`: optional passkey relying-party settings. For production, use the public app host and origin.
-- `STIMLI_COMPARISON_JOB_TIMEOUT_MS` and `STIMLI_MODAL_JOB_RETRIES`: optional controls for hosted job timeout and retry behavior.
-- `STIMLI_RETENTION_DAYS` and `STIMLI_SHARE_LINK_TTL_DAYS`: optional governance defaults shown in the workspace policy surface.
-
-The full local TRIBE model is too large and slow for a normal Vercel serverless function. The production architecture keeps the web product on Vercel and uses the provider boundary to call a GPU-backed model service when the research model is needed.
-
-### Free-Tier Deployment Profile
-
-The product is designed to run with free options by default:
-
-- Hosting/API: Vercel Hobby, same-origin Vite app plus serverless `/api/*`.
-- Database: Neon Free Postgres through the Vercel integration.
-- File storage: Vercel Blob on the Hobby allowance, with private URLs hidden from public payloads.
-- Auth: built-in passkeys, sessions, and team workspaces in Postgres; no paid auth provider required.
-- GPU inference: Modal Starter credits, with low default concurrency and short scale-down windows.
-- Billing: Stripe integration is optional and disabled unless Stripe env vars are provided. Stripe has transaction fees, so it should not be configured for a purely free deployment.
-
-Use `.env.example` as the free profile. The default direct-upload cap is 25 MB, public quota defaults are conservative, and Modal defaults to one GPU container so testing does not burn free credits unexpectedly. Raise those limits only after checking the provider dashboards.
-
-Free-first env controls:
-
-- `STIMLI_MAX_DIRECT_UPLOAD_BYTES=26214400`
-- `STIMLI_ASSET_LIMIT_PER_HOUR=40`
-- `STIMLI_COMPARISON_LIMIT_PER_HOUR=12`
-- `STIMLI_MODAL_MAX_CONTAINERS=1`
-- `STIMLI_MODAL_SCALEDOWN_WINDOW=60`
-- `STIMLI_EXTRACT_SCALEDOWN_WINDOW=30`
-
-### Modal GPU Inference
-
-The Modal app in `inference/tribe_modal.py` exposes GPU endpoints for real TRIBE v2 inference and hosted media extraction. It uses a Modal Volume for model cache and three Modal Secrets:
+Two Modal secrets are required:
 
 - `stimli-huggingface` with `HF_TOKEN`
-- `stimli-modal-auth` with `STIMLI_MODAL_API_KEY`
-- `stimli-vercel-blob` with `BLOB_READ_WRITE_TOKEN`
+- `stimli-modal-auth` with `STIMLI_MODAL_API_KEY` (this is the bearer the Cloudflare Pages secret `TRIBE_API_KEY` matches)
 
 ```bash
 cd inference
 pip install -r requirements.txt
 modal secret create stimli-huggingface HF_TOKEN=...
 modal secret create stimli-modal-auth STIMLI_MODAL_API_KEY=...
-modal secret create stimli-vercel-blob BLOB_READ_WRITE_TOKEN=...
 modal deploy tribe_modal.py
 ```
 
-After deploy, set the synchronous Modal endpoint in Vercel as `TRIBE_INFERENCE_URL`, set the control endpoint as `TRIBE_CONTROL_URL`, set the extraction endpoint as `STIMLI_EXTRACT_URL`, set the same bearer token as `TRIBE_API_KEY`, and redeploy Vercel. The control endpoint is used for production media jobs so large audio/video files do not block the browser request while GPU inference runs.
+Media files are sent to Modal inline (base64 in `asset.metadata.file_base64`) for sizes up to `STIMLI_MAX_INLINE_FILE_BYTES` (8 MB by default). Larger files are stored in R2 only and Modal falls back to filename-derived text for extraction — wire up an R2 signed-URL path if you need extraction at the 8–25 MB tier.
 
-### Production Media Uploads
+## Local development
 
-Production uploads use private Vercel Blob storage. Browser uploads go through the `/api/blob/upload` token route, then assets are registered in Postgres with blob metadata. Private blob URLs are kept out of public API responses; Modal receives the private URL server-to-server and downloads it with the `stimli-vercel-blob` secret. When `STIMLI_EXTRACT_URL` is configured, image uploads receive OCR text, audio uploads receive transcript text, and video uploads receive transcript plus sampled-frame OCR before scoring.
+Two local-dev paths. Pick by whether you need production parity or fast iteration.
 
-## Local Development
+### Path A — Wrangler Pages dev (production parity, recommended)
 
-There are two local-dev paths. Pick by whether you need production parity or fast iteration.
-
-### Path A — Vercel CLI (production parity, recommended)
-
-Use this when you're touching anything that lives only in the serverless API: passkeys, teams, projects, private uploads, share links, billing guardrails, brand profiles, governance, imports, validation benchmarks.
+Uses the same Cloudflare Workers runtime as production. Good for testing R2 / auth / Modal integration locally.
 
 ```bash
 npm install
-npm run dev:vercel
+npm run build                # populates frontend/dist
+npm run dev:pages            # wrangler pages dev on http://localhost:8788
 ```
 
-The app runs at `http://localhost:5173` with the same `/api/*` handlers Vercel would serve in production. First run prompts you to `vercel login` and link the project.
+Add a local secrets file at `.dev.vars` (gitignored) with `POSTGRES_URL=...` and any Modal secrets you want to exercise.
 
-### Path B — Vite + FastAPI (fast iteration on workbench + analysis)
+### Path B — Vite + FastAPI (fast iteration on the workbench)
 
-Use this when you're iterating on the React shell, the comparison pipeline, or the brain-response heuristics, and you don't need the enterprise API surface.
+Use this when iterating on the React shell or the analysis heuristics. The Pages Function is bypassed; the Vite dev server proxies `/api/*` to a local FastAPI process.
 
-In one terminal start the Python research backend:
+In one terminal, the Python backend:
 
 ```bash
 cd backend
@@ -161,16 +122,14 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-In another terminal start the Vite dev server:
+In another, the Vite dev server:
 
 ```bash
 npm install
-npm run dev:frontend
+npm run dev:frontend         # http://localhost:5173
 ```
 
-The frontend runs at `http://localhost:5173`. `vite.config.ts` proxies `/api/*` to `http://127.0.0.1:8000` (configurable via the `STIMLI_API_PROXY` env var), stripping the `/api` prefix so requests land on the FastAPI routes directly.
-
-What works in Path B: assets, comparisons, demo seed, learning summary, reports, challengers, outcomes. What 404s: passkey auth, teams, projects, private blob upload, share links, brand profiles, governance, imports, validation, billing. The UI handles those gracefully — you'll see "Sign in" remain available and Brands / Library / Team views surface a friendly error instead of breaking.
+`vite.config.ts` proxies `/api/*` to `http://127.0.0.1:8000` (override with `STIMLI_API_PROXY`), stripping the `/api` prefix so requests land on the FastAPI routes directly. The FastAPI service implements a useful subset (assets, comparisons, demo seed, learning summary, reports, challengers, outcomes); the enterprise routes return 404 and the UI handles that gracefully.
 
 ### Docker
 
@@ -178,83 +137,20 @@ What works in Path B: assets, comparisons, demo seed, learning summary, reports,
 docker compose up --build
 ```
 
-Then open `http://localhost:5173`. This brings up the same Vite + FastAPI pair as Path B.
+Brings up the same Vite + FastAPI pair as Path B at `http://localhost:5173`.
 
-## Demo Flow
-
-1. Start the backend and frontend.
-2. Open the dashboard.
-3. Use the built-in sample variants or upload/paste your own assets.
-4. Run a comparison.
-5. Review the winner, confidence, timeline evidence, and action cards.
-6. Draft a challenger variant and export a Markdown report.
-
-Sample text assets live in `backend/data/sample_assets/`.
-
-## API
-
-- `POST /api/assets` uploads or registers an asset.
-- `GET /api/assets` lists assets.
-- `POST /api/comparisons` creates an A/B or multi-variant comparison. Text comparisons usually return `complete`; media comparisons may return `processing`.
-- `GET /api/comparisons/{id}` returns scores, timeline signals, recommendation, and edit suggestions. Processing comparisons are refreshed against the hosted job-control endpoint before returning.
-- `GET /api/reports/{id}` returns a shareable report payload.
-- `GET /api/comparisons` lists saved decisions.
-- `POST /api/comparisons/{id}/outcomes` records post-launch results.
-- `GET /api/learning/summary` summarizes logged launch outcomes.
-- `POST /api/demo/seed` loads sample creative variants.
-- `POST /api/teams/invites` creates a team invite link for a signed-in owner.
-- `POST /api/invites/{token}/accept` accepts a team invite and switches the session into that team.
-- `GET /api/admin/summary` and `GET /api/admin/jobs` expose hosted inference health and job state for owners/admins.
-- `POST /api/admin/jobs/{job_id}/retry` restarts a failed or cancelled hosted inference job.
-- `GET /api/audit/events` returns workspace-scoped audit events.
-- `GET /api/governance/export` returns a workspace export for authorized teams.
-- `POST /api/governance/deletion-requests` records deletion review requests.
-- `GET /api/brand-profiles` and `POST /api/brand-profiles` manage reusable campaign briefs.
-- `GET /api/library/assets` lists the creative library with extraction/source metadata.
-- `POST /api/imports` bulk-imports pasted or CSV-like creative rows.
-- `POST /api/validation/benchmarks/run` runs the built-in validation benchmark.
-
-## Notes On Model Use
-
-The default implementation uses a deterministic fixture provider so the project runs reliably on a laptop without GPU downloads. The app also includes a real TRIBE v2 provider that can run `facebook/tribev2` inference when its research dependencies and model checkpoint are installed.
-
-### Enable TRIBE v2
-
-TRIBE v2 is licensed CC BY-NC 4.0 by its upstream authors, so this mode is for academic/non-commercial experimentation unless separate commercial rights are secured.
+## Tests
 
 ```bash
-cd backend
-source .venv/bin/activate
-pip install -r requirements-tribe.txt
-export STIMLI_BRAIN_PROVIDER=tribe
-export STIMLI_TRIBE_CACHE=.data/tribe-cache
-export HF_TOKEN=your_huggingface_token_with_required_model_access
-uvicorn app.main:app --reload --port 8000
+npm test
 ```
 
-Provider modes:
+Runs in order:
 
-- `STIMLI_BRAIN_PROVIDER=fixture`: deterministic local provider.
-- `STIMLI_BRAIN_PROVIDER=tribe`: real TRIBE v2 inference; fails loudly if dependencies/model loading fail.
-- `STIMLI_BRAIN_PROVIDER=auto`: tries TRIBE v2 first, then falls back to the deterministic provider.
+1. **`npm run test:api`** — Node-native test suite (`node --test tests/serverless-api.test.js`) that drives `functions/api/[[path]].js` with Web Requests + a stub env. 17 tests covering health, CORS, passkeys, billing status, team invites, role enforcement, demo seed, calibration, share links, project scoping, workspace isolation, async TRIBE comparisons, cancellation, rate limits, hosted extraction, enterprise controls, and job retries.
+2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`. 14 tests covering error-message parsing, Landing page rendering, and App router behavior.
+3. **`npm run build`** — TypeScript build + production Vite bundle as a final correctness check.
 
-Use `GET /brain/providers` to inspect provider availability. The endpoint only checks package import by default; set `STIMLI_TRIBE_HEALTH_LOAD=1` to also verify checkpoint loading.
+## License & trust
 
-Real script/text inference also requires Hugging Face access to TRIBE's configured text feature model, `meta-llama/Llama-3.2-3B`. Without an authenticated token that has access to that gated model, TRIBE model loading can succeed but inference will fail during text feature extraction.
-
-## Testing
-
-```bash
-npm install
-npm run test
-```
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pytest
-```
-
-<sub>Assisted by Codex.</sub>
+Stimli is released under CC BY-NC 4.0 for non-commercial use. Built for CS 153 at Stanford. See [`/legal`](https://stimli.pages.dev/legal) on the live site for full terms.

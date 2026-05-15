@@ -1,14 +1,11 @@
-// Cloudflare Pages Functions port of api/_lib/auth.js.
+// Passkey + session auth for the Stimli API.
 //
-// Differences from the Vercel version:
-// - Replaces `node:crypto` with Web Crypto (crypto.subtle + crypto.getRandomValues).
-//   hashToken is now async because crypto.subtle.digest is async.
-// - Replaces Buffer.from for WebAuthn userID with TextEncoder (returns Uint8Array
-//   which is what @simplewebauthn/server expects).
-// - configureAuth(env) is called by the Pages Function entry point so STIMLI_RP_ID
-//   and STIMLI_ORIGIN read from env bindings instead of process.env.
-// - response.setHeader("Set-Cookie", ...) calls still work, because the entry
-//   point passes a CookieSink that exposes a Node-style setHeader API.
+// All crypto is Web Crypto: crypto.subtle.digest for SHA-256, crypto.getRandomValues
+// for session tokens, TextEncoder for WebAuthn userID bytes. hashToken is async.
+// configureAuth(env) is called once per request from the Pages Function entry
+// point so STIMLI_RP_ID and STIMLI_ORIGIN come from the runtime env bindings.
+// Cookies are written via a CookieSink passed in by the entry point (collects
+// Set-Cookie values that get appended to the final Response headers).
 
 import {
   generateAuthenticationOptions,

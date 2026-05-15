@@ -7,13 +7,12 @@
     "frontend"
   ],
   "engines": {
-    "node": ">=22 <24"
+    "node": ">=22"
   },
   "scripts": {
     "build": "npm run build --workspace stimli-frontend",
-    "dev:vercel": "npx vercel dev --listen 5173",
-    "dev:pages": "npx wrangler pages dev frontend/dist --compatibility-flag=nodejs_compat --port=8788",
     "dev:frontend": "npm run dev --workspace stimli-frontend",
+    "dev:pages": "npx wrangler pages dev frontend/dist --compatibility-flag=nodejs_compat --port=8788",
     "deploy:pages": "npm run build && npx wrangler pages deploy frontend/dist --project-name=stimli --branch=main",
     "test": "npm run test:api && npm run test:web && npm run build",
     "test:api": "node --test tests/**/*.test.js",
@@ -22,9 +21,6 @@
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
     "@simplewebauthn/server": "^13.3.0",
-    "@vercel/blob": "^2.3.3",
-    "busboy": "^1.6.0",
-    "postgres": "^3.4.5",
     "stripe": "^22.1.1"
   },
   "optionalDependencies": {

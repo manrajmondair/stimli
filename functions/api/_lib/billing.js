@@ -1,13 +1,10 @@
-// Cloudflare Pages Functions port of api/_lib/billing.js.
+// Optional Stripe billing layer for the Stimli API.
 //
-// Differences from the Vercel version:
-// - Stripe is imported lazily (dynamic import) and uses Stripe.createFetchHttpClient()
-//   so it works in the Workers runtime when the Stripe Node SDK's default HTTP
-//   client isn't available.
-// - configureBilling(env) is the entry point for env access instead of process.env.
-// - Billing is fully optional. With Stripe env vars unset, billingStatus reports
-//   not-configured, usageLimitsForWorkspace returns plan defaults, and any
-//   commerce endpoint throws 503.
+// Stripe is imported lazily (dynamic import) and uses Stripe.createFetchHttpClient()
+// so it works in the Workers runtime. With STRIPE_SECRET_KEY unset (the default),
+// billingStatus reports not-configured, usageLimitsForWorkspace returns plan
+// defaults, and every commerce endpoint throws 503. configureBilling(env) is
+// called once per request from the Pages Function entry point.
 
 import { getTeam, saveTeam } from "./store.js";
 

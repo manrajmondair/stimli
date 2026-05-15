@@ -10,7 +10,7 @@ describe("extractErrorMessage", () => {
     expect(extractErrorMessage("")).toBe("");
   });
 
-  it("extracts `detail` from a Vercel-style error payload", () => {
+  it("extracts `detail` from a Pages-style error payload", () => {
     const raw = JSON.stringify({ detail: "Sign in before using this workspace control." });
     expect(extractErrorMessage(raw)).toBe("Sign in before using this workspace control.");
   });

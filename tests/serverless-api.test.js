@@ -1,13 +1,38 @@
+// Tests for the Cloudflare Pages Function that backs the Stimli API.
+//
+// The function exports onRequest({ request, env, ... }) and reads its
+// configuration from `env` (passed in by the Pages runtime). In tests we drive
+// it with a Web Request and a plain `testEnv` object that we mutate per test
+// to exercise env-dependent code paths (rate limits, async TRIBE jobs, hosted
+// extraction, etc.).
+//
+// Storage uses the module-level memory fallback in functions/api/_lib/store.js
+// (no POSTGRES_URL is set), so the suite never touches a real database.
+
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { Readable, Writable } from "node:stream";
 import test from "node:test";
 
-import handler from "../api/[...path].js";
-import { nowIso } from "../api/_lib/analysis.js";
-import { getTeamMember, saveSession, saveTeam, saveTeamMember, saveUser } from "../api/_lib/store.js";
+import { onRequest } from "../functions/api/[[path]].js";
+import { nowIso } from "../functions/api/_lib/analysis.js";
+import {
+  configureStore,
+  getTeamMember,
+  saveSession,
+  saveTeam,
+  saveTeamMember,
+  saveUser
+} from "../functions/api/_lib/store.js";
 
-test("serves health from the Vercel API", async () => {
+const testEnv = {
+  STIMLI_RP_ID: "stimli.test",
+  STIMLI_ORIGIN: "https://stimli.test"
+};
+
+// Activate memory-mode storage for direct calls to saveUser / saveTeam etc.
+configureStore(testEnv);
+
+test("serves health from the Pages API", async () => {
   const response = await call("GET", "/api/health");
 
   assert.equal(response.statusCode, 200);
@@ -269,15 +294,12 @@ test("scopes persistent objects by workspace header", async () => {
 
 test("creates async comparisons and finalizes completed remote jobs", async () => {
   const originalFetch = globalThis.fetch;
-  const previousControlUrl = process.env.TRIBE_CONTROL_URL;
-  const previousApiKey = process.env.TRIBE_API_KEY;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
   const jobs = new Map();
   let jobIndex = 0;
 
-  process.env.TRIBE_CONTROL_URL = "https://modal.test/control";
-  process.env.TRIBE_API_KEY = "test-key";
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
   globalThis.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body || "{}"));
     if (body.action === "start") {
@@ -354,22 +376,18 @@ test("creates async comparisons and finalizes completed remote jobs", async () =
     assert.ok(refreshed.json.recommendation.headline);
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv("TRIBE_CONTROL_URL", previousControlUrl);
-    restoreEnv("TRIBE_API_KEY", previousApiKey);
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
   }
 });
 
 test("cancels processing comparisons and remote jobs", async () => {
   const originalFetch = globalThis.fetch;
-  const previousControlUrl = process.env.TRIBE_CONTROL_URL;
-  const previousApiKey = process.env.TRIBE_API_KEY;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
   const jobs = new Map();
   let jobIndex = 0;
 
-  process.env.TRIBE_CONTROL_URL = "https://modal.test/control";
-  process.env.TRIBE_API_KEY = "test-key";
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
   globalThis.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body || "{}"));
     if (body.action === "start") {
@@ -402,14 +420,12 @@ test("cancels processing comparisons and remote jobs", async () => {
     assert.equal(cancelled.json.jobs.every((job) => job.status === "cancelled"), true);
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv("TRIBE_CONTROL_URL", previousControlUrl);
-    restoreEnv("TRIBE_API_KEY", previousApiKey);
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
   }
 });
 
 test("rate limits comparison creation per workspace and client", async () => {
-  const previousLimit = process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR;
-  process.env.STIMLI_COMPARISON_LIMIT_PER_HOUR = "1";
+  withEnv({ STIMLI_COMPARISON_LIMIT_PER_HOUR: "1" });
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = {
     "x-stimli-workspace": workspace,
@@ -448,17 +464,14 @@ test("rate limits comparison creation per workspace and client", async () => {
     assert.equal(allowed.statusCode, 200);
     assert.equal(blocked.statusCode, 429);
   } finally {
-    restoreEnv("STIMLI_COMPARISON_LIMIT_PER_HOUR", previousLimit);
+    withEnv({ STIMLI_COMPARISON_LIMIT_PER_HOUR: undefined });
   }
 });
 
 test("uses hosted extraction for media assets before filename fallback", async () => {
   const originalFetch = globalThis.fetch;
-  const previousExtractUrl = process.env.STIMLI_EXTRACT_URL;
-  const previousApiKey = process.env.TRIBE_API_KEY;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
-  process.env.STIMLI_EXTRACT_URL = "https://extract.test/run";
-  process.env.TRIBE_API_KEY = "test-key";
+  withEnv({ STIMLI_EXTRACT_URL: "https://extract.test/run", TRIBE_API_KEY: "test-key" });
   globalThis.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body || "{}"));
     assert.equal(body.asset.type, "image");
@@ -494,8 +507,7 @@ test("uses hosted extraction for media assets before filename fallback", async (
     assert.equal(created.json.asset.metadata.extractor_provider, "stimli-extractor");
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv("STIMLI_EXTRACT_URL", previousExtractUrl);
-    restoreEnv("TRIBE_API_KEY", previousApiKey);
+    withEnv({ STIMLI_EXTRACT_URL: undefined, TRIBE_API_KEY: undefined });
   }
 });
 
@@ -587,15 +599,12 @@ test("exposes enterprise controls for brands, governance, validation, imports, a
 
 test("retries failed hosted inference jobs from admin controls", async () => {
   const originalFetch = globalThis.fetch;
-  const previousControlUrl = process.env.TRIBE_CONTROL_URL;
-  const previousApiKey = process.env.TRIBE_API_KEY;
   const owner = await testAccount("Retry Team", "owner");
   const headers = { cookie: owner.cookie };
   const jobs = new Map();
   let jobIndex = 0;
 
-  process.env.TRIBE_CONTROL_URL = "https://modal.test/control";
-  process.env.TRIBE_API_KEY = "test-key";
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
   globalThis.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body || "{}"));
     if (body.action === "start") {
@@ -631,45 +640,44 @@ test("retries failed hosted inference jobs from admin controls", async () => {
     assert.equal(retried.json.jobs.some((job) => job.previous_job_id === failedJob.job_id && job.attempt === 1), true);
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv("TRIBE_CONTROL_URL", previousControlUrl);
-    restoreEnv("TRIBE_API_KEY", previousApiKey);
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
   }
 });
 
 async function call(method, url, body = null, headers = {}) {
-  const requestBody = body ? JSON.stringify(body) : "";
-  const request = Readable.from(requestBody ? [Buffer.from(requestBody)] : []);
-  request.method = method;
-  request.url = url;
-  request.headers = requestBody ? { "content-type": "application/json", ...headers } : headers;
-
-  const chunks = [];
-  const response = new Writable({
-    write(chunk, _encoding, callback) {
-      chunks.push(Buffer.from(chunk));
-      callback();
-    }
-  });
-  response.headers = {};
-  response.statusCode = 200;
-  response.setHeader = (key, value) => {
-    response.headers[key.toLowerCase()] = value;
+  const hasBody = body !== null && body !== undefined && method !== "GET" && method !== "HEAD";
+  const init = {
+    method,
+    headers: { ...(hasBody ? { "content-type": "application/json" } : {}), ...headers }
   };
-  response.end = (chunk) => {
-    if (chunk) {
-      chunks.push(Buffer.from(chunk));
-    }
-    Writable.prototype.end.call(response);
-  };
-
-  await handler(request, response);
-  const text = Buffer.concat(chunks).toString("utf8");
+  if (hasBody) {
+    init.body = JSON.stringify(body);
+  }
+  const request = new Request(`http://stimli.test${url}`, init);
+  const response = await onRequest({ request, env: testEnv, params: {} });
+  const flat = {};
+  for (const [k, v] of response.headers) {
+    flat[k.toLowerCase()] = v;
+  }
+  const cookies = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
+  if (cookies.length) {
+    flat["set-cookie"] = cookies.length === 1 ? cookies[0] : cookies;
+  }
+  const text = await response.text();
   return {
-    statusCode: response.statusCode,
-    headers: response.headers,
+    statusCode: response.status,
+    headers: flat,
     text,
-    json: text ? JSON.parse(text) : null
+    json: text ? safeJson(text) : null
   };
+}
+
+function safeJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 async function testAccount(teamName, role) {
@@ -718,10 +726,12 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-function restoreEnv(name, value) {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
+function withEnv(patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) {
+      delete testEnv[key];
+    } else {
+      testEnv[key] = value;
+    }
   }
 }

@@ -1,20 +1,17 @@
 // Cloudflare Pages Function entry point for the Stimli API.
 //
-// Mirrors api/[...path].js (the Vercel handler) one-to-one in behaviour. The
-// changes here are runtime-shaped only:
-// - The handler is exported as onRequest({ request, env, ... }) instead of
-//   the Vercel default(request, response) signature.
-// - request is a Web API Request; we return new Response(...) at the end.
-// - Multipart parsing uses request.formData() (native to Workers) instead of
-//   busboy.
-// - Uploaded files are written to R2 via env.ASSETS.put(...) instead of
-//   @vercel/blob's put() and handleUpload(). There is no "direct-from-client"
-//   token route on Cloudflare; the frontend always sends multipart to
-//   /api/assets and the Worker forwards bytes to R2. The 25 MB limit matches
-//   what Pages Functions accept for a request body.
-// - crypto operations use Web Crypto (SHA-256 via crypto.subtle, randomness
-//   via crypto.getRandomValues, UUIDs via crypto.randomUUID).
-// - All env access flows through the configure*(env) calls on each lib.
+// Single onRequest handler that dispatches /api/<path> to the right helper.
+// Runs on the Cloudflare Workers runtime, so:
+// - request is a Web Request; we return new Response(...) at the end.
+// - Multipart parsing uses request.formData() (native).
+// - Uploaded files are written to R2 via env.STIMLI_MEDIA.put(...). The
+//   frontend always posts multipart to /api/assets and this Worker forwards
+//   the bytes to R2 (25 MB upper bound, matching the Pages Functions body
+//   limit). Small files are also inlined as base64 in asset metadata so the
+//   Modal extractor can read them server-side without a public R2 URL.
+// - Crypto: Web Crypto (SHA-256 via crypto.subtle, randomness via
+//   crypto.getRandomValues, UUIDs via crypto.randomUUID).
+// - Env access flows through the configure*(env) calls on each lib.
 
 import {
   buildChallengerText,
@@ -650,7 +647,11 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
     }
 
     const blobMetadata = file ? await storeUploadedFile(file, workspaceId, assetId, env) : {};
-    const shouldInlineFile = file?.bytes?.length && !blobMetadata.blob_url && file.bytes.length <= maxInlineFileBytes;
+    // Inline the file as base64 in metadata when it fits the limit, even if it's
+    // also stored in R2. The extractor (Modal) reads file_base64 server-side and
+    // R2 is the durable copy for the report UI. publicAsset() strips the inline
+    // bytes from any client-visible response.
+    const shouldInlineFile = file?.bytes?.length && file.bytes.length <= maxInlineFileBytes;
     const baseMetadata = {
       original_filename: file?.filename || null,
       file_size: file?.bytes?.length || null,
@@ -661,7 +662,7 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
             file_encoding: "base64"
           }
         : {}),
-      ...(file?.bytes?.length && !blobMetadata.blob_url && file.bytes.length > maxInlineFileBytes
+      ...(file?.bytes?.length && file.bytes.length > maxInlineFileBytes && !blobMetadata.r2_key
         ? {
             file_omitted: true,
             file_limit_bytes: maxInlineFileBytes
@@ -1443,7 +1444,6 @@ function allowedCorsOrigin(request, env) {
     env.STIMLI_APP_URL,
     env.STIMLI_ORIGIN,
     "https://stimli.pages.dev",
-    "https://stimli.vercel.app",
     "http://localhost:5173",
     "http://127.0.0.1:5173"
   ];
