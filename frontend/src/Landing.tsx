@@ -1,4 +1,4 @@
-import { SignInButton, useUser } from "@clerk/clerk-react";
+import { useClerk, useUser } from "@clerk/clerk-react";
 import { BrainBlob, MarbleBlob, ScribbleUnderline, Sparkle, StickerStar, Ribbon, ThoughtTrail } from "./art";
 
 const clerkConfigured = Boolean(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
@@ -282,6 +282,7 @@ export function Landing() {
 
 function LandingSignInButton() {
   const { isLoaded, isSignedIn } = useUser();
+  const clerk = useClerk();
   if (isLoaded && isSignedIn) {
     return (
       <a className="btn ghost" href="/app">
@@ -290,8 +291,12 @@ function LandingSignInButton() {
     );
   }
   return (
-    <SignInButton mode="modal">
-      <button className="btn ghost">Sign in</button>
-    </SignInButton>
+    <button
+      type="button"
+      className="btn ghost"
+      onClick={() => clerk?.openSignIn({ forceRedirectUrl: "/app" })}
+    >
+      Sign in
+    </button>
   );
 }

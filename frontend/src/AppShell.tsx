@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SignInButton, useClerk, useUser } from "@clerk/clerk-react";
+import { useClerk, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
   createBrandProfile,
@@ -171,12 +171,42 @@ function Sidebar({
         <div className="side-tip">
           <BrainBlob size={56} color="var(--butter)" eyes mouth />
           <p>Sign in to save variants, log outcomes, and share decisions.</p>
-          <SignInButton mode="modal">
-            <button className="btn primary small">Sign in</button>
-          </SignInButton>
+          <SignInTrigger className="btn primary small">Sign in</SignInTrigger>
         </div>
       )}
     </aside>
+  );
+}
+
+export function SignInTrigger({
+  children,
+  className = "btn primary",
+  signUp = false
+}: {
+  children: React.ReactNode;
+  className?: string;
+  signUp?: boolean;
+}) {
+  const clerk = useClerk();
+  return (
+    <button
+      type="button"
+      className={className}
+      onClick={() => {
+        if (!clerk) return;
+        // Imperative open is more reliable than <SignInButton> when the
+        // trigger lives inside a portal/overlay or has competing handlers.
+        // Force redirect to /app post-auth regardless of where the user
+        // started so they land on the workbench.
+        if (signUp) {
+          clerk.openSignUp({ forceRedirectUrl: "/app" });
+        } else {
+          clerk.openSignIn({ forceRedirectUrl: "/app" });
+        }
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
