@@ -2,6 +2,10 @@ backend/
 inference/
 docs/
 tests/
+functions/
+.wrangler/
+.secrets/
+wrangler.toml
 frontend/dist
 frontend/node_modules
 node_modules

@@ -24,7 +24,35 @@ frontend/    React/Vite dashboard for upload, comparison, and reports
 .github/     CI workflow
 ```
 
-## Deploy On Vercel
+## Deploy On Cloudflare Pages (current production target)
+
+Stimli runs on Cloudflare Pages at **https://stimli.pages.dev**. The React dashboard builds to `frontend/dist` and the API is a Pages Function at `functions/api/[[path]].js`. The same handlers, helpers, and Postgres data shape as the Vercel version — adapted for the Workers runtime.
+
+```bash
+npm install
+npx wrangler login           # one-time, opens browser
+npm run deploy:pages         # build + deploy frontend/dist + functions/
+```
+
+`wrangler.toml` carries the runtime config (compatibility flags, env vars, R2 binding once enabled). Secrets are stored encrypted in the Pages project and set via:
+
+```bash
+npx wrangler pages secret put POSTGRES_URL --project-name=stimli
+npx wrangler pages secret put TRIBE_INFERENCE_URL --project-name=stimli
+# ...etc.
+```
+
+Pages Functions runtime substitutions vs. the Vercel handler:
+
+- **Postgres driver**: `@neondatabase/serverless` over HTTPS (Workers can't open raw TCP). Same Neon database, drop-in for the connection.
+- **File storage**: Cloudflare R2 (`env.STIMLI_MEDIA.put(...)`) replaces `@vercel/blob`. Enable R2 in the dashboard, run `wrangler r2 bucket create stimli-media`, then uncomment the binding in `wrangler.toml`. Without R2, file uploads ≤8 MB are inlined as base64 in asset metadata; larger files are dropped with a flag.
+- **Crypto**: Web Crypto (`crypto.subtle`, `crypto.getRandomValues`) instead of `node:crypto`.
+- **Multipart**: native `request.formData()` instead of `busboy`.
+- **Auth cookies**: a `CookieSink` helper collects `Set-Cookie` values and the response builder applies them — same wire behaviour, different shape.
+
+The Vercel deploy (`api/[...path].js`) is kept in the repo as a coexisting backup and as a reference. Pushes to `main` deploy to both targets.
+
+## Deploy On Vercel (legacy backup)
 
 Stimli is configured as one Vercel project: the React dashboard builds to `frontend/dist`, and the product API runs from same-origin `/api/*` serverless functions. There is no separate hosted frontend/backend split required for production.
 

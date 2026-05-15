@@ -1,0 +1,50 @@
+name = "stimli"
+compatibility_date = "2026-05-15"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "frontend/dist"
+
+# R2 bucket for private uploaded assets (videos, audio, images).
+# Enable R2 in the Cloudflare dashboard, then run:
+#   wrangler r2 bucket create stimli-media
+# then uncomment the block below and redeploy. Without this binding the API
+# still works: small file uploads are inlined as base64 in asset metadata.
+# [[r2_buckets]]
+# binding = "STIMLI_MEDIA"
+# bucket_name = "stimli-media"
+
+# Public, non-secret env vars. Secrets (POSTGRES_URL, TRIBE_*, etc.) are set via
+# `wrangler pages secret put <NAME>` or the Pages dashboard.
+[vars]
+STIMLI_BRAIN_PROVIDER = "tribe-remote"
+STIMLI_RP_ID = "stimli.pages.dev"
+STIMLI_ORIGIN = "https://stimli.pages.dev"
+STIMLI_APP_URL = "https://stimli.pages.dev"
+STIMLI_ASSET_LIMIT_PER_HOUR = "40"
+STIMLI_COMPARISON_LIMIT_PER_HOUR = "12"
+STIMLI_MAX_DIRECT_UPLOAD_BYTES = "26214400"
+STIMLI_MAX_INLINE_FILE_BYTES = "8388608"
+STIMLI_COMPARISON_JOB_TIMEOUT_MS = "900000"
+STIMLI_RETENTION_DAYS = "365"
+STIMLI_SHARE_LINK_TTL_DAYS = "14"
+STIMLI_INVITE_TTL_DAYS = "14"
+STIMLI_RATE_LIMIT_WINDOW_MS = "3600000"
+
+# Preview environment for branch deploys.
+[env.preview.vars]
+STIMLI_BRAIN_PROVIDER = "tribe-remote"
+STIMLI_RP_ID = "stimli.pages.dev"
+STIMLI_ORIGIN = "https://stimli.pages.dev"
+STIMLI_APP_URL = "https://stimli.pages.dev"
+STIMLI_ASSET_LIMIT_PER_HOUR = "40"
+STIMLI_COMPARISON_LIMIT_PER_HOUR = "12"
+STIMLI_MAX_DIRECT_UPLOAD_BYTES = "26214400"
+STIMLI_MAX_INLINE_FILE_BYTES = "8388608"
+STIMLI_COMPARISON_JOB_TIMEOUT_MS = "900000"
+STIMLI_RETENTION_DAYS = "365"
+STIMLI_SHARE_LINK_TTL_DAYS = "14"
+STIMLI_INVITE_TTL_DAYS = "14"
+STIMLI_RATE_LIMIT_WINDOW_MS = "3600000"
+
+# [[env.preview.r2_buckets]]
+# binding = "STIMLI_MEDIA"
+# bucket_name = "stimli-media"

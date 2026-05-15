@@ -16,3 +16,6 @@ frontend/.vite/
 .vercel
 .env*.local
 .claude/
+.secrets/
+.wrangler/
+.dev.vars
