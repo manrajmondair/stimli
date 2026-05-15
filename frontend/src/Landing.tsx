@@ -1,4 +1,4 @@
-import { useClerk, useUser } from "@clerk/clerk-react";
+import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import { BrainBlob, MarbleBlob, ScribbleUnderline, Sparkle, StickerStar, Ribbon, ThoughtTrail } from "./art";
 
 const clerkConfigured = Boolean(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
@@ -283,11 +283,29 @@ export function Landing() {
 function LandingSignInButton() {
   const { isLoaded, isSignedIn } = useUser();
   const clerk = useClerk();
-  if (isLoaded && isSignedIn) {
+  if (!isLoaded) {
+    // Reserve the slot so the nav doesn't jump as Clerk hydrates.
+    return <span className="nav-user-placeholder" aria-hidden="true" />;
+  }
+  if (isSignedIn) {
+    // Clerk's avatar opens a menu with Manage account (full profile / change
+    // password / connected providers / delete account) and Sign out.
     return (
-      <a className="btn ghost" href="/app">
-        Open app
-      </a>
+      <UserButton
+        afterSignOutUrl="/"
+        userProfileMode="modal"
+        appearance={{
+          elements: {
+            userButtonAvatarBox: {
+              width: 40,
+              height: 40,
+              border: "2px solid var(--ink)",
+              boxShadow: "3px 3px 0 var(--ink)"
+            },
+            userButtonTrigger: { borderRadius: 999 }
+          }
+        }}
+      />
     );
   }
   return (

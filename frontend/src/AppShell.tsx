@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useClerk, useUser } from "@clerk/clerk-react";
+import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
   createBrandProfile,
@@ -38,8 +38,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
 ];
 
 export function AppShell() {
-  const { isLoaded: clerkLoaded, isSignedIn } = useUser();
-  const { signOut } = useClerk();
+  const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [view, setView] = useState<View>("workbench");
   const [bootError] = useState<string | null>(null);
@@ -63,15 +62,6 @@ export function AppShell() {
     };
   }, [clerkLoaded, isSignedIn]);
 
-  async function handleSignOut() {
-    try {
-      await signOut({ redirectUrl: "/" });
-      setSession({ authenticated: false, user: null, team: null, teams: [] });
-    } catch (err) {
-      console.warn(err);
-    }
-  }
-
   async function refreshSession() {
     try {
       const next = await getSession();
@@ -81,13 +71,28 @@ export function AppShell() {
     }
   }
 
+  // Clerk's useUser() is the source of truth for "is the user signed in".
+  // session carries the backend-derived team + permissions for UI scoping;
+  // when the API call hasn't returned yet we still show the user as signed
+  // in (just with degraded team info) instead of flashing "Sign in" again.
+  const signedIn = Boolean(clerkLoaded && isSignedIn);
+  const displayName =
+    session?.user?.name ||
+    clerkUser?.fullName ||
+    clerkUser?.firstName ||
+    clerkUser?.primaryEmailAddress?.emailAddress ||
+    "";
+  const displayEmail =
+    session?.user?.email || clerkUser?.primaryEmailAddress?.emailAddress || "";
+
   return (
     <div className="wb-root paper-bg">
       <Sidebar
         active={view}
         onChange={setView}
-        session={session}
-        onSignOut={handleSignOut}
+        signedIn={signedIn}
+        displayName={displayName}
+        displayEmail={displayEmail}
       />
 
       <main className="wb-main">
@@ -95,7 +100,7 @@ export function AppShell() {
         {view === "workbench" ? (
           <Workbench
             onRequireAuth={() => {
-              /* Sign-in is now driven by Clerk's <SignInButton mode="modal"> elsewhere */
+              /* Sign-in is driven by useClerk().openSignIn() elsewhere */
             }}
             remoteProvider={null}
             briefDefaults={undefined}
@@ -115,13 +120,15 @@ export function AppShell() {
 function Sidebar({
   active,
   onChange,
-  session,
-  onSignOut
+  signedIn,
+  displayName,
+  displayEmail
 }: {
   active: View;
   onChange: (view: View) => void;
-  session: AuthSession | null;
-  onSignOut: () => void;
+  signedIn: boolean;
+  displayName: string;
+  displayEmail: string;
 }) {
   return (
     <aside className="wb-side">
@@ -157,15 +164,56 @@ function Sidebar({
         </a>
       </nav>
 
-      {session?.authenticated && session.user ? (
-        <div className="side-tip" style={{ alignItems: "stretch", textAlign: "left" }}>
-          <strong style={{ fontFamily: "var(--display)", fontSize: 18, lineHeight: 1.05 }}>{session.user.name}</strong>
-          <span style={{ fontSize: 11, color: "var(--ink-soft)", fontFamily: "var(--mono)" }}>
-            {session.user.email}
-          </span>
-          <button className="btn cream small" onClick={onSignOut} style={{ marginTop: 8 }}>
-            Sign out
-          </button>
+      {signedIn ? (
+        <div className="side-tip side-tip-account" style={{ alignItems: "stretch", textAlign: "left" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <UserButton
+              afterSignOutUrl="/"
+              userProfileMode="modal"
+              appearance={{
+                elements: {
+                  userButtonAvatarBox: {
+                    width: 40,
+                    height: 40,
+                    border: "2px solid var(--ink)",
+                    boxShadow: "3px 3px 0 var(--ink)"
+                  },
+                  userButtonTrigger: { borderRadius: 999 }
+                }
+              }}
+            />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <strong
+                style={{
+                  fontFamily: "var(--display)",
+                  fontSize: 16,
+                  lineHeight: 1.05,
+                  display: "block",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {displayName || "Signed in"}
+              </strong>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-soft)",
+                  fontFamily: "var(--mono)",
+                  display: "block",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {displayEmail}
+              </span>
+            </div>
+          </div>
+          <p className="hint" style={{ margin: "8px 0 0", fontSize: 11 }}>
+            Click the avatar for account, security, and sign-out.
+          </p>
         </div>
       ) : (
         <div className="side-tip">
