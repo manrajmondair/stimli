@@ -1,0 +1,36 @@
+# Cloudflare Pages will use this file to set HTTP headers on the matching
+# requests. Path globs are matched top-to-bottom; the FIRST matching rule
+# is applied, so more specific paths must come before more generic ones.
+
+# Hashed asset bundles are content-addressed (filename embeds a hash). Cache
+# them aggressively — when the content changes, the filename changes too.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Never serve a stale index.html. The hashed bundle filenames inside it
+# change on every deploy, so a stale index.html points at deleted bundles
+# and triggers our "JSON.parse(<!doctype...)" class of bugs. Force every
+# revisit to revalidate with Cloudflare. (Cloudflare's default is already
+# this — this entry locks it in so a future config change doesn't undo it.)
+/
+  Cache-Control: no-cache, must-revalidate, max-age=0
+
+/index.html
+  Cache-Control: no-cache, must-revalidate, max-age=0
+
+# Same for the marketing app pages. /legal, /app, /share/*, /invite/* all
+# fall through to the SPA's index.html so they need the same policy.
+/app
+  Cache-Control: no-cache, must-revalidate, max-age=0
+
+/app/*
+  Cache-Control: no-cache, must-revalidate, max-age=0
+
+/legal
+  Cache-Control: no-cache, must-revalidate, max-age=0
+
+/share/*
+  Cache-Control: no-cache, must-revalidate, max-age=0
+
+/invite/*
+  Cache-Control: no-cache, must-revalidate, max-age=0
