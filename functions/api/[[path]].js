@@ -34,8 +34,8 @@ import {
   configureBilling,
   createCheckoutSession,
   createPortalSession,
-  handleBillingWebhook,
-  usageLimitsForWorkspace
+  getQuotaForWorkspace,
+  handleBillingWebhook
 } from "./_lib/billing.js";
 import {
   configureStore,
@@ -223,7 +223,12 @@ export async function onRequest(context) {
     if (status >= 500) {
       console.error(error);
     }
-    return sendJson(status, { detail: message }, headers, cookies);
+    // Pass through structured error metadata (code + details) so the frontend
+    // can render quota-specific UX instead of treating every 4xx as a toast.
+    const body = { detail: message };
+    if (error.code) body.code = error.code;
+    if (error.details && typeof error.details === "object") body.details = error.details;
+    return sendJson(status, body, headers, cookies);
   }
 }
 
@@ -426,27 +431,38 @@ async function handleBilling(request, segments, authContext, workspaceId, header
     return sendJson(200, await billingStatus(authContext.team), headers, cookies);
   }
   if (request.method === "GET" && segments[1] === "usage") {
-    // Frontend usage meter — current plan + hourly counts so the sidebar
-    // can show 'comparisons this hour: 3/12' without each view scraping
-    // /status separately.
+    // Usage meter — exposes both the hourly bucket (abuse guard) and the
+    // monthly billing-cycle bucket (real SaaS quota) so the frontend can
+    // render a clear "33 / 500 comparisons this month, resets May 31" UX.
     const env = globalThis.__stimliEnv || {};
     const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
-    const since = new Date(Date.now() - windowMs).toISOString();
-    const [status, limits, comparisonCount, assetCount] = await Promise.all([
+    const hourlySince = new Date(Date.now() - windowMs).toISOString();
+    const [status, quota, comparisonHour, assetHour] = await Promise.all([
       billingStatus(authContext.team),
-      usageLimitsForWorkspace(workspaceId),
-      countUsageEvents({ kind: "comparison", since, workspaceId }),
-      countUsageEvents({ kind: "asset", since, workspaceId })
+      getQuotaForWorkspace(workspaceId),
+      countUsageEvents({ kind: "comparison", since: hourlySince, workspaceId }),
+      countUsageEvents({ kind: "asset", since: hourlySince, workspaceId })
+    ]);
+    const [comparisonMonth, assetMonth] = await Promise.all([
+      countUsageEvents({ kind: "comparison", since: quota.period.start, workspaceId }),
+      countUsageEvents({ kind: "asset", since: quota.period.start, workspaceId })
     ]);
     return sendJson(200, {
       plan: status.current_plan,
+      subscription: status.subscription,
       billing_configured: status.billing_configured,
       commercial_use_enabled: status.commercial_use_enabled,
-      limits,
+      limits: quota.hourly,
+      monthly_limits: quota.monthly,
+      period: quota.period,
       usage: {
         window_ms: windowMs,
-        comparison: comparisonCount,
-        asset: assetCount
+        comparison: comparisonHour,
+        asset: assetHour
+      },
+      monthly_usage: {
+        comparison: comparisonMonth,
+        asset: assetMonth
       }
     }, headers, cookies);
   }
@@ -719,8 +735,8 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
 
   if (request.method === "POST" && segments.length === 1) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    const limits = await usageLimitsForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "asset", limits.asset);
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", quota);
     const { fields, files } = await parseForm(request);
     const assetType = fields.asset_type || fields.assetType;
     if (!assetTypes.has(assetType)) {
@@ -860,8 +876,8 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments.length === 1) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    const limits = await usageLimitsForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "comparison", limits.comparison);
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "comparison", quota);
     const payload = await parseJson(request);
     const assetIds = Array.isArray(payload.asset_ids) ? payload.asset_ids : [];
     if (assetIds.length < 2) {
@@ -1654,25 +1670,76 @@ async function resolveComparisonBrief(payload, workspaceId) {
   };
 }
 
-async function enforceUsageLimit(request, workspaceId, kind, limit) {
+async function enforceUsageLimit(request, workspaceId, kind, quota) {
   const env = globalThis.__stimliEnv || {};
-  if (env.STIMLI_DISABLE_RATE_LIMITS === "1" || !Number.isFinite(limit) || limit <= 0) return;
+  if (env.STIMLI_DISABLE_RATE_LIMITS === "1") return;
+
+  const hourlyLimit = quota?.hourly?.[kind];
+  const monthlyLimit = quota?.monthly?.[kind];
   const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
-  const since = new Date(Date.now() - windowMs).toISOString();
+  const hourlySince = new Date(Date.now() - windowMs).toISOString();
   const bucketKey = await clientBucketKey(request, workspaceId);
-  const [workspaceCount, clientCount] = await Promise.all([
-    countUsageEvents({ kind, since, workspaceId }),
-    countUsageEvents({ kind, since, bucketKey })
-  ]);
-  if (Math.max(workspaceCount, clientCount) >= limit) {
-    throw httpError(429, "Usage limit reached. Try again later.");
+
+  // Hourly bucket is abuse protection — checked against both the workspace and
+  // a per-client hash so a flood from one IP can't drain a paid quota. Monthly
+  // bucket is the real SaaS quota; we tie it to the billing cycle start so
+  // upgrades or renewal resets work cleanly.
+  const queries = [];
+  if (Number.isFinite(hourlyLimit) && hourlyLimit > 0) {
+    queries.push(countUsageEvents({ kind, since: hourlySince, workspaceId }));
+    queries.push(countUsageEvents({ kind, since: hourlySince, bucketKey }));
+  } else {
+    queries.push(Promise.resolve(0), Promise.resolve(0));
   }
+  if (Number.isFinite(monthlyLimit) && monthlyLimit > 0 && quota?.period?.start) {
+    queries.push(countUsageEvents({ kind, since: quota.period.start, workspaceId }));
+  } else {
+    queries.push(Promise.resolve(0));
+  }
+  const [hourlyWorkspace, hourlyClient, monthlyWorkspace] = await Promise.all(queries);
+
+  if (Number.isFinite(monthlyLimit) && monthlyLimit > 0 && monthlyWorkspace >= monthlyLimit) {
+    // 402 is the right status for a billing-quota block — the client should
+    // surface an upgrade CTA, not a generic retry-later message.
+    const err = httpError(
+      402,
+      `Monthly ${kind} quota reached on the ${quota.plan?.name || "current"} plan. Upgrade to keep shipping.`
+    );
+    err.code = "quota_exceeded";
+    err.details = {
+      kind,
+      limit: monthlyLimit,
+      used: monthlyWorkspace,
+      plan: quota.plan?.id || null,
+      reset_at: quota.period?.end || null,
+      upgrade_url: "/?billing=upgrade"
+    };
+    throw err;
+  }
+
+  if (Number.isFinite(hourlyLimit) && hourlyLimit > 0 && Math.max(hourlyWorkspace, hourlyClient) >= hourlyLimit) {
+    const err = httpError(429, "Hourly rate limit reached. Try again in a few minutes.");
+    err.code = "rate_limited";
+    err.details = {
+      kind,
+      limit: hourlyLimit,
+      window_ms: windowMs,
+      plan: quota.plan?.id || null
+    };
+    throw err;
+  }
+
   await saveUsageEvent({
     id: newId("usage"),
     workspace_id: workspaceId,
     bucket_key: bucketKey,
     kind,
-    payload: { limit, window_ms: windowMs },
+    payload: {
+      hourly_limit: hourlyLimit || null,
+      monthly_limit: monthlyLimit || null,
+      window_ms: windowMs,
+      plan: quota.plan?.id || null
+    },
     created_at: nowIso()
   });
 }
