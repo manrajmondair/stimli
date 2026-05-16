@@ -1463,11 +1463,28 @@ function reportToMarkdown(report) {
     ""
   ];
   for (const suggestion of report.suggestions) {
+    const window = suggestion.evidence_window;
+    const evidenceLine = window
+      ? `Evidence: ${window.channel.replace("_", " ")} reaches ${Math.round((window.low_value || 0) * 100)}/100 between ${window.start_s.toFixed(1)}s and ${window.end_s.toFixed(1)}s.`
+      : null;
+    const dimensionLine = suggestion.dimension_score != null
+      ? suggestion.compared_score != null && suggestion.compared_to_asset_id
+        ? `Dimension score: ${suggestion.dimension_score}/100 (leading variant scores ${suggestion.compared_score}).`
+        : `Dimension score: ${suggestion.dimension_score}/100.`
+      : null;
+    const liftLine = suggestion.expected_lift != null && suggestion.expected_lift > 0
+      ? `Expected lift on composite: +${suggestion.expected_lift} pts.`
+      : null;
     lines.push(
       `### ${suggestion.target}`,
       "",
       `Severity: ${suggestion.severity}`,
-      "",
+      ""
+    );
+    if (dimensionLine) lines.push(dimensionLine, "");
+    if (evidenceLine) lines.push(evidenceLine, "");
+    if (liftLine) lines.push(liftLine, "");
+    lines.push(
       `Issue: ${suggestion.issue}`,
       "",
       `Edit: ${suggestion.suggested_edit}`,

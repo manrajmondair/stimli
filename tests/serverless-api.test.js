@@ -206,6 +206,65 @@ test("seeds assets and creates a comparison", async () => {
   assert.equal(comparison.json.variants.length, 2);
   assert.ok(comparison.json.recommendation.headline);
   assert.ok(comparison.json.suggestions.length > 0);
+
+  // Every suggestion must be grounded in a measured dimension, not just a
+  // free-text 'target' that the frontend has to guess about.
+  const knownScoreKeys = new Set([
+    "hook",
+    "clarity",
+    "cta",
+    "brand_cue",
+    "pacing",
+    "offer_strength",
+    "audience_fit",
+    "neural_attention",
+    "memory",
+    "cognitive_load"
+  ]);
+  const knownTargetKinds = new Set([
+    "hook",
+    "cta",
+    "brand",
+    "offer",
+    "clarity",
+    "load",
+    "pacing",
+    "audience",
+    "memory"
+  ]);
+  for (const suggestion of comparison.json.suggestions) {
+    assert.ok(suggestion.score_key, "suggestion is missing score_key");
+    assert.ok(
+      knownScoreKeys.has(suggestion.score_key),
+      `unexpected score_key ${suggestion.score_key}`
+    );
+    assert.ok(suggestion.target_kind, "suggestion is missing target_kind");
+    assert.ok(
+      knownTargetKinds.has(suggestion.target_kind),
+      `unexpected target_kind ${suggestion.target_kind}`
+    );
+    assert.equal(typeof suggestion.expected_lift, "number");
+    assert.ok(suggestion.expected_lift >= 0);
+    assert.equal(typeof suggestion.dimension_score, "number");
+    // evidence_window may be null for legacy paths but the heuristic timeline
+    // always has at least 3 points, so we expect one here.
+    assert.ok(
+      suggestion.evidence_window,
+      `suggestion ${suggestion.score_key} is missing evidence_window`
+    );
+    assert.ok(suggestion.evidence_window.end_s >= suggestion.evidence_window.start_s);
+    assert.ok(["attention", "memory", "cognitive_load"].includes(suggestion.evidence_window.channel));
+  }
+
+  // The merged list must be sorted winner-first; the first suggestion
+  // should be about the variant we are actually recommending.
+  const winnerId = comparison.json.recommendation.winner_asset_id;
+  assert.ok(winnerId, "expected a winning variant");
+  assert.equal(
+    comparison.json.suggestions[0].asset_id,
+    winnerId,
+    "expected the first edit to target the winning variant"
+  );
 });
 
 test("calibrates predicted winners against logged outcomes", async () => {
