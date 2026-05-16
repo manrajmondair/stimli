@@ -133,6 +133,29 @@ h1, h2, h3, .display {
 .bob.slow { animation-duration: 9s; }
 .bob.fast { animation-duration: 4.5s; }
 
+@media (prefers-reduced-motion: reduce) {
+  /* Respect the OS-level setting. Replace ambient motion with static
+     poses (kept the rotate so the visual identity holds), keep only
+     the deterministic loading spinner so users still get feedback
+     that an async operation is in flight. */
+  .bob,
+  .bob.slow,
+  .bob.fast {
+    animation: none !important;
+    transform: rotate(var(--rot, 0deg)) !important;
+  }
+  .stage-list li.live .stage-dot { animation: none !important; }
+  .usage-meter-fill { transition: none !important; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Keep the spin so loading state is still legible. */
+  .spin { animation: spin 1.2s linear infinite !important; }
+}
+
 .kicker {
   font-family: var(--mono);
   font-size: 12px;
@@ -655,6 +678,37 @@ h1, h2, h3, .display {
   .wb-grid { grid-template-columns: 1fr; }
   .wb-h1 { font-size: 36px; }
   .wb-main { padding: 20px 22px 36px; }
+  .usage-badge { width: 100%; }
+  .cmdk-hint { display: none; }
+}
+
+@media (max-width: 600px) {
+  .wb-side {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px 14px;
+    gap: 10px;
+  }
+  .side-nav { width: 100%; justify-content: center; }
+  .wb-main { padding: 16px 14px 28px; }
+  .wb-h1 { font-size: 28px; }
+  .wb-top { gap: 12px; }
+  .wb-top-right { width: 100%; justify-content: flex-end; }
+  .panel-card { padding: 14px 14px 12px; box-shadow: 3px 3px 0 var(--ink); }
+  .panel-head h3 { font-size: 20px; }
+  .onboarding-card .btn { width: 100%; justify-content: center; }
+  .onboarding-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .onboarding-head .btn { width: 100%; justify-content: center; }
+  .result-hero h2, .result-hero .big-h { font-size: 28px !important; }
+  .edit-actions { flex-direction: column; align-items: stretch; }
+  .edit-actions .btn { width: 100%; justify-content: center; }
+  .neural-timeline svg { height: 200px; }
+  .shared-report { padding: 16px 14px 32px; }
+  .shared-report-title { font-size: 30px; }
+  .shared-report-headline { font-size: 22px; }
+  .palette-modal { max-width: 100%; }
+  .filter-chips { gap: 6px; }
+  .filter-chip { font-size: 12px; padding: 6px 10px; }
 }
 
 .panel-card {
