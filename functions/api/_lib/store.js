@@ -30,7 +30,9 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
   brandProfiles: new Map(),
   governanceRequests: new Map(),
   benchmarkRuns: new Map(),
-  integrationJobs: new Map()
+  integrationJobs: new Map(),
+  subscriptions: new Map(),
+  billingEvents: new Map()
 });
 
 let _databaseUrl = "";
@@ -913,6 +915,127 @@ export async function listIntegrationJobs(workspaceId = "public") {
   return rows.map((row) => row.payload);
 }
 
+// Subscriptions are 1:1 with teams (a team has at most one active Stripe
+// subscription at a time). Storing them in a dedicated row, rather than in the
+// stimli_teams payload, gives us a sane place to track current_period_end,
+// cancel_at_period_end, trial_end, and the raw price id without rewriting the
+// team blob on every webhook.
+export async function saveSubscription(subscription) {
+  const sql = getSql();
+  if (!sql) {
+    memoryStore.subscriptions.set(subscription.team_id, subscription);
+    return subscription;
+  }
+  await ensureTables(sql);
+  await sql`
+    insert into stimli_subscriptions (
+      team_id, stripe_subscription_id, stripe_customer_id, plan, status,
+      current_period_start, current_period_end, cancel_at_period_end, trial_end,
+      payload, created_at, updated_at
+    ) values (
+      ${subscription.team_id},
+      ${subscription.stripe_subscription_id || ""},
+      ${subscription.stripe_customer_id || ""},
+      ${subscription.plan},
+      ${subscription.status},
+      ${subscription.current_period_start || null},
+      ${subscription.current_period_end || null},
+      ${subscription.cancel_at_period_end ? 1 : 0},
+      ${subscription.trial_end || null},
+      ${JSON.stringify(subscription)}::jsonb,
+      ${subscription.created_at},
+      ${subscription.updated_at || subscription.created_at}
+    )
+    on conflict (team_id) do update
+    set stripe_subscription_id = excluded.stripe_subscription_id,
+        stripe_customer_id = excluded.stripe_customer_id,
+        plan = excluded.plan,
+        status = excluded.status,
+        current_period_start = excluded.current_period_start,
+        current_period_end = excluded.current_period_end,
+        cancel_at_period_end = excluded.cancel_at_period_end,
+        trial_end = excluded.trial_end,
+        payload = excluded.payload,
+        updated_at = excluded.updated_at
+  `;
+  return subscription;
+}
+
+export async function getSubscription(teamId) {
+  if (!teamId) return null;
+  const sql = getSql();
+  if (!sql) {
+    return memoryStore.subscriptions.get(teamId) || null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`select payload from stimli_subscriptions where team_id = ${teamId} limit 1`;
+  return rows[0]?.payload || null;
+}
+
+export async function getSubscriptionByStripeId(stripeSubscriptionId) {
+  if (!stripeSubscriptionId) return null;
+  const sql = getSql();
+  if (!sql) {
+    for (const sub of memoryStore.subscriptions.values()) {
+      if (sub.stripe_subscription_id === stripeSubscriptionId) return sub;
+    }
+    return null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select payload from stimli_subscriptions
+    where stripe_subscription_id = ${stripeSubscriptionId}
+    limit 1
+  `;
+  return rows[0]?.payload || null;
+}
+
+// Idempotency log for Stripe webhooks. We key by the Stripe event id so a
+// replayed delivery never double-applies a plan change or invoice.
+export async function recordBillingEvent(event) {
+  const sql = getSql();
+  if (!sql) {
+    if (memoryStore.billingEvents.has(event.id)) return false;
+    memoryStore.billingEvents.set(event.id, event);
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    insert into stimli_billing_events (id, type, team_id, payload, created_at)
+    values (${event.id}, ${event.type}, ${event.team_id || ""}, ${JSON.stringify(event)}::jsonb, ${event.created_at})
+    on conflict (id) do nothing
+    returning id
+  `;
+  return rows.length > 0;
+}
+
+export async function listBillingEvents(teamId, limit = 50) {
+  const sql = getSql();
+  const maxRows = Math.max(1, Math.min(Number(limit) || 50, 200));
+  if (!sql) {
+    return [...memoryStore.billingEvents.values()]
+      .filter((event) => !teamId || event.team_id === teamId)
+      .sort(descCreatedAt)
+      .slice(0, maxRows);
+  }
+  await ensureTables(sql);
+  if (teamId) {
+    const rows = await sql`
+      select payload from stimli_billing_events
+      where team_id = ${teamId}
+      order by created_at desc
+      limit ${maxRows}
+    `;
+    return rows.map((row) => row.payload);
+  }
+  const rows = await sql`
+    select payload from stimli_billing_events
+    order by created_at desc
+    limit ${maxRows}
+  `;
+  return rows.map((row) => row.payload);
+}
+
 async function ensureTables(sql) {
   if (_initPromise) return _initPromise;
   _initPromise = (async () => {
@@ -934,6 +1057,8 @@ async function ensureTables(sql) {
     await sql`create table if not exists stimli_governance_requests (id text primary key, workspace_id text not null default 'public', request_type text not null, payload jsonb not null, created_at text not null)`;
     await sql`create table if not exists stimli_benchmark_runs (id text primary key, workspace_id text not null default 'public', benchmark_id text not null, payload jsonb not null, created_at text not null)`;
     await sql`create table if not exists stimli_integration_jobs (id text primary key, workspace_id text not null default 'public', platform text not null, payload jsonb not null, created_at text not null)`;
+    await sql`create table if not exists stimli_subscriptions (team_id text primary key, stripe_subscription_id text not null default '', stripe_customer_id text not null default '', plan text not null, status text not null, current_period_start text, current_period_end text, cancel_at_period_end smallint not null default 0, trial_end text, payload jsonb not null, created_at text not null, updated_at text not null)`;
+    await sql`create table if not exists stimli_billing_events (id text primary key, type text not null, team_id text not null default '', payload jsonb not null, created_at text not null)`;
     await sql`create index if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`;
     await sql`create index if not exists stimli_projects_workspace_idx on stimli_projects (workspace_id, created_at desc)`;
     await sql`create index if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`;
@@ -952,6 +1077,9 @@ async function ensureTables(sql) {
     await sql`create index if not exists stimli_governance_requests_workspace_idx on stimli_governance_requests (workspace_id, created_at desc)`;
     await sql`create index if not exists stimli_benchmark_runs_workspace_idx on stimli_benchmark_runs (workspace_id, created_at desc)`;
     await sql`create index if not exists stimli_integration_jobs_workspace_idx on stimli_integration_jobs (workspace_id, created_at desc)`;
+    await sql`create index if not exists stimli_subscriptions_stripe_idx on stimli_subscriptions (stripe_subscription_id)`;
+    await sql`create index if not exists stimli_subscriptions_customer_idx on stimli_subscriptions (stripe_customer_id)`;
+    await sql`create index if not exists stimli_billing_events_team_idx on stimli_billing_events (team_id, created_at desc)`;
   })();
   return _initPromise;
 }
