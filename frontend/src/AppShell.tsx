@@ -40,7 +40,7 @@ import type {
   TeamRole,
   WorkspaceOutcome
 } from "./types";
-import { BrainBlob } from "./art";
+import { BrainBlob, NeuralTimeline, type NeuralVariant } from "./art";
 import { Workbench } from "./Workbench";
 
 const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
@@ -2289,6 +2289,10 @@ export function SharedReportPage({ token }: { token: string }) {
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load report."));
   }, [token]);
 
+  function handlePrint() {
+    window.print();
+  }
+
   if (error) {
     return (
       <div className="share-page paper-bg">
@@ -2309,53 +2313,174 @@ export function SharedReportPage({ token }: { token: string }) {
   }
 
   const winner = report.variants.find((variant) => variant.asset.id === report.recommendation.winner_asset_id);
+  const ranked = [...report.variants].sort((a, b) => a.rank - b.rank);
+  const variantColors = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"];
+  const neuralVariants: NeuralVariant[] = ranked.map((variant, idx) => ({
+    id: variant.asset.id,
+    label: variant.asset.name.split("·")[0]?.trim() ?? variant.asset.name,
+    color: variantColors[idx % variantColors.length],
+    timeline: variant.analysis.timeline ?? []
+  }));
+  const provider = winner?.analysis.provider || ranked[0]?.analysis.provider || "stimli";
+  const confidencePct = Math.round((report.recommendation.confidence ?? 0) * 100);
 
   return (
-    <div className="share-page paper-bg">
-      <a className="brand" href="/" style={{ marginBottom: 24 }}>
-        <BrainBlob size={42} color="var(--tomato)" />
-        <span className="brand-word">stimli</span>
-      </a>
-      <span className="kicker">shared decision report</span>
-      <h1 style={{ marginTop: 8 }}>{report.title}</h1>
-      <p>{report.executive_summary}</p>
-      <div className="panel-card" style={{ marginTop: 24 }}>
-        <div className="panel-head">
-          <h3>Recommendation</h3>
-          <span className="kicker">{Math.round((report.recommendation.confidence ?? 0) * 100)}% confidence</span>
+    <div className="share-page paper-bg shared-report">
+      <header className="shared-report-head">
+        <a className="brand" href="/">
+          <BrainBlob size={42} color="var(--tomato)" />
+          <span className="brand-word">stimli</span>
+        </a>
+        <div className="shared-report-actions">
+          <span className="shared-report-badge">
+            <span className="dot" style={{ background: "var(--pistachio)" }} />
+            shared decision report
+          </span>
+          <button type="button" className="btn cream small no-print" onClick={handlePrint}>
+            Print / save as PDF
+          </button>
         </div>
-        <h2 style={{ fontFamily: "var(--display)", fontSize: 32, lineHeight: 1.05, marginBottom: 12 }}>
-          {report.recommendation.headline}
-        </h2>
-        <ul>
-          {report.recommendation.reasons.map((reason) => (
-            <li key={reason}>{reason}</li>
-          ))}
-        </ul>
+      </header>
+
+      <h1 className="shared-report-title">{report.title}</h1>
+      <p className="shared-report-summary">{report.executive_summary}</p>
+
+      <div className="panel-card shared-report-hero">
+        <div className="shared-report-hero-grid">
+          <div>
+            <span className="kicker">recommendation</span>
+            <h2 className="shared-report-headline">{report.recommendation.headline}</h2>
+            <div className="shared-report-conf">
+              <strong>
+                {confidencePct}
+                <small>%</small>
+              </strong>
+              <span>confidence</span>
+              <span className={`verdict-pill verdict-${report.recommendation.verdict}`}>
+                {report.recommendation.verdict}
+              </span>
+            </div>
+            <ul className="shared-report-reasons">
+              {report.recommendation.reasons.map((reason, idx) => (
+                <li key={`${idx}-${reason.slice(0, 24)}`}>{reason}</li>
+              ))}
+            </ul>
+          </div>
+          <BrainBlob size={140} color={variantColors[0]} eyes mouth />
+        </div>
       </div>
-      {winner ? (
+
+      {neuralVariants.some((v) => v.timeline.length >= 2) ? (
         <div className="panel-card" style={{ marginTop: 18 }}>
           <div className="panel-head">
-            <h3>Winner: {winner.asset.name}</h3>
-            <span className="kicker">{winner.analysis.summary}</span>
+            <h3>Predicted brain response</h3>
+            <span className="kicker">per second · {provider}</span>
           </div>
+          <NeuralTimeline
+            activeVariantId={report.recommendation.winner_asset_id || undefined}
+            variants={neuralVariants}
+          />
         </div>
       ) : null}
+
+      <div className="panel-card" style={{ marginTop: 18 }}>
+        <div className="panel-head">
+          <h3>Variants</h3>
+          <span className="kicker">{ranked.length} ranked</span>
+        </div>
+        <div className="shared-variant-grid">
+          {ranked.map((variant, idx) => {
+            const isWinner = variant.asset.id === report.recommendation.winner_asset_id;
+            const color = variantColors[idx % variantColors.length];
+            return (
+              <article key={variant.asset.id} className={`shared-variant ${isWinner ? "winner" : ""}`}>
+                <header>
+                  <span className="swatch" style={{ background: color }} />
+                  <strong>{variant.asset.name}</strong>
+                  {isWinner ? <span className="winner-pill">winner</span> : null}
+                </header>
+                <p className="hint">{variant.analysis.summary}</p>
+                <div className="shared-variant-scores">
+                  <span>
+                    Overall <strong>{Math.round(variant.analysis.scores.overall)}</strong>
+                  </span>
+                  <span>
+                    Hook <strong>{Math.round(variant.analysis.scores.hook)}</strong>
+                  </span>
+                  <span>
+                    Attention <strong>{Math.round(variant.analysis.scores.neural_attention)}</strong>
+                  </span>
+                  <span>
+                    Memory <strong>{Math.round(variant.analysis.scores.memory)}</strong>
+                  </span>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+
       {report.suggestions.length ? (
         <div className="panel-card" style={{ marginTop: 18 }}>
           <div className="panel-head">
             <h3>Edits before launch</h3>
-            <span className="kicker">prioritized</span>
+            <span className="kicker">{report.suggestions.length} · prioritized</span>
+          </div>
+          <ol className="shared-edits">
+            {report.suggestions.map((entry, idx) => {
+              const window = entry.evidence_window;
+              const lift = entry.expected_lift;
+              return (
+                <li key={idx}>
+                  <div>
+                    <strong>{entry.target}</strong>
+                    <p>{entry.suggested_edit}</p>
+                    <div className="shared-edit-meta">
+                      <span className={`severity sev-${entry.severity}`}>{entry.severity}</span>
+                      {window ? (
+                        <span className="chip">
+                          {window.start_s.toFixed(1)}s – {window.end_s.toFixed(1)}s · {window.channel.replace("_", " ")}{" "}
+                          {Math.round((window.low_value || 0) * 100)}
+                        </span>
+                      ) : null}
+                      {entry.dimension_score != null ? (
+                        <span className="chip">
+                          {Math.round(entry.dimension_score)}/100
+                          {entry.compared_score != null ? ` · leader ${Math.round(entry.compared_score)}` : ""}
+                        </span>
+                      ) : null}
+                      {lift != null && lift > 0 ? <span className="chip lift">+{lift.toFixed(1)} pts</span> : null}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ) : null}
+
+      {report.next_steps?.length ? (
+        <div className="panel-card" style={{ marginTop: 18 }}>
+          <div className="panel-head">
+            <h3>Next steps</h3>
           </div>
           <ul>
-            {report.suggestions.map((entry, idx) => (
-              <li key={idx}>
-                <strong>{entry.target}:</strong> {entry.suggested_edit}
-              </li>
+            {report.next_steps.map((step) => (
+              <li key={step}>{step}</li>
             ))}
           </ul>
         </div>
       ) : null}
+
+      <footer className="shared-report-foot no-print">
+        <span>
+          Powered by <a href="/">Stimli</a> · brain-aware creative pretesting.
+          Built on the <strong>{provider}</strong> provider.
+        </span>
+        <a className="btn cream" href="/">
+          Run your own comparison →
+        </a>
+      </footer>
     </div>
   );
 }
