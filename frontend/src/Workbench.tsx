@@ -605,6 +605,26 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
         </div>
       </header>
 
+      {assets.length === 0 && recentComparisons.length === 0 && step === "inventory" ? (
+        <OnboardingCard
+          briefSet={!isBriefEmpty(brief)}
+          variantsSelected={selected.length}
+          onSeedDemo={handleSeed}
+          onAddVariant={() => setShowAddForm(true)}
+          onLoadDemoBrief={() =>
+            setBrief({
+              brand_name: "Lumina",
+              audience: "busy women with dry or sensitive skin",
+              product_category: "skincare hydration system",
+              primary_offer: "starter kit with free shipping",
+              required_claims: ["24-hr hydration", "dermatologist tested"],
+              forbidden_terms: ["miracle cure", "guaranteed"]
+            })
+          }
+          busy={busy}
+        />
+      ) : null}
+
       <div className="wb-grid">
         <IntakePanel
           showAddForm={showAddForm}
@@ -1833,6 +1853,85 @@ function labelFor(key: keyof ScoreBreakdown): string {
     default:
       return String(key);
   }
+}
+
+function OnboardingCard({
+  briefSet,
+  variantsSelected,
+  onSeedDemo,
+  onAddVariant,
+  onLoadDemoBrief,
+  busy
+}: {
+  briefSet: boolean;
+  variantsSelected: number;
+  onSeedDemo: () => void;
+  onAddVariant: () => void;
+  onLoadDemoBrief: () => void;
+  busy: boolean;
+}) {
+  const steps: Array<{ index: number; title: string; body: string; cta: { label: string; onClick: () => void } | null; done: boolean }> = [
+    {
+      index: 1,
+      title: "Set a brief (optional)",
+      body: "Tell Stimli the brand, audience, and offer. The brief shapes every score and edit suggestion. Skip if you just want to feel the product first.",
+      cta: briefSet ? null : { label: "Load demo brief", onClick: onLoadDemoBrief },
+      done: briefSet
+    },
+    {
+      index: 2,
+      title: "Add at least two variants",
+      body: "Paste a script, drop a landing-page URL, upload a static, audio cut or short video. Or seed a 3-asset demo if you'd rather see the output first.",
+      cta: { label: "Seed demo assets", onClick: onSeedDemo },
+      done: variantsSelected >= 2
+    },
+    {
+      index: 3,
+      title: "Run the comparison",
+      body: "Pick two variants and press Compare. Stimli returns a one-line recommendation, a confidence number, the predicted brain response, and the edits to make before launch.",
+      cta: variantsSelected >= 2 ? null : { label: "Add a variant", onClick: onAddVariant },
+      done: false
+    }
+  ];
+
+  return (
+    <section className="panel-card onboarding-card" aria-label="First-run onboarding">
+      <div className="onboarding-head">
+        <div>
+          <span className="kicker">welcome</span>
+          <h3>Your first comparison in three steps.</h3>
+          <p className="hint" style={{ maxWidth: 520 }}>
+            No card. No setup wizard. Most teams get to a recommendation in under sixty seconds the first time —
+            the demo set is here if you want a faster path.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn primary"
+          onClick={onSeedDemo}
+          disabled={busy}
+        >
+          Try with demo assets
+        </button>
+      </div>
+      <ol className="onboarding-steps">
+        {steps.map((s) => (
+          <li key={s.index} className={`onboarding-step ${s.done ? "done" : ""}`}>
+            <span className="onboarding-num">{s.done ? "✓" : s.index}</span>
+            <div>
+              <strong>{s.title}</strong>
+              <p>{s.body}</p>
+              {s.cta ? (
+                <button type="button" className="btn cream small" onClick={s.cta.onClick} disabled={busy}>
+                  {s.cta.label}
+                </button>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
 function isBriefEmpty(brief: CreativeBrief): boolean {
