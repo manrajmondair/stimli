@@ -410,8 +410,24 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     try {
       const link = await createShareLink(comparison.id);
       const url = link.url || `${window.location.origin}${link.path}`;
-      await navigator.clipboard?.writeText(url).catch(() => null);
-      flash({ kind: "success", message: "Share link copied to clipboard." });
+      // navigator.clipboard fails on insecure contexts (http://), inside some
+      // iframes, and on a few mobile browsers. Detect failure and tell the
+      // user — silently swallowing the rejection makes them think the copy
+      // worked when their paste buffer still has whatever was there before.
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(url);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+      flash(
+        copied
+          ? { kind: "success", message: "Share link copied to clipboard." }
+          : { kind: "info", message: `Share link ready: ${url}` }
+      );
     } catch (err) {
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not share." });
     }
@@ -599,9 +615,20 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
               Cancel
             </button>
           ) : null}
-          <button className="btn primary" onClick={handleCompare} disabled={selected.length < 2 || busy}>
+          <button
+            className="btn primary"
+            onClick={handleCompare}
+            disabled={selected.length < 2 || busy}
+            title={selected.length < 2 ? "Select at least two variants to compare." : undefined}
+            aria-describedby={selected.length < 2 ? "compare-hint" : undefined}
+          >
             {step === "analyzing" ? "Growing trails…" : "Compare ✺"}
           </button>
+          {selected.length < 2 && step !== "analyzing" ? (
+            <span id="compare-hint" className="hint" style={{ alignSelf: "center" }}>
+              Pick 2+ variants to enable.
+            </span>
+          ) : null}
         </div>
       </header>
 

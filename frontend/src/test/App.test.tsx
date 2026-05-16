@@ -30,10 +30,13 @@ describe("App router", () => {
     expect(screen.getAllByText(/Know which ad/i).length).toBeGreaterThan(0);
   });
 
-  it("renders the LegalPage when the path is /legal", () => {
+  it("renders the LegalPage when the path is /legal", async () => {
+    // /legal is lazy-loaded behind Suspense, so the test has to await the
+    // chunk import; the synchronous render only shows the Suspense fallback.
     setPath("/legal");
     render(<App />);
-    expect(screen.getByRole("heading", { name: /Trust & license/i })).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { name: /Trust & license/i });
+    expect(heading).toBeInTheDocument();
   });
 
   it("falls back to the Landing page for unknown routes", () => {
@@ -42,10 +45,12 @@ describe("App router", () => {
     expect(screen.getAllByRole("link", { name: /Run a comparison/i }).length).toBeGreaterThan(0);
   });
 
-  it("renders the SharedReportPage shell when path is /share/<token>", () => {
+  it("renders the SharedReportPage shell when path is /share/<token>", async () => {
     setPath("/share/abc-token");
     render(<App />);
-    // While the fetch resolves, the loading message is visible.
-    expect(screen.getByText(/Loading report…/i)).toBeInTheDocument();
+    // SharedReportPage is also lazy; the Suspense fallback shows briefly then
+    // SharedReportPage takes over with its own "Loading report…" copy.
+    const loading = await screen.findByText(/Loading report…/i);
+    expect(loading).toBeInTheDocument();
   });
 });

@@ -129,8 +129,11 @@ export async function createTextAsset(input: {
     headers: await workspaceHeaders(),
     body: form
   });
-  input.onUploadProgress?.(100);
+  // Only report 100% after the response is parsed and validated — otherwise a
+  // server-side error (auth/quota/rate-limit) still ticks the progress bar to
+  // success and the caller's optimistic UI lies about a failed upload.
   const payload = await parseResponse<{ asset: Asset }>(response);
+  input.onUploadProgress?.(100);
   return payload.asset;
 }
 

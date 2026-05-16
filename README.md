@@ -217,3 +217,5 @@ Runs in order:
 ## License & trust
 
 Stimli is released under CC BY-NC 4.0 for non-commercial use. Built for CS 153 at Stanford. See [`/legal`](https://stimli.pages.dev/legal) on the live site for full terms.
+
+<sub>Assisted by Claude Code and Codex.</sub>

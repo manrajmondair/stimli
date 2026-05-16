@@ -957,6 +957,13 @@ function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; o
         </div>
       ) : null}
 
+      {!billingConfigured ? (
+        <div className="banner" role="status">
+          Stripe billing isn&apos;t configured on this deployment yet. Plan limits still apply; upgrade buttons will go live as
+          soon as the workspace owner sets <code>STRIPE_SECRET_KEY</code> and the price ids.
+        </div>
+      ) : null}
+
       {usage ? <BillingUsageSummary usage={usage} onRefresh={onUsageRefresh} /> : null}
 
       <div className="pricing-grid">
