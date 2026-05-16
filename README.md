@@ -77,8 +77,60 @@ Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
 
 ### Optional integrations
 
-- `STRIPE_SECRET_KEY` + `STRIPE_GROWTH_PRICE_ID` / `STRIPE_SCALE_PRICE_ID` / `STRIPE_WEBHOOK_SECRET` to enable paid plans. Stripe is lazy-imported so the bundle stays small when billing is off.
 - `STIMLI_TRIBE_COMMERCIAL_LICENSE=1` flips the license badge to `commercial-ready` for surfaces that gate commerce on the brain provider's license terms.
+
+### Subscription billing (Stripe)
+
+Three tiers, all defined in `functions/api/_lib/billing.js`:
+
+| Plan      | Price  | Comparisons / mo | Assets / mo | Seats |
+|-----------|--------|------------------|-------------|-------|
+| Research  | Free   | 25               | 200         | 1     |
+| Growth    | $149   | 500              | 4,000       | 5     |
+| Scale     | $499   | 5,000            | 40,000      | 25    |
+
+Hourly limits (40 assets / 12 comparisons on Research, scaling up by tier) remain as bot/abuse protection. Monthly quotas are the real SaaS quota and reset on the subscription's billing cycle (or on the UTC calendar month for free tenants without a Stripe subscription).
+
+Wiring billing on top of the base deployment requires:
+
+1. Create three Stripe products (Research is free — no Stripe object needed):
+   - **Growth** — recurring monthly price → `STRIPE_GROWTH_PRICE_ID`.
+   - **Scale** — recurring monthly price → `STRIPE_SCALE_PRICE_ID`.
+2. Set Pages secrets via `wrangler pages secret put`:
+   - `STRIPE_SECRET_KEY` (sk_test_… in dev, sk_live_… in production).
+   - `STRIPE_GROWTH_PRICE_ID`, `STRIPE_SCALE_PRICE_ID`.
+   - `STRIPE_WEBHOOK_SECRET` (created when you add the webhook endpoint).
+3. Add a Stripe webhook pointing at `https://stimli.pages.dev/api/billing/webhook` listening for:
+   - `checkout.session.completed`
+   - `customer.subscription.created`
+   - `customer.subscription.updated`
+   - `customer.subscription.deleted`
+   - `customer.subscription.trial_will_end`
+   - `invoice.payment_succeeded`
+   - `invoice.payment_failed`
+
+Stripe events are deduped by event id in `stimli_billing_events`, so retries are safe. Subscription state (period bounds, cancel flag, trial end, status) lives in `stimli_subscriptions` and is the source of truth for plan resolution; the team's denormalized `plan` field is kept in sync so anonymous billing-status reads stay cheap. Stripe itself charges no platform fee — costs only apply on real customer charges (2.9% + 30¢ at typical US rates), so this entire system can run at zero recurring cost in test mode and idle.
+
+When a request exceeds the monthly quota, the API returns `402 Payment Required` with a structured body:
+
+```json
+{
+  "detail": "Monthly comparison quota reached on the Research plan. Upgrade to keep shipping.",
+  "code": "quota_exceeded",
+  "details": {
+    "kind": "comparison",
+    "limit": 25,
+    "used": 25,
+    "plan": "research",
+    "reset_at": "2026-06-01T00:00:00.000Z",
+    "upgrade_url": "/?billing=upgrade"
+  }
+}
+```
+
+The frontend listens for this status on every fetch and routes the user to the in-app **Billing** view, which renders pricing cards driven by `/api/billing/status` and opens Stripe Checkout for upgrades / Stripe Customer Portal for subscription management.
+
+Per-plan quotas and prices can be overridden without a redeploy via env vars (e.g. `STIMLI_GROWTH_COMPARISON_LIMIT_PER_MONTH=750`, `STIMLI_GROWTH_PRICE_CENTS_MONTHLY=19900`).
 
 ## Modal GPU inference
 

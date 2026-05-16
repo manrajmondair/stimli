@@ -122,6 +122,121 @@ test("exposes billing and license status", async () => {
   assert.equal(checkout.statusCode, 401);
 });
 
+test("billing catalog exposes monthly quotas, seats, prices, and features", async () => {
+  const status = await call("GET", "/api/billing/status");
+  assert.equal(status.statusCode, 200);
+  const plans = status.json.plans;
+  const research = plans.find((p) => p.id === "research");
+  const growth = plans.find((p) => p.id === "growth");
+  const scale = plans.find((p) => p.id === "scale");
+  for (const plan of [research, growth, scale]) {
+    assert.ok(plan, `missing plan: ${plan?.id}`);
+    assert.ok(Number.isFinite(plan.comparison_limit_per_month), `${plan.id} missing comparison_limit_per_month`);
+    assert.ok(Number.isFinite(plan.asset_limit_per_month), `${plan.id} missing asset_limit_per_month`);
+    assert.ok(Number.isFinite(plan.seats), `${plan.id} missing seats`);
+    assert.ok(Array.isArray(plan.features), `${plan.id} missing features`);
+  }
+  // Free tier should price at $0; paid tiers should be > $0.
+  assert.equal(research.price_cents_monthly, 0);
+  assert.ok(growth.price_cents_monthly > 0);
+  assert.ok(scale.price_cents_monthly > growth.price_cents_monthly);
+  // Quotas should scale up by tier.
+  assert.ok(growth.comparison_limit_per_month > research.comparison_limit_per_month);
+  assert.ok(scale.comparison_limit_per_month > growth.comparison_limit_per_month);
+});
+
+test("billing usage exposes both hourly and monthly buckets with a reset window", async () => {
+  const account = await testAccount("Usage Window Team", "owner");
+  const response = await call("GET", "/api/billing/usage", null, { cookie: account.cookie });
+  assert.equal(response.statusCode, 200);
+  assert.ok(response.json.limits, "missing hourly limits");
+  assert.ok(response.json.monthly_limits, "missing monthly limits");
+  assert.ok(response.json.monthly_usage, "missing monthly usage");
+  assert.ok(response.json.period?.start, "missing period.start");
+  assert.ok(response.json.period?.end, "missing period.end");
+  assert.equal(response.json.plan.id, "research");
+  assert.equal(typeof response.json.monthly_limits.comparison, "number");
+  assert.equal(typeof response.json.monthly_usage.comparison, "number");
+});
+
+test("returns a structured 402 with quota_exceeded when the monthly cap is reached", async () => {
+  // Squeeze the monthly comparison quota down to 1 so a single comparison
+  // exhausts it and the second one trips the 402 path. Keep the hourly limit
+  // high so we hit the monthly check, not the hourly one.
+  withEnv({
+    STIMLI_RESEARCH_COMPARISON_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_COMPARISON_LIMIT_PER_HOUR: "100"
+  });
+  const account = await testAccount("Quota Team", "owner");
+  const headers = {
+    cookie: account.cookie,
+    "x-forwarded-for": "198.51.100.10",
+    "user-agent": "stimli-quota-test"
+  };
+  try {
+    const assetA = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Quota A", text: "Stop weak hooks before launch. Try the starter kit today." },
+      headers
+    );
+    const assetB = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Quota B", text: "Upload creative and compare the strongest variant before spend." },
+      headers
+    );
+    assert.equal(assetA.statusCode, 200);
+    assert.equal(assetB.statusCode, 200);
+
+    const first = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [assetA.json.asset.id, assetB.json.asset.id], objective: "First should pass." },
+      headers
+    );
+    assert.equal(first.statusCode, 200);
+
+    const blocked = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [assetA.json.asset.id, assetB.json.asset.id], objective: "Should be quota-blocked." },
+      headers
+    );
+    assert.equal(blocked.statusCode, 402);
+    assert.equal(blocked.json.code, "quota_exceeded");
+    assert.equal(blocked.json.details.kind, "comparison");
+    assert.equal(blocked.json.details.limit, 1);
+    assert.equal(blocked.json.details.plan, "research");
+    assert.ok(blocked.json.details.reset_at, "expected a reset_at timestamp");
+    assert.ok(blocked.json.details.upgrade_url, "expected an upgrade_url");
+  } finally {
+    withEnv({
+      STIMLI_RESEARCH_COMPARISON_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_COMPARISON_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
+test("billing webhook short-circuits on a replayed Stripe event id", async () => {
+  // We don't run real Stripe signature verification in tests (no secret key),
+  // so this test exercises the idempotency store directly: writing the same
+  // event id twice returns false on the second insert so the webhook handler
+  // can safely no-op on retries.
+  const { recordBillingEvent } = await import("../functions/api/_lib/store.js");
+  const event = {
+    id: `evt_${crypto.randomUUID().slice(0, 12)}`,
+    type: "customer.subscription.updated",
+    team_id: "team_test",
+    payload: { livemode: false },
+    created_at: nowIso()
+  };
+  const first = await recordBillingEvent(event);
+  const second = await recordBillingEvent(event);
+  assert.equal(first, true, "first insert should record the event");
+  assert.equal(second, false, "replayed event should be ignored");
+});
+
 test("creates free team invite links and switches invited users into the team", async () => {
   const owner = await testAccount("Owner Team", "owner");
   const invited = await testAccount("Invited Default Team", "member");
