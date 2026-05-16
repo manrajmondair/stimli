@@ -69,9 +69,26 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
     delta_from_best: round(bestScore - analysis.scores.overall, 1)
   }));
   const recommendation = buildRecommendation(variants);
+  const winnerVariant = variants[0];
   const suggestions = variants
-    .flatMap((variant) => suggestionsForVariant(variant.asset, variant.analysis, safeBrief))
-    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+    .flatMap((variant) =>
+      suggestionsForVariant(variant.asset, variant.analysis, safeBrief, {
+        winnerAssetId: winnerVariant.asset.id,
+        winnerScores: winnerVariant.analysis.scores,
+        winnerTimeline: winnerVariant.analysis.timeline,
+        isWinner: variant.asset.id === winnerVariant.asset.id
+      })
+    )
+    .sort((a, b) => {
+      // Winner's edits first (they're the ones we ship), then by expected lift, then severity.
+      if (a.asset_id !== b.asset_id) {
+        if (a.asset_id === winnerVariant.asset.id) return -1;
+        if (b.asset_id === winnerVariant.asset.id) return 1;
+      }
+      const liftDelta = (b.expected_lift || 0) - (a.expected_lift || 0);
+      if (Math.abs(liftDelta) > 0.05) return liftDelta;
+      return severityRank(a.severity) - severityRank(b.severity);
+    })
     .slice(0, 8);
   return {
     id: comparisonId,
@@ -502,87 +519,358 @@ function largestAdvantage(best, other) {
   return `Biggest edge is ${key.replaceAll("_", " ")}, ahead by ${round(delta, 1)} points.`;
 }
 
-function suggestionsForVariant(asset, analysis, brief) {
+// Dimension weights in overallScore — used to compute expected lift from a
+// per-dimension improvement. Must stay aligned with overallScore() above.
+const DIMENSION_WEIGHTS = {
+  hook: 0.16,
+  clarity: 0.12,
+  cta: 0.12,
+  brand_cue: 0.1,
+  pacing: 0.1,
+  offer_strength: 0.11,
+  audience_fit: 0.09,
+  neural_attention: 0.14,
+  memory: 0.09,
+  cognitive_load: 0.08
+};
+
+// Acceptable floor per dimension. Anything below the floor is a candidate edit.
+const DIMENSION_FLOOR = {
+  hook: 72,
+  clarity: 70,
+  cta: 70,
+  brand_cue: 66,
+  pacing: 66,
+  offer_strength: 70,
+  audience_fit: 70,
+  neural_attention: 64,
+  memory: 62
+};
+
+const DIMENSION_LABEL = {
+  hook: "hook",
+  clarity: "clarity",
+  cta: "CTA",
+  brand_cue: "brand cue",
+  pacing: "pacing",
+  offer_strength: "offer",
+  audience_fit: "audience fit",
+  neural_attention: "attention",
+  memory: "memory",
+  cognitive_load: "cognitive load"
+};
+
+const DIMENSION_KIND = {
+  hook: "hook",
+  clarity: "clarity",
+  cta: "cta",
+  brand_cue: "brand",
+  pacing: "pacing",
+  offer_strength: "offer",
+  audience_fit: "audience",
+  neural_attention: "hook", // attention dips are usually hook/early problems
+  memory: "memory",
+  cognitive_load: "load"
+};
+
+// Timeline channels that map to a given dimension. Used to locate the
+// specific second-range in the predicted brain response that is dragging the
+// dimension score down.
+const DIMENSION_TO_CHANNEL = {
+  hook: { channel: "attention", region: "first_third" },
+  cta: { channel: "memory", region: "last_third" },
+  brand_cue: { channel: "memory", region: "first_half" },
+  clarity: { channel: "cognitive_load", region: "global", invert: true },
+  cognitive_load: { channel: "cognitive_load", region: "global", invert: true },
+  pacing: { channel: "attention", region: "middle" },
+  offer_strength: { channel: "memory", region: "middle" },
+  audience_fit: { channel: "memory", region: "first_half" },
+  neural_attention: { channel: "attention", region: "global" },
+  memory: { channel: "memory", region: "global" }
+};
+
+function findEvidenceWindow(timeline, channel, region, invert = false) {
+  if (!Array.isArray(timeline) || timeline.length === 0) {
+    return null;
+  }
+  const indexes = timeline.map((_, i) => i);
+  let candidates = indexes;
+  const n = timeline.length;
+  if (region === "first_third") {
+    candidates = indexes.slice(0, Math.max(2, Math.ceil(n / 3)));
+  } else if (region === "first_half") {
+    candidates = indexes.slice(0, Math.max(2, Math.ceil(n / 2)));
+  } else if (region === "last_third") {
+    candidates = indexes.slice(Math.floor(n * 2 / 3));
+  } else if (region === "middle") {
+    candidates = indexes.slice(Math.floor(n / 3), Math.ceil(n * 2 / 3));
+  }
+  if (!candidates.length) candidates = indexes;
+  // Find the worst (lowest, or highest if inverted) point in the region; expand
+  // a small window around it so the user sees a span, not a single instant.
+  let worstIdx = candidates[0];
+  let worstValue = invert ? -Infinity : Infinity;
+  for (const i of candidates) {
+    const v = Number(timeline[i][channel]);
+    if (!Number.isFinite(v)) continue;
+    if (invert ? v > worstValue : v < worstValue) {
+      worstValue = v;
+      worstIdx = i;
+    }
+  }
+  const span = Math.max(1, Math.round(n / 6));
+  const lo = Math.max(0, worstIdx - Math.floor(span / 2));
+  const hi = Math.min(n - 1, lo + span);
+  const startSecond = Number(timeline[lo].second);
+  const endSecond = Number(timeline[hi].second);
+  return {
+    start_s: round(Math.min(startSecond, endSecond), 1),
+    end_s: round(Math.max(startSecond, endSecond), 1),
+    low_value: round(worstValue, 3),
+    channel
+  };
+}
+
+function expectedLiftFor(scoreKey, currentScore, targetScore) {
+  const weight = DIMENSION_WEIGHTS[scoreKey] ?? 0.05;
+  // Cognitive load contributes via the penalty term (above 62), not directly.
+  if (scoreKey === "cognitive_load") {
+    const currentPenalty = Math.max(0, currentScore - 62) * 0.08;
+    const targetPenalty = Math.max(0, targetScore - 62) * 0.08;
+    return round(Math.max(0, currentPenalty - targetPenalty), 1);
+  }
+  return round(Math.max(0, (targetScore - currentScore) * weight), 1);
+}
+
+function severityFromGap(gap) {
+  if (gap >= 14) return "high";
+  if (gap >= 6) return "medium";
+  return "low";
+}
+
+function suggestionsForVariant(asset, analysis, brief, ctx = {}) {
   const scores = analysis.scores;
-  const suggestions = [];
-  if (scores.hook < 70) {
-    suggestions.push({
+  const timeline = analysis.timeline || [];
+  const { winnerScores = scores, winnerAssetId = asset.id, isWinner = false } = ctx;
+
+  // For each dimension, compute (a) gap to the floor, (b) gap to the winner.
+  // The bigger of the two is the headline gap. A loser variant primarily
+  // wants edits that close the gap to the winner; a winner variant wants
+  // edits that close the gap to the floor.
+  const dimensionEntries = Object.keys(DIMENSION_FLOOR)
+    .map((key) => {
+      const current = Number(scores[key] ?? 0);
+      const winnerVal = Number(winnerScores[key] ?? current);
+      const floor = DIMENSION_FLOOR[key];
+      const gapToFloor = Math.max(0, floor - current);
+      const gapToWinner = isWinner ? 0 : Math.max(0, winnerVal - current);
+      const target = isWinner ? Math.max(floor, current + gapToFloor) : Math.max(floor, winnerVal);
+      const gap = Math.max(gapToFloor, gapToWinner);
+      const lift = expectedLiftFor(key, current, target);
+      return { key, current, winnerVal, floor, gap, gapToFloor, gapToWinner, target, lift };
+    })
+    .filter((entry) => entry.gap > 1.5 && entry.lift > 0.2);
+
+  // Special cognitive_load handling — only flag it if it's actually above the
+  // pain threshold of 62, where it starts to subtract from overall.
+  if (scores.cognitive_load > 62) {
+    const current = Number(scores.cognitive_load);
+    const winnerVal = Number(winnerScores.cognitive_load ?? current);
+    const target = Math.min(current, Math.min(60, winnerVal));
+    const gap = Math.max(0, current - target);
+    const lift = expectedLiftFor("cognitive_load", current, target);
+    if (gap > 1.5 && lift > 0.2) {
+      dimensionEntries.push({
+        key: "cognitive_load",
+        current,
+        winnerVal,
+        floor: 62,
+        gap,
+        gapToFloor: Math.max(0, current - 62),
+        gapToWinner: Math.max(0, current - winnerVal),
+        target,
+        lift
+      });
+    }
+  }
+
+  // Order edits by expected lift first — that's the answer to "what should I
+  // fix to move the overall score the most".
+  dimensionEntries.sort((a, b) => b.lift - a.lift);
+
+  const out = [];
+  // Cap per-variant — a winner deserves up to 4 edits, losers get 2 so the
+  // overall list stays focused on what we're shipping.
+  const cap = isWinner ? 4 : 2;
+  for (const entry of dimensionEntries.slice(0, cap)) {
+    const channelInfo = DIMENSION_TO_CHANNEL[entry.key];
+    const evidence = channelInfo
+      ? findEvidenceWindow(timeline, channelInfo.channel, channelInfo.region, Boolean(channelInfo.invert))
+      : null;
+    const detail = buildEditDetail(entry, asset, brief, evidence);
+    out.push({
       asset_id: asset.id,
-      target: "0-3 seconds / opening line",
-      severity: "high",
-      issue: "The opening does not create enough immediate tension or curiosity.",
-      suggested_edit: "Lead with the customer's painful before-state, a specific number, or a surprising claim before explaining the product.",
-      expected_effect: "Higher early attention and a clearer reason to keep watching or reading.",
-      draft_revision: draftHook(asset, brief)
+      score_key: entry.key,
+      target_kind: DIMENSION_KIND[entry.key] || entry.key,
+      target: detail.target,
+      severity: severityFromGap(entry.gap),
+      dimension_score: round(entry.current, 1),
+      compared_to_asset_id: isWinner ? null : winnerAssetId,
+      compared_score: isWinner ? null : round(entry.winnerVal, 1),
+      evidence_window: evidence,
+      expected_lift: entry.lift,
+      issue: detail.issue,
+      suggested_edit: detail.suggested_edit,
+      expected_effect: detail.expected_effect,
+      draft_revision: detail.draft_revision
     });
   }
-  if (scores.cta < 66) {
-    suggestions.push({
-      asset_id: asset.id,
-      target: "Final third",
-      severity: "medium",
-      issue: "The next step is too soft or missing.",
-      suggested_edit: "End with one direct action such as 'Try the starter kit today' or 'Shop the routine now'.",
-      expected_effect: "Reduces decision friction and improves conversion intent.",
-      draft_revision: draftCta(brief)
-    });
+  return out;
+}
+
+function formatWindow(evidence) {
+  if (!evidence) return null;
+  const same = Math.abs(evidence.end_s - evidence.start_s) < 0.05;
+  if (same) return `${evidence.start_s.toFixed(1)}s`;
+  return `${evidence.start_s.toFixed(1)}s–${evidence.end_s.toFixed(1)}s`;
+}
+
+function buildEditDetail(entry, asset, brief, evidence) {
+  const { key, current, winnerVal, gap, gapToWinner, lift } = entry;
+  const window = formatWindow(evidence);
+  const label = DIMENSION_LABEL[key] || key;
+  const isAsset = asset.type === "image" || asset.type === "landing_page";
+
+  // Generic, evidence-grounded scaffolding that every edit gets.
+  const evidenceClause = window
+    ? key === "cognitive_load"
+      ? `Predicted load peaks at ${window} (${Math.round((evidence.low_value || 0) * 100)}/100).`
+      : `Predicted ${evidence.channel.replace("_", " ")} dips to ${Math.round((evidence.low_value || 0) * 100)}/100 around ${window}.`
+    : `Current ${label} score is ${round(current, 1)}/100.`;
+  const comparisonClause = gapToWinner > 2
+    ? ` Leading variant scores ${round(winnerVal, 1)}.`
+    : "";
+
+  switch (key) {
+    case "hook":
+      return {
+        target: window ? `Opening · ${window}` : "Opening (first three seconds)",
+        issue: `${evidenceClause} The opening isn't earning attention fast enough.${comparisonClause}`,
+        suggested_edit: isAsset
+          ? "Lead with the painful before-state or a specific number above the fold — not the product name."
+          : "Lead with the customer's pain or a specific number in the first beat, before explaining the product.",
+        expected_effect: `Earlier attention; +${lift} pts on the composite score.`,
+        draft_revision: hookDraft(asset, brief)
+      };
+    case "neural_attention":
+      return {
+        target: window ? `Attention dip · ${window}` : "Attention curve",
+        issue: `${evidenceClause} Predicted viewer engagement drops here.${comparisonClause}`,
+        suggested_edit: "Tighten or cut the section above — re-cut to a payoff moment within two seconds.",
+        expected_effect: `Smoother attention curve; +${lift} pts on the composite score.`,
+        draft_revision: null
+      };
+    case "cta":
+      return {
+        target: window ? `Close · ${window}` : "Closing beat",
+        issue: `${evidenceClause} The next step is too soft, too late, or missing.${comparisonClause}`,
+        suggested_edit: brief.primary_offer
+          ? `Close with one direct action that names the offer (\"${brief.primary_offer}\") and the action verb.`
+          : "Close with one direct verb-led action (\"Try…\", \"Shop…\", \"Start…\") rather than a soft tagline.",
+        expected_effect: `Lower decision friction; +${lift} pts on the composite score.`,
+        draft_revision: ctaDraft(brief)
+      };
+    case "brand_cue":
+      return {
+        target: window ? `Brand window · ${window}` : "Brand introduction",
+        issue: `${evidenceClause} Brand ownership is weak — the message could be running for any competitor.${comparisonClause}`,
+        suggested_edit: brief.brand_name
+          ? `Plant \"${brief.brand_name}\" inside the first proof beat and again near the CTA.`
+          : "Plant the brand or product name in the first proof beat and again near the CTA.",
+        expected_effect: `Better recall on attention spend; +${lift} pts on the composite score.`,
+        draft_revision: brandDraft(brief)
+      };
+    case "clarity":
+      return {
+        target: window ? `Dense beat · ${window}` : "Dense passages",
+        issue: `${evidenceClause} The audience is being asked to process too much per beat.${comparisonClause}`,
+        suggested_edit: "Reduce each beat to one claim, one proof, one next step. Remove abstract filler.",
+        expected_effect: `Easier comprehension; +${lift} pts on the composite score.`,
+        draft_revision: null
+      };
+    case "cognitive_load":
+      return {
+        target: window ? `Load peak · ${window}` : "Highest-load section",
+        issue: `${evidenceClause} The audience is stacked on too many simultaneous claims here.${comparisonClause}`,
+        suggested_edit: "Split this section: move one supporting claim earlier and let this beat carry only the headline idea.",
+        expected_effect: `Lower processing load; reclaims ${lift} pts the load penalty was taking.`,
+        draft_revision: null
+      };
+    case "pacing":
+      return {
+        target: window ? `Middle · ${window}` : "Middle section",
+        issue: `${evidenceClause} The middle drags or compresses too much to land cleanly.${comparisonClause}`,
+        suggested_edit: "Shorten setup, move the strongest proof earlier, reserve the final beat for one CTA.",
+        expected_effect: `Holds attention through the close; +${lift} pts on the composite score.`,
+        draft_revision: null
+      };
+    case "offer_strength":
+      return {
+        target: window ? `Offer beat · ${window}` : "Offer beat",
+        issue: `${evidenceClause} The offer doesn't feel concrete — what someone gets isn't crisp.${comparisonClause}`,
+        suggested_edit: brief.primary_offer
+          ? `Name the offer (\"${brief.primary_offer}\") and pair it with one numeric benefit or proof point.`
+          : "Name the offer explicitly and pair it with one numeric benefit or proof point.",
+        expected_effect: `Clearer value exchange; +${lift} pts on the composite score.`,
+        draft_revision: brief.primary_offer
+          ? `${brief.primary_offer} — paired with one proof point that names the benefit in numbers.`
+          : null
+      };
+    case "audience_fit":
+      return {
+        target: window ? `Framing · ${window}` : "Audience framing",
+        issue: `${evidenceClause} The message isn't specific enough to who you're talking to.${comparisonClause}`,
+        suggested_edit: brief.audience
+          ? `Rewrite one early line so it directly names ${brief.audience} or their situation.`
+          : "Rewrite one early line so it directly names the audience or their situation.",
+        expected_effect: `Improves relevance; +${lift} pts on the composite score.`,
+        draft_revision: brief.audience ? `For ${brief.audience}, here's the easiest next step.` : null
+      };
+    case "memory":
+      return {
+        target: window ? `Memory low · ${window}` : "Memory encoding",
+        issue: `${evidenceClause} Nothing in this stretch is sticky enough to retain.${comparisonClause}`,
+        suggested_edit: "Anchor one beat to a repeatable phrase, a number, or a visual signature so it can be recalled later.",
+        expected_effect: `Stronger recall; +${lift} pts on the composite score.`,
+        draft_revision: null
+      };
+    default:
+      return {
+        target: window ? `${label} · ${window}` : label,
+        issue: `${evidenceClause}${comparisonClause}`,
+        suggested_edit: `Improve ${label}.`,
+        expected_effect: `+${lift} pts on the composite score.`,
+        draft_revision: null
+      };
   }
-  if (scores.brand_cue < 62) {
-    suggestions.push({
-      asset_id: asset.id,
-      target: "First half",
-      severity: "medium",
-      issue: "Brand ownership is weak.",
-      suggested_edit: "Add the brand or product name near the first proof point and repeat it close to the CTA.",
-      expected_effect: "Improves recall so attention compounds into brand memory.",
-      draft_revision: draftBrandLine(brief)
-    });
-  }
-  if (scores.cognitive_load > 66 || scores.clarity < 68) {
-    suggestions.push({
-      asset_id: asset.id,
-      target: "Dense sections",
-      severity: "high",
-      issue: "The creative asks the audience to process too much at once.",
-      suggested_edit: "Split long claims into one idea per beat and remove abstract filler words.",
-      expected_effect: "Lowers processing load and makes the strongest claim easier to remember.",
-      draft_revision: "Break this section into one claim, one proof point, and one next step."
-    });
-  }
-  if (scores.pacing < 66) {
-    suggestions.push({
-      asset_id: asset.id,
-      target: "Middle section",
-      severity: "low",
-      issue: "Pacing is likely to feel uneven for the format.",
-      suggested_edit: "Shorten setup, move proof earlier, and reserve the final beat for a single CTA.",
-      expected_effect: "Keeps attention from flattening after the hook.",
-      draft_revision: "Move the strongest proof point into the first half and cut any setup that repeats the same idea."
-    });
-  }
-  if (scores.offer_strength < 68 && brief.primary_offer) {
-    suggestions.push({
-      asset_id: asset.id,
-      target: "Offer beat",
-      severity: "medium",
-      issue: "The creative does not make the offer feel concrete enough.",
-      suggested_edit: `Name the offer directly: ${brief.primary_offer}. Pair it with one proof point or numeric benefit.`,
-      expected_effect: "Makes the value exchange easier to understand before the CTA.",
-      draft_revision: `${brief.primary_offer}: one simple way to get the benefit without rebuilding your routine.`
-    });
-  }
-  if (scores.audience_fit < 68 && brief.audience) {
-    suggestions.push({
-      asset_id: asset.id,
-      target: "Audience framing",
-      severity: "medium",
-      issue: "The message is not specific enough to the target audience.",
-      suggested_edit: `Rewrite one early line so it directly addresses ${brief.audience}.`,
-      expected_effect: "Improves relevance and reduces the feeling of a generic ad.",
-      draft_revision: `For ${brief.audience}, this should feel like the easiest next step.`
-    });
-  }
-  return suggestions;
+}
+
+function hookDraft(asset, brief) {
+  if (!brief.audience && !brief.brand_name) return null;
+  const audience = brief.audience || "your customer";
+  const brand = brief.brand_name || asset.name;
+  return `Stop making ${audience} work this hard. ${brand} gives them a faster path to the result.`;
+}
+
+function ctaDraft(brief) {
+  if (!brief.primary_offer) return null;
+  return `Try ${brief.primary_offer} today.`;
+}
+
+function brandDraft(brief) {
+  if (!brief.brand_name) return null;
+  const proof = brief.required_claims[0];
+  return proof ? `${brief.brand_name} — ${proof}.` : `${brief.brand_name}: the system behind the result.`;
 }
 
 function summarize(asset, scores) {
@@ -593,20 +881,6 @@ function summarize(asset, scores) {
   if (scores.memory >= 64) strengths.push("has memorable proof or brand cues");
   if (!strengths.length) strengths.push("needs a sharper first impression");
   return `${asset.name} ${strengths.join(", ")}.`;
-}
-
-function draftHook(asset, brief) {
-  const audience = brief.audience || "your target customer";
-  const brand = brief.brand_name || asset.name;
-  return `Stop making ${audience} work this hard. ${brand} gives them a faster path to the result.`;
-}
-
-function draftCta(brief) {
-  return `Try ${brief.primary_offer || "the starter option"} today.`;
-}
-
-function draftBrandLine(brief) {
-  return `${brief.brand_name || "the product"} is the system behind ${brief.required_claims[0] || "the proof point"}.`;
 }
 
 function timelineNote(attention, memory, load) {
