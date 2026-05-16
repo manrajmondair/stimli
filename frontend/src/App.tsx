@@ -1,25 +1,65 @@
+import { Suspense, lazy } from "react";
 import { Landing } from "./Landing";
-import { AppShell, InvitePage, LegalPage, SharedReportPage } from "./AppShell";
 import { BrainBlob } from "./art";
 
+// Code-split the non-landing surfaces. The Landing page is the dominant
+// entry point and used to pull in AppShell + Workbench + every secondary
+// view even though it doesn't render them. Lazy chunks keep the marketing
+// page's first paint cheap.
+const AppShell = lazy(() => import("./AppShell").then((m) => ({ default: m.AppShell })));
+const LegalPage = lazy(() => import("./AppShell").then((m) => ({ default: m.LegalPage })));
+const InvitePage = lazy(() => import("./AppShell").then((m) => ({ default: m.InvitePage })));
+const SharedReportPage = lazy(() => import("./AppShell").then((m) => ({ default: m.SharedReportPage })));
+
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ?? "";
+
+function RouteFallback() {
+  return (
+    <div className="paper-bg" style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+      <div style={{ textAlign: "center" }}>
+        <BrainBlob size={96} color="var(--tomato)" eyes mouth />
+        <p style={{ marginTop: 12, fontFamily: "var(--mono)", fontSize: 13, color: "var(--ink-soft)" }}>
+          Loading the workbench…
+        </p>
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const path = window.location.pathname;
 
   if (path === "/legal") {
-    return <LegalPage />;
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <LegalPage />
+      </Suspense>
+    );
   }
   const inviteMatch = path.match(/^\/invite\/([^/]+)$/);
   if (inviteMatch) {
-    return clerkPublishableKey ? <InvitePage token={inviteMatch[1]} /> : <AuthSetupNeeded />;
+    if (!clerkPublishableKey) return <AuthSetupNeeded />;
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <InvitePage token={inviteMatch[1]} />
+      </Suspense>
+    );
   }
   const shareMatch = path.match(/^\/share\/([^/]+)$/);
   if (shareMatch) {
-    return <SharedReportPage token={shareMatch[1]} />;
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <SharedReportPage token={shareMatch[1]} />
+      </Suspense>
+    );
   }
   if (path === "/app" || path.startsWith("/app/")) {
-    return clerkPublishableKey ? <AppShell /> : <AuthSetupNeeded />;
+    if (!clerkPublishableKey) return <AuthSetupNeeded />;
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <AppShell />
+      </Suspense>
+    );
   }
   return <Landing />;
 }
