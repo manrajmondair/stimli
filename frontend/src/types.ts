@@ -60,6 +60,36 @@ export type Recommendation = {
   reasons: string[];
 };
 
+export type SuggestionTargetKind =
+  | "hook"
+  | "cta"
+  | "brand"
+  | "offer"
+  | "clarity"
+  | "load"
+  | "pacing"
+  | "audience"
+  | "memory";
+
+export type SuggestionScoreKey =
+  | "hook"
+  | "clarity"
+  | "cta"
+  | "brand_cue"
+  | "pacing"
+  | "offer_strength"
+  | "audience_fit"
+  | "neural_attention"
+  | "memory"
+  | "cognitive_load";
+
+export type EvidenceWindow = {
+  start_s: number;
+  end_s: number;
+  low_value: number;
+  channel: "attention" | "memory" | "cognitive_load";
+};
+
 export type Suggestion = {
   asset_id: string;
   target: string;
@@ -67,7 +97,16 @@ export type Suggestion = {
   issue: string;
   suggested_edit: string;
   expected_effect: string;
-  draft_revision: string;
+  draft_revision: string | null;
+  // New structured fields (optional for backwards compat with older comparisons
+  // already persisted in Postgres before the analysis rewrite landed).
+  score_key?: SuggestionScoreKey;
+  target_kind?: SuggestionTargetKind;
+  dimension_score?: number;
+  compared_to_asset_id?: string | null;
+  compared_score?: number | null;
+  evidence_window?: EvidenceWindow | null;
+  expected_lift?: number;
 };
 
 export type CreativeBrief = {

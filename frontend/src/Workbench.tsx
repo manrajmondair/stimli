@@ -21,6 +21,7 @@ import type {
   Comparison,
   CreativeBrief,
   ScoreBreakdown,
+  Suggestion,
   TimelinePoint,
   VariantResult
 } from "./types";
@@ -1643,13 +1644,42 @@ function Result({
           </div>
           <ul className="edit-list">
             {editEntries(comparison, winner).map((entry, i) => {
-              const accent = accentForTarget(entry.target);
+              const accent = entry.accent;
               return (
                 <li key={i} style={{ ["--accent" as string]: accent } as CSSProperties}>
                   <span className="edit-num">{String(i + 1).padStart(2, "0")}</span>
-                  <div>
-                    <strong>{entry.title}</strong>
+                  <div className="edit-body">
+                    <div className="edit-headline">
+                      <strong>{entry.title}</strong>
+                      <span className={`edit-severity sev-${entry.severity}`}>{entry.severity}</span>
+                    </div>
                     <p>{entry.detail}</p>
+                    <div className="edit-meta">
+                      {entry.windowLabel && (
+                        <span className="edit-chip edit-chip-window">
+                          <strong>{entry.windowLabel}</strong>
+                          <span>{entry.windowDetail}</span>
+                        </span>
+                      )}
+                      {entry.scoreLabel && (
+                        <span className="edit-chip edit-chip-score">
+                          <strong>{entry.scoreLabel}</strong>
+                          <span>{entry.scoreDetail}</span>
+                        </span>
+                      )}
+                      {entry.liftLabel && (
+                        <span className="edit-chip edit-chip-lift">
+                          <strong>{entry.liftLabel}</strong>
+                          <span>est. lift on composite</span>
+                        </span>
+                      )}
+                    </div>
+                    {entry.draft && (
+                      <details className="edit-draft">
+                        <summary>Draft revision</summary>
+                        <p>{entry.draft}</p>
+                      </details>
+                    )}
                   </div>
                   <BrainBlob size={36} color={accent} />
                 </li>
@@ -1778,73 +1808,174 @@ function trailScoresFor(variant: VariantResult): {
   };
 }
 
-function accentForTarget(target: string): string {
-  const t = target.toLowerCase();
-  if (t.includes("hook") || t.includes("first")) return "var(--tomato)";
-  if (t.includes("cta") || t.includes("offer")) return "var(--butter)";
-  if (t.includes("brand")) return "var(--pistachio)";
-  if (t.includes("load") || t.includes("density") || t.includes("clarity")) return "var(--plum)";
-  return "var(--tomato)";
+type EditEntry = {
+  title: string;
+  detail: string;
+  severity: "low" | "medium" | "high";
+  accent: string;
+  windowLabel: string | null;
+  windowDetail: string | null;
+  scoreLabel: string | null;
+  scoreDetail: string | null;
+  liftLabel: string | null;
+  draft: string | null;
+};
+
+const ACCENT_BY_KIND: Record<string, string> = {
+  hook: "var(--tomato)",
+  cta: "var(--butter)",
+  brand: "var(--pistachio)",
+  offer: "var(--butter)",
+  clarity: "var(--plum)",
+  load: "var(--plum)",
+  pacing: "var(--tomato-ink)",
+  audience: "var(--pistachio)",
+  memory: "var(--pistachio)"
+};
+
+const TITLE_BY_KIND: Record<string, string> = {
+  hook: "Sharpen the hook.",
+  cta: "Tighten the CTA.",
+  brand: "Plant the brand earlier.",
+  offer: "Re-stage the offer.",
+  clarity: "Cut the clutter.",
+  load: "Ease the cognitive load.",
+  pacing: "Re-pace the middle.",
+  audience: "Make it about them.",
+  memory: "Make it stickier."
+};
+
+const CHANNEL_LABEL: Record<string, string> = {
+  attention: "Attention",
+  memory: "Memory",
+  cognitive_load: "Load"
+};
+
+function formatSeconds(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(1) : "0.0";
 }
 
-function editEntries(comparison: Comparison, winner: VariantResult): Array<{ title: string; detail: string; target: string }> {
+function editEntries(comparison: Comparison, winner: VariantResult): EditEntry[] {
   if (comparison.suggestions.length > 0) {
-    return comparison.suggestions.slice(0, 4).map((entry) => ({
-      title: titleForTarget(entry.target, entry.severity),
-      detail: entry.suggested_edit || entry.issue,
-      target: entry.target
-    }));
+    return comparison.suggestions.slice(0, 4).map((entry) => buildEntryFromSuggestion(entry, winner));
   }
   return fallbackEdits(winner);
 }
 
-function titleForTarget(target: string, severity: string): string {
-  const t = target.toLowerCase();
-  if (t.includes("hook")) return "Sharpen the hook.";
-  if (t.includes("cta")) return "Tighten the CTA.";
-  if (t.includes("brand")) return "Plant the brand earlier.";
-  if (t.includes("offer")) return "Re-stage the offer.";
-  if (t.includes("clarity")) return "Cut the clutter.";
-  if (t.includes("load") || t.includes("density")) return "Ease the cognitive load.";
+function buildEntryFromSuggestion(entry: Suggestion, winner: VariantResult): EditEntry {
+  const kind = (entry.target_kind ?? inferKind(entry)) || "hook";
+  const accent = ACCENT_BY_KIND[kind] ?? "var(--tomato)";
+  const title = TITLE_BY_KIND[kind] ?? defaultTitle(entry.severity);
+  const detail = entry.suggested_edit || entry.issue;
+  const window = entry.evidence_window ?? null;
+  const windowLabel = window ? `${formatSeconds(window.start_s)}s – ${formatSeconds(window.end_s)}s` : null;
+  const channelName = window ? CHANNEL_LABEL[window.channel] ?? window.channel : null;
+  const windowDetail = window && channelName
+    ? `${channelName} ${Math.round((window.low_value ?? 0) * 100)}/100 in this window`
+    : null;
+
+  const scoreLabel = entry.dimension_score != null ? `${Math.round(entry.dimension_score)}/100` : null;
+  const scoreDetail = entry.compared_score != null && entry.compared_to_asset_id && entry.compared_to_asset_id !== entry.asset_id
+    ? `leader at ${Math.round(entry.compared_score)}`
+    : "current score";
+
+  const liftValue = entry.expected_lift;
+  const liftLabel = liftValue != null && liftValue > 0 ? `+${liftValue.toFixed(1)} pts` : null;
+  const draft = entry.draft_revision && entry.draft_revision.trim().length > 0 ? entry.draft_revision : null;
+
+  const ownerLabel = entry.asset_id === winner.asset.id ? "" : " (on a non-winning variant)";
+  const detailWithOwner = ownerLabel ? `${detail}${ownerLabel}` : detail;
+
+  return {
+    title,
+    detail: detailWithOwner,
+    severity: entry.severity,
+    accent,
+    windowLabel,
+    windowDetail,
+    scoreLabel,
+    scoreDetail,
+    liftLabel,
+    draft
+  };
+}
+
+function inferKind(entry: Suggestion): EditEntry["title"] | string {
+  // Best-effort fallback for legacy suggestions persisted before the
+  // analysis rewrite — derive a kind from score_key or the old target text.
+  if (entry.score_key) {
+    if (entry.score_key === "hook" || entry.score_key === "neural_attention") return "hook";
+    if (entry.score_key === "cta") return "cta";
+    if (entry.score_key === "brand_cue") return "brand";
+    if (entry.score_key === "offer_strength") return "offer";
+    if (entry.score_key === "clarity") return "clarity";
+    if (entry.score_key === "cognitive_load") return "load";
+    if (entry.score_key === "pacing") return "pacing";
+    if (entry.score_key === "audience_fit") return "audience";
+    if (entry.score_key === "memory") return "memory";
+  }
+  const t = (entry.target || "").toLowerCase();
+  if (t.includes("hook") || t.includes("opening") || t.includes("first")) return "hook";
+  if (t.includes("cta") || t.includes("close")) return "cta";
+  if (t.includes("brand")) return "brand";
+  if (t.includes("offer")) return "offer";
+  if (t.includes("clarity") || t.includes("dense")) return "clarity";
+  if (t.includes("load")) return "load";
+  if (t.includes("pacing") || t.includes("middle")) return "pacing";
+  if (t.includes("audience") || t.includes("framing")) return "audience";
+  if (t.includes("memory")) return "memory";
+  return "hook";
+}
+
+function defaultTitle(severity: string): string {
   return severity === "high" ? "Address before launch." : "Worth a tweak.";
 }
 
-function fallbackEdits(variant: VariantResult): Array<{ title: string; detail: string; target: string }> {
-  const list: Array<{ title: string; detail: string; target: string }> = [];
+function fallbackEdits(variant: VariantResult): EditEntry[] {
+  // Used only when the comparison returned zero suggestions (effectively
+  // never with the new analysis, but kept for resilience).
+  const list: EditEntry[] = [];
   const scores = variant.analysis.scores;
   if (readScore(scores, "hook") < 80) {
     list.push({
-      title: "Sharpen the first 3 seconds.",
+      title: TITLE_BY_KIND.hook,
       detail: "Move the pain into the first frame so the hook lands inside the attention window.",
-      target: "hook"
+      severity: "high",
+      accent: ACCENT_BY_KIND.hook,
+      windowLabel: null,
+      windowDetail: null,
+      scoreLabel: `${Math.round(readScore(scores, "hook"))}/100`,
+      scoreDetail: "current score",
+      liftLabel: null,
+      draft: null
     });
   }
   if (readScore(scores, "cta") < 80) {
     list.push({
-      title: "End on the offer, not the brand.",
+      title: TITLE_BY_KIND.cta,
       detail: "Replace the close with the explicit starter-kit CTA.",
-      target: "cta"
-    });
-  }
-  if (readScore(scores, "brand_cue") < 80) {
-    list.push({
-      title: "Plant the brand cue earlier.",
-      detail: "Bring the logo or product silhouette into the first beat.",
-      target: "brand"
-    });
-  }
-  if (readScore(scores, "cognitive_load") > 50) {
-    list.push({
-      title: "Ease the offer reveal.",
-      detail: "Trim the claim list to two so the load curve relaxes through the close.",
-      target: "load"
+      severity: "medium",
+      accent: ACCENT_BY_KIND.cta,
+      windowLabel: null,
+      windowDetail: null,
+      scoreLabel: `${Math.round(readScore(scores, "cta"))}/100`,
+      scoreDetail: "current score",
+      liftLabel: null,
+      draft: null
     });
   }
   if (list.length === 0) {
     list.push({
       title: "Ready to ship.",
-      detail: "All four signals clear thresholds. Launch with confidence.",
-      target: "ship"
+      detail: "All signals clear thresholds. Launch with confidence.",
+      severity: "low",
+      accent: "var(--pistachio)",
+      windowLabel: null,
+      windowDetail: null,
+      scoreLabel: null,
+      scoreDetail: null,
+      liftLabel: null,
+      draft: null
     });
   }
   return list.slice(0, 4);
