@@ -957,13 +957,6 @@ function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; o
         </div>
       ) : null}
 
-      {!billingConfigured ? (
-        <div className="banner" role="status">
-          Stripe billing isn&apos;t configured on this deployment yet. Plan limits still apply; upgrade buttons will go live as
-          soon as the workspace owner sets <code>STRIPE_SECRET_KEY</code> and the price ids.
-        </div>
-      ) : null}
-
       {usage ? <BillingUsageSummary usage={usage} onRefresh={onUsageRefresh} /> : null}
 
       <div className="pricing-grid">
@@ -983,10 +976,6 @@ function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; o
         <p className="hint">
           Prices are in USD and billed monthly via Stripe. Cancel any time from the customer portal — your plan stays active
           until the end of the billing cycle.
-        </p>
-        <p className="hint">
-          License mode: <code>{status.license.mode}</code> · provider <code>{status.license.provider}</code>
-          {status.license.tribe_commercial_license ? " · TRIBE commercial license active" : ""}
         </p>
       </div>
     </>
