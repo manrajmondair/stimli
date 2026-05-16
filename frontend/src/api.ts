@@ -250,10 +250,21 @@ export async function getBillingStatus(): Promise<BillingStatus> {
 
 export type UsageSnapshot = {
   plan: Plan;
+  subscription: {
+    plan: "research" | "growth" | "scale";
+    status: string;
+    current_period_start: string | null;
+    current_period_end: string | null;
+    cancel_at_period_end: boolean;
+    trial_end: string | null;
+  } | null;
   billing_configured: boolean;
   commercial_use_enabled: boolean;
   limits: { asset: number; comparison: number };
+  monthly_limits: { asset: number; comparison: number };
+  period: { start: string; end: string; source: "stripe" | "calendar_month" };
   usage: { window_ms: number; comparison: number; asset: number };
+  monthly_usage: { comparison: number; asset: number };
 };
 
 export async function getBillingUsage(): Promise<UsageSnapshot> {
@@ -481,10 +492,47 @@ export async function acceptInvite(token: string): Promise<AuthSession> {
   return session;
 }
 
+// Structured error thrown on any non-2xx so callers can branch on status and
+// code without parsing message strings. Quota responses (HTTP 402, code
+// "quota_exceeded") carry a `details` object the upgrade modal reads to fill
+// in the plan, limit, used count, and reset_at fields.
+export class StimliApiError extends Error {
+  status: number;
+  code: string | null;
+  details: Record<string, unknown> | null;
+  constructor(message: string, status: number, code: string | null, details: Record<string, unknown> | null) {
+    super(message);
+    this.name = "StimliApiError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const raw = await response.text();
-    throw new Error(extractErrorMessage(raw) || `Request failed with ${response.status}`);
+    let parsed: unknown = null;
+    try {
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch {
+      /* keep parsed null */
+    }
+    const message = extractErrorMessage(raw) || `Request failed with ${response.status}`;
+    const code =
+      parsed && typeof parsed === "object" && parsed && "code" in parsed && typeof (parsed as { code: unknown }).code === "string"
+        ? ((parsed as { code: string }).code)
+        : null;
+    const details =
+      parsed && typeof parsed === "object" && parsed && "details" in parsed && typeof (parsed as { details: unknown }).details === "object"
+        ? ((parsed as { details: Record<string, unknown> }).details)
+        : null;
+    // Quota responses get a global event so the shell can swap to the Billing
+    // view without each call site having to remember to handle the case.
+    if (response.status === 402 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("stimli:upgrade-required", { detail: { code, details } }));
+    }
+    throw new StimliApiError(message, response.status, code, details);
   }
   return response.json() as Promise<T>;
 }

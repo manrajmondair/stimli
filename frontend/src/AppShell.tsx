@@ -8,6 +8,7 @@ import {
   deleteAsset,
   deleteBrandProfile,
   exportBrandProfile,
+  getBillingStatus,
   getBillingUsage,
   getInvite,
   getLearningSummary,
@@ -20,12 +21,15 @@ import {
   listTeamInvites,
   listTeamMembers,
   listWorkspaceOutcomes,
+  openBillingPortal,
   removeTeamMember,
   revokeTeamInvite,
+  startCheckout,
   updateBrandProfile,
   updateTeamMemberRole,
   type UsageSnapshot
 } from "./api";
+import type { BillingStatus, Plan } from "./types";
 import type {
   AssetType,
   AuditEvent,
@@ -142,14 +146,15 @@ function ConfirmDialog({
   );
 }
 
-type View = "workbench" | "library" | "brands" | "outcomes" | "team";
+type View = "workbench" | "library" | "brands" | "outcomes" | "team" | "billing";
 
 const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
   { id: "workbench", label: "Workbench", color: "var(--tomato)" },
   { id: "library", label: "Library", color: "var(--pistachio)" },
   { id: "brands", label: "Brands", color: "var(--butter)" },
   { id: "outcomes", label: "Outcomes", color: "var(--plum)" },
-  { id: "team", label: "Team", color: "var(--ink)" }
+  { id: "team", label: "Team", color: "var(--ink)" },
+  { id: "billing", label: "Billing", color: "var(--pistachio)" }
 ];
 
 export function AppShell() {
@@ -214,6 +219,25 @@ export function AppShell() {
     };
   }, [clerkLoaded, isSignedIn, view]);
 
+  // Honor `?billing=upgrade` (sent by the structured 402 path) and
+  // `?billing=success` (Stripe Checkout return) so the user lands directly on
+  // the Billing view instead of having to find it in the sidebar.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const billingFlag = url.searchParams.get("billing");
+    if (billingFlag === "upgrade" || billingFlag === "success" || billingFlag === "cancelled") {
+      setView("billing");
+    }
+    // Listen for quota-exceeded events fired from api.ts so any 402 anywhere
+    // in the app routes the user to the Billing view to upgrade.
+    function onQuota() {
+      setView("billing");
+    }
+    window.addEventListener("stimli:upgrade-required", onQuota);
+    return () => window.removeEventListener("stimli:upgrade-required", onQuota);
+  }, []);
+
   async function refreshSession() {
     try {
       const next = await getSession();
@@ -265,6 +289,9 @@ export function AppShell() {
         {view === "team" ? (
           <TeamView session={session} onUpdate={refreshSession} />
         ) : null}
+        {view === "billing" ? (
+          <BillingView usage={usage} onUsageRefresh={() => getBillingUsage().then(setUsage).catch(() => undefined)} />
+        ) : null}
       </main>
 
       {paletteOpen ? (
@@ -294,7 +321,8 @@ const PALETTE_NAV: Array<{ id: View; label: string; hint: string; icon: string }
   { id: "library", label: "Go to Library", hint: "Saved variants + bulk actions", icon: "❒" },
   { id: "brands", label: "Go to Brands", hint: "Re-usable briefs", icon: "✺" },
   { id: "outcomes", label: "Go to Outcomes", hint: "Calibration vs real spend", icon: "$" },
-  { id: "team", label: "Go to Team", hint: "Members, invites, audit log", icon: "◐" }
+  { id: "team", label: "Go to Team", hint: "Members, invites, audit log", icon: "◐" },
+  { id: "billing", label: "Go to Billing", hint: "Plan, usage, invoices", icon: "$" }
 ];
 
 type PaletteCommand = {
@@ -693,12 +721,19 @@ function WhatsNewModal({ onClose }: { onClose: () => void }) {
 }
 
 function UsageBadge({ usage }: { usage: UsageSnapshot }) {
-  const compUsed = usage.usage.comparison;
-  const compLimit = usage.limits.comparison || 0;
-  const compRatio = compLimit > 0 ? Math.min(1, compUsed / compLimit) : 0;
-  const assetUsed = usage.usage.asset;
-  const assetLimit = usage.limits.asset || 0;
-  const assetRatio = assetLimit > 0 ? Math.min(1, assetUsed / assetLimit) : 0;
+  // Show monthly progress as the headline (that's the real quota a customer
+  // hits), and keep an hourly micro-meter underneath so they can spot a burst
+  // before it locks them out. Falls back gracefully if the server doesn't
+  // surface monthly numbers yet (older deploys / preview envs).
+  const monthlyComp = usage.monthly_usage?.comparison ?? 0;
+  const monthlyCompLimit = usage.monthly_limits?.comparison ?? 0;
+  const monthlyCompRatio = monthlyCompLimit > 0 ? Math.min(1, monthlyComp / monthlyCompLimit) : 0;
+  const monthlyAsset = usage.monthly_usage?.asset ?? 0;
+  const monthlyAssetLimit = usage.monthly_limits?.asset ?? 0;
+  const monthlyAssetRatio = monthlyAssetLimit > 0 ? Math.min(1, monthlyAsset / monthlyAssetLimit) : 0;
+  const compHour = usage.usage.comparison;
+  const compHourLimit = usage.limits.comparison || 0;
+  const compHourRatio = compHourLimit > 0 ? Math.min(1, compHour / compHourLimit) : 0;
   const planLabel = usage.plan?.name || usage.plan?.id || "Research";
   const commercial = usage.commercial_use_enabled || usage.plan?.commercial;
   const planStyle = planLabel.toLowerCase().includes("scale")
@@ -706,6 +741,10 @@ function UsageBadge({ usage }: { usage: UsageSnapshot }) {
     : planLabel.toLowerCase().includes("growth")
     ? "var(--pistachio)"
     : "var(--butter)";
+  const resetIso = usage.period?.end;
+  const resetLabel = resetIso
+    ? new Date(resetIso).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : null;
   return (
     <div className="usage-badge" role="region" aria-label="Workspace usage">
       <div className="usage-badge-head">
@@ -716,10 +755,21 @@ function UsageBadge({ usage }: { usage: UsageSnapshot }) {
           {commercial ? "commercial" : "research"}
         </span>
       </div>
-      <UsageMeter label="Comparisons" used={compUsed} limit={compLimit} ratio={compRatio} />
-      <UsageMeter label="Assets" used={assetUsed} limit={assetLimit} ratio={assetRatio} />
+      <UsageMeter
+        label="Comparisons this month"
+        used={monthlyComp}
+        limit={monthlyCompLimit}
+        ratio={monthlyCompRatio}
+      />
+      <UsageMeter
+        label="Assets this month"
+        used={monthlyAsset}
+        limit={monthlyAssetLimit}
+        ratio={monthlyAssetRatio}
+      />
+      <UsageMeter label="Comparisons / hr" used={compHour} limit={compHourLimit} ratio={compHourRatio} />
       <p className="hint usage-window">
-        Resets hourly · upgrade for higher limits
+        {resetLabel ? `Resets ${resetLabel} · ` : ""}upgrade for higher limits
       </p>
     </div>
   );
@@ -744,6 +794,285 @@ function UsageMeter({ label, used, limit, ratio }: { label: string; used: number
           style={{ width: `${Math.max(2, Math.round(ratio * 100))}%`, background: fillColor }}
         />
       </div>
+    </div>
+  );
+}
+
+function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; onUsageRefresh: () => void }) {
+  const [status, setStatus] = useState<BillingStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyPlan, setBusyPlan] = useState<string | null>(null);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [banner, setBanner] = useState<{ kind: "success" | "info" | "warn"; message: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getBillingStatus()
+      .then((next) => {
+        if (!cancelled) {
+          setStatus(next);
+          setError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load billing.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const flag = url.searchParams.get("billing");
+    if (flag === "success") {
+      setBanner({ kind: "success", message: "Subscription updated. Welcome aboard." });
+    } else if (flag === "cancelled") {
+      setBanner({ kind: "info", message: "Checkout cancelled. Your plan was not changed." });
+    } else if (flag === "upgrade") {
+      setBanner({ kind: "warn", message: "You hit a usage limit. Pick a plan to keep shipping." });
+    }
+    if (flag) {
+      url.searchParams.delete("billing");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
+
+  async function handleSelectPlan(plan: Plan) {
+    if (busyPlan) return;
+    setBusyPlan(plan.id);
+    try {
+      const session = await startCheckout(plan.id);
+      if (session?.url) {
+        window.location.assign(session.url);
+        return;
+      }
+      setBanner({ kind: "warn", message: "Stripe did not return a checkout URL. Try again." });
+    } catch (err) {
+      setBanner({ kind: "warn", message: err instanceof Error ? err.message : "Checkout failed." });
+    } finally {
+      setBusyPlan(null);
+    }
+  }
+
+  async function handleManageSubscription() {
+    if (portalBusy) return;
+    setPortalBusy(true);
+    try {
+      const session = await openBillingPortal();
+      if (session?.url) {
+        window.location.assign(session.url);
+        return;
+      }
+      setBanner({ kind: "warn", message: "Stripe did not return a portal URL." });
+    } catch (err) {
+      setBanner({ kind: "warn", message: err instanceof Error ? err.message : "Could not open billing portal." });
+    } finally {
+      setPortalBusy(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <>
+        <header className="wb-top">
+          <div className="wb-top-left">
+            <h1 className="wb-h1">
+              <span className="hl-pist">Billing</span>
+            </h1>
+            <span className="wb-crumbs"><span className="pill">Loading plan and usage…</span></span>
+          </div>
+        </header>
+      </>
+    );
+  }
+  if (error || !status) {
+    return (
+      <>
+        <header className="wb-top">
+          <div className="wb-top-left">
+            <h1 className="wb-h1">
+              <span className="hl-pist">Billing</span>
+            </h1>
+            <span className="wb-crumbs"><span className="pill">{error || "Billing is unavailable right now."}</span></span>
+          </div>
+        </header>
+      </>
+    );
+  }
+
+  const currentPlanId = status.current_plan.id;
+  const customerExists = Boolean(usage?.subscription || status.subscription);
+  const billingConfigured = status.billing_configured;
+
+  return (
+    <>
+      <header className="wb-top">
+        <div className="wb-top-left">
+          <h1 className="wb-h1">
+            Plans &amp; <span className="hl-pist">usage</span>
+          </h1>
+          <span className="wb-crumbs">
+            <span className="pill">{status.current_plan.name} plan</span>
+            <span className="pill">
+              {status.commercial_use_enabled ? "commercial-ready" : "research-only"}
+            </span>
+          </span>
+        </div>
+        <div className="wb-top-right">
+          {customerExists && billingConfigured ? (
+            <button type="button" className="btn ghost" onClick={handleManageSubscription} disabled={portalBusy}>
+              {portalBusy ? "Opening…" : "Manage subscription"}
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      {banner ? (
+        <div className={`banner ${banner.kind === "success" ? "ok" : banner.kind === "warn" ? "error" : ""}`} role="status">
+          {banner.message}
+        </div>
+      ) : null}
+
+      {usage ? <BillingUsageSummary usage={usage} onRefresh={onUsageRefresh} /> : null}
+
+      <div className="pricing-grid">
+        {status.plans.map((plan) => (
+          <PlanCard
+            key={plan.id}
+            plan={plan}
+            current={plan.id === currentPlanId}
+            busy={busyPlan === plan.id}
+            billingConfigured={billingConfigured}
+            onSelect={() => handleSelectPlan(plan)}
+          />
+        ))}
+      </div>
+
+      <div className="billing-footnote">
+        <p className="hint">
+          Prices are in USD and billed monthly via Stripe. Cancel any time from the customer portal — your plan stays active
+          until the end of the billing cycle.
+        </p>
+        <p className="hint">
+          License mode: <code>{status.license.mode}</code> · provider <code>{status.license.provider}</code>
+          {status.license.tribe_commercial_license ? " · TRIBE commercial license active" : ""}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function BillingUsageSummary({ usage, onRefresh }: { usage: UsageSnapshot; onRefresh: () => void }) {
+  const period = usage.period;
+  const monthlyComp = usage.monthly_usage.comparison;
+  const monthlyAsset = usage.monthly_usage.asset;
+  const compLimit = usage.monthly_limits.comparison;
+  const assetLimit = usage.monthly_limits.asset;
+  const compRatio = compLimit > 0 ? Math.min(1, monthlyComp / compLimit) : 0;
+  const assetRatio = assetLimit > 0 ? Math.min(1, monthlyAsset / assetLimit) : 0;
+  const reset = period?.end ? new Date(period.end) : null;
+  const subscription = usage.subscription;
+
+  return (
+    <div className="billing-usage-card">
+      <div className="billing-usage-head">
+        <div>
+          <strong>This billing period</strong>
+          {reset ? (
+            <p className="hint">
+              Resets {reset.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
+              {period.source === "calendar_month" ? " (calendar month)" : ""}
+            </p>
+          ) : null}
+        </div>
+        <div className="billing-usage-actions">
+          <button type="button" className="btn ghost small" onClick={onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div className="billing-usage-meters">
+        <UsageMeter label="Comparisons this month" used={monthlyComp} limit={compLimit} ratio={compRatio} />
+        <UsageMeter label="Assets this month" used={monthlyAsset} limit={assetLimit} ratio={assetRatio} />
+      </div>
+      {subscription && subscription.status !== "active" ? (
+        <p className="hint" style={{ marginTop: 12 }}>
+          Subscription status: <code>{subscription.status}</code>
+          {subscription.cancel_at_period_end ? " · scheduled to cancel at period end" : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function PlanCard({
+  plan,
+  current,
+  busy,
+  billingConfigured,
+  onSelect
+}: {
+  plan: Plan;
+  current: boolean;
+  busy: boolean;
+  billingConfigured: boolean;
+  onSelect: () => void;
+}) {
+  const price = plan.price_cents_monthly ?? 0;
+  const priceLabel = price > 0 ? `$${(price / 100).toFixed(0)}` : "Free";
+  const canUpgrade = !current && plan.id !== "research" && plan.configured && billingConfigured;
+  const cta = current
+    ? "Current plan"
+    : plan.id === "research"
+    ? "Default plan"
+    : !plan.configured
+    ? "Coming soon"
+    : !billingConfigured
+    ? "Billing offline"
+    : `Upgrade to ${plan.name}`;
+
+  return (
+    <div className={`plan-card ${current ? "current" : ""}`}>
+      <div className="plan-card-head">
+        <h2>{plan.name}</h2>
+        {plan.tagline ? <p className="hint">{plan.tagline}</p> : null}
+      </div>
+      <div className="plan-card-price">
+        <span className="plan-price-amount">{priceLabel}</span>
+        {price > 0 ? <span className="plan-price-period">/month</span> : null}
+      </div>
+      <ul className="plan-card-features">
+        <li>
+          <strong>{plan.comparison_limit_per_month ?? 0}</strong> comparisons / month
+        </li>
+        <li>
+          <strong>{plan.asset_limit_per_month ?? 0}</strong> assets / month
+        </li>
+        <li>
+          <strong>{plan.seats ?? 1}</strong> {plan.seats === 1 ? "seat" : "seats"}
+        </li>
+        <li>
+          <strong>{plan.retention_days ?? 30}</strong>-day history retention
+        </li>
+        {(plan.features || []).map((feature) => (
+          <li key={feature}>{feature}</li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className={`btn ${current ? "ghost" : "primary"}`}
+        onClick={onSelect}
+        disabled={!canUpgrade || busy}
+      >
+        {busy ? "Redirecting…" : cta}
+      </button>
     </div>
   );
 }

@@ -213,14 +213,31 @@ export type BrainProviderHealth = {
 export type Plan = {
   id: "research" | "growth" | "scale";
   name: string;
+  tagline?: string;
+  price_cents_monthly?: number;
+  seats?: number;
   asset_limit_per_hour: number;
   comparison_limit_per_hour: number;
+  asset_limit_per_month?: number;
+  comparison_limit_per_month?: number;
+  retention_days?: number;
+  features?: string[];
   commercial: boolean;
   configured: boolean;
 };
 
+export type SubscriptionSummary = {
+  plan: "research" | "growth" | "scale";
+  status: string;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  trial_end: string | null;
+};
+
 export type BillingStatus = {
   current_plan: Plan;
+  subscription: SubscriptionSummary | null;
   billing_configured: boolean;
   commercial_use_enabled: boolean;
   license: {
