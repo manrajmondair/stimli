@@ -506,6 +506,8 @@ function Sidebar({
       </nav>
 
       {signedIn && usage ? <UsageBadge usage={usage} /> : null}
+      <WhatsNewButton />
+
 
       {signedIn ? (
         <div className="side-tip side-tip-account" style={{ alignItems: "stretch", textAlign: "left" }}>
@@ -566,6 +568,127 @@ function Sidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+const CHANGELOG_VERSION = "2026-05-16";
+const CHANGELOG_KEY = "stimli.changelog_seen";
+
+type ChangelogEntry = { title: string; body: string };
+const CHANGELOG: ChangelogEntry[] = [
+  {
+    title: "Real predicted-brain-response chart",
+    body: "The Thought-trail now plots the actual per-second timeline from the inference provider. New NeuralTimeline panel below it shows the full chart with proper axes, multi-variant overlay, keyboard scrubbing, channel toggles, and live read-outs."
+  },
+  {
+    title: "Evidence-grounded edit list",
+    body: "Every edit card now carries the measured evidence: the time window driving the gap, the dimension score with the leader's delta, and an expected composite-lift figure. No more 'Address before launch' templated filler."
+  },
+  {
+    title: "Shared report = full report",
+    body: "The /share/:token page now renders the neural timeline, variant grid, edit chips, and a verdict pill. New 'Print / PDF' action on both the workbench result and shared report so anyone can hand a printable report to a stakeholder."
+  },
+  {
+    title: "Command palette (⌘K)",
+    body: "Press ⌘K (or Ctrl+K) anywhere in the app to jump between views, open account settings, hit the GitHub repo, or sign in. Up/Down to navigate, Enter to fire, Esc to close."
+  },
+  {
+    title: "Workspace usage meter",
+    body: "Sidebar now shows your current plan, hourly comparison and asset counters, and an at-a-glance bar that goes tomato above 85% of the hourly cap."
+  },
+  {
+    title: "Library search + bulk delete",
+    body: "Search variants by name, body text, or URL. Select multiple and delete in one go, with confirm. The select-all shortcut flips between 'select all visible' and 'clear selection'."
+  },
+  {
+    title: "Outcomes CSV export + audit search",
+    body: "Outcomes view exports a single CSV with RFC 4180 quoting and derived CTR / CVR columns. The audit log gained a search box, an action filter built from live data, and a Show-all toggle."
+  }
+];
+
+function WhatsNewButton() {
+  const [open, setOpen] = useState(false);
+  const [hasUnseen, setHasUnseen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const seen = window.localStorage.getItem(CHANGELOG_KEY);
+    setHasUnseen(seen !== CHANGELOG_VERSION);
+  }, []);
+
+  function openModal() {
+    setOpen(true);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(CHANGELOG_KEY, CHANGELOG_VERSION);
+    }
+    setHasUnseen(false);
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`whatsnew-btn ${hasUnseen ? "has-unseen" : ""}`}
+        onClick={openModal}
+        aria-label="What's new in Stimli"
+      >
+        <span aria-hidden="true" className="whatsnew-icon">
+          ✺
+        </span>
+        <span>What's new</span>
+        {hasUnseen ? <span className="whatsnew-dot" aria-label="unread updates" /> : null}
+      </button>
+      {open ? <WhatsNewModal onClose={() => setOpen(false)} /> : null}
+    </>
+  );
+}
+
+function WhatsNewModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div className="auth-overlay" role="presentation" onClick={onClose}>
+      <div
+        className="auth-modal whatsnew-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="whatsnew-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button className="auth-close" onClick={onClose} aria-label="Close changelog">
+          ×
+        </button>
+        <span className="kicker">released {CHANGELOG_VERSION}</span>
+        <h2 id="whatsnew-title" style={{ marginTop: 6 }}>
+          What's new in Stimli
+        </h2>
+        <p className="lead">
+          A summary of the upgrades shipped in this release. Tap one to read more, or just scroll.
+        </p>
+        <ol className="whatsnew-list">
+          {CHANGELOG.map((entry) => (
+            <li key={entry.title}>
+              <strong>{entry.title}</strong>
+              <p>{entry.body}</p>
+            </li>
+          ))}
+        </ol>
+        <div className="form-actions" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+          <a className="btn cream" href="https://github.com/manrajmondair/stimli/commits/main" target="_blank" rel="noreferrer">
+            See full commit history ↗
+          </a>
+          <button className="btn primary" onClick={onClose}>
+            Got it
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

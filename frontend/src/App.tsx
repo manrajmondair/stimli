@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Landing } from "./Landing";
 import { BrainBlob } from "./art";
 
@@ -28,6 +28,18 @@ function RouteFallback() {
 
 export function App() {
   const path = window.location.pathname;
+
+  useEffect(() => {
+    // Lightweight per-route document title. Real SSR would set the OG tags
+    // server-side too, but for now a dynamic <title> at least keeps browser
+    // tabs and history entries legible.
+    let title = "Stimli — pretest before you spend";
+    if (path === "/legal") title = "Trust & license · Stimli";
+    else if (path.startsWith("/invite/")) title = "Team invite · Stimli";
+    else if (path.startsWith("/share/")) title = "Shared decision report · Stimli";
+    else if (path === "/app" || path.startsWith("/app/")) title = "Workbench · Stimli";
+    document.title = title;
+  }, [path]);
 
   if (path === "/legal") {
     return (

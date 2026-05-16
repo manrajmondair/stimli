@@ -1547,6 +1547,50 @@ h1, h2, h3, .display {
   border: 1px solid var(--line);
 }
 
+.whatsnew-btn {
+  margin: 10px 4px 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1.5px dashed var(--ink);
+  border-radius: var(--r-md);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--ink);
+  position: relative;
+}
+.whatsnew-btn:hover { background: var(--paper-warm); }
+.whatsnew-icon { font-family: var(--display); font-size: 14px; color: var(--tomato); }
+.whatsnew-btn.has-unseen { border-style: solid; background: var(--paper-warm); }
+.whatsnew-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--tomato);
+  border-radius: 50%;
+  border: 1.25px solid var(--ink);
+  margin-left: auto;
+}
+.whatsnew-modal { max-width: 560px; }
+.whatsnew-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.whatsnew-list li {
+  padding: 12px 14px;
+  background: var(--paper-warm);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--r-md);
+}
+.whatsnew-list strong { display: block; font-size: 14.5px; margin-bottom: 4px; }
+.whatsnew-list p { font-size: 13px; color: var(--ink-soft); margin: 0; line-height: 1.45; }
+
 .shared-report-foot {
   margin-top: 40px;
   padding-top: 20px;
