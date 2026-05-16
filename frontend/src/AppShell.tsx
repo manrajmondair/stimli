@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
@@ -677,10 +678,22 @@ function WhatsNewModal({ onClose }: { onClose: () => void }) {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
+    // Lock the page from scrolling underneath the modal — otherwise the user's
+    // scroll wheel scrolls the sidebar (which is the modal's DOM parent),
+    // making the body feel jumpy when the modal is open.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [onClose]);
 
-  return (
+  // Portal to document.body so the overlay escapes the sticky sidebar's
+  // stacking context — without this, side-rail icons and the workbench's
+  // decorative SVGs render above the overlay because the sidebar creates its
+  // own z-index context via position: sticky.
+  const modal = (
     <div className="auth-overlay" role="presentation" onClick={onClose}>
       <div
         className="auth-modal whatsnew-modal"
@@ -692,22 +705,24 @@ function WhatsNewModal({ onClose }: { onClose: () => void }) {
         <button className="auth-close" onClick={onClose} aria-label="Close changelog">
           ×
         </button>
-        <span className="kicker">released {CHANGELOG_VERSION}</span>
-        <h2 id="whatsnew-title" style={{ marginTop: 6 }}>
-          What's new in Stimli
-        </h2>
-        <p className="lead">
-          A summary of the upgrades shipped in this release. Tap one to read more, or just scroll.
-        </p>
-        <ol className="whatsnew-list">
-          {CHANGELOG.map((entry) => (
-            <li key={entry.title}>
-              <strong>{entry.title}</strong>
-              <p>{entry.body}</p>
-            </li>
-          ))}
-        </ol>
-        <div className="form-actions" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+        <div className="whatsnew-body">
+          <span className="kicker">released {CHANGELOG_VERSION}</span>
+          <h2 id="whatsnew-title" style={{ marginTop: 6 }}>
+            What&apos;s new in Stimli
+          </h2>
+          <p className="lead">
+            A summary of the upgrades shipped in this release. Tap one to read more, or just scroll.
+          </p>
+          <ol className="whatsnew-list">
+            {CHANGELOG.map((entry) => (
+              <li key={entry.title}>
+                <strong>{entry.title}</strong>
+                <p>{entry.body}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+        <div className="whatsnew-actions form-actions">
           <a className="btn cream" href="https://github.com/manrajmondair/stimli/commits/main" target="_blank" rel="noreferrer">
             See full commit history ↗
           </a>
@@ -718,6 +733,8 @@ function WhatsNewModal({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
+  if (typeof document === "undefined") return modal;
+  return createPortal(modal, document.body);
 }
 
 function UsageBadge({ usage }: { usage: UsageSnapshot }) {

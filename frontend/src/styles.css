@@ -1701,11 +1701,37 @@ h1, h2, h3, .display {
   border: 1.25px solid var(--ink);
   margin-left: auto;
 }
-.whatsnew-modal { max-width: 560px; }
+.whatsnew-modal {
+  max-width: 560px;
+  /* Cap the modal height so the changelog list scrolls inside instead of
+     overflowing the viewport. 88vh gives room for the close button + sticky
+     footer on short laptop screens. */
+  max-height: min(88vh, 760px);
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.whatsnew-body {
+  padding: 28px 32px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.whatsnew-actions {
+  border-top: 1.5px dashed var(--line);
+  padding: 14px 24px 18px;
+  background: var(--paper);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .whatsnew-list {
   list-style: none;
   padding: 0;
-  margin: 16px 0 0;
+  margin: 4px 0 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
