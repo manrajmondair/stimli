@@ -18,6 +18,7 @@ import type {
   LearningSummary,
   Outcome,
   OutcomeCreate,
+  Plan,
   Project,
   Report,
   ShareLink,
@@ -244,6 +245,19 @@ export async function getBrainProviders(): Promise<BrainProviderHealth[]> {
 
 export async function getBillingStatus(): Promise<BillingStatus> {
   const response = await fetch(`${API_BASE}/billing/status`, { headers: await workspaceHeaders() });
+  return parseResponse(response);
+}
+
+export type UsageSnapshot = {
+  plan: Plan;
+  billing_configured: boolean;
+  commercial_use_enabled: boolean;
+  limits: { asset: number; comparison: number };
+  usage: { window_ms: number; comparison: number; asset: number };
+};
+
+export async function getBillingUsage(): Promise<UsageSnapshot> {
+  const response = await fetch(`${API_BASE}/billing/usage`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 

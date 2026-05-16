@@ -8,6 +8,7 @@ import {
   deleteAsset,
   deleteBrandProfile,
   exportBrandProfile,
+  getBillingUsage,
   getInvite,
   getLearningSummary,
   getSession,
@@ -22,7 +23,8 @@ import {
   removeTeamMember,
   revokeTeamInvite,
   updateBrandProfile,
-  updateTeamMemberRole
+  updateTeamMemberRole,
+  type UsageSnapshot
 } from "./api";
 import type {
   AssetType,
@@ -173,10 +175,13 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [paletteOpen]);
 
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+
   useEffect(() => {
     if (!clerkLoaded) return;
     if (!isSignedIn) {
       setSession({ authenticated: false, user: null, team: null, teams: [] });
+      setUsage(null);
       return;
     }
     let cancelled = false;
@@ -191,6 +196,23 @@ export function AppShell() {
       cancelled = true;
     };
   }, [clerkLoaded, isSignedIn]);
+
+  // Pull usage on mount and refresh it whenever the user switches view so the
+  // sidebar number stays vaguely current after they run a comparison. Not
+  // real-time; that would mean SSE/websockets which is overkill for an hourly
+  // counter.
+  useEffect(() => {
+    if (!clerkLoaded || !isSignedIn) return;
+    let cancelled = false;
+    getBillingUsage()
+      .then((next) => {
+        if (!cancelled) setUsage(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [clerkLoaded, isSignedIn, view]);
 
   async function refreshSession() {
     try {
@@ -223,6 +245,7 @@ export function AppShell() {
         signedIn={signedIn}
         displayName={displayName}
         displayEmail={displayEmail}
+        usage={usage}
       />
 
       <main className="wb-main">
@@ -435,13 +458,15 @@ function Sidebar({
   onChange,
   signedIn,
   displayName,
-  displayEmail
+  displayEmail,
+  usage
 }: {
   active: View;
   onChange: (view: View) => void;
   signedIn: boolean;
   displayName: string;
   displayEmail: string;
+  usage: UsageSnapshot | null;
 }) {
   return (
     <aside className="wb-side">
@@ -479,6 +504,8 @@ function Sidebar({
           <kbd>⌘</kbd> <kbd>K</kbd> for commands
         </span>
       </nav>
+
+      {signedIn && usage ? <UsageBadge usage={usage} /> : null}
 
       {signedIn ? (
         <div className="side-tip side-tip-account" style={{ alignItems: "stretch", textAlign: "left" }}>
@@ -539,6 +566,62 @@ function Sidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+function UsageBadge({ usage }: { usage: UsageSnapshot }) {
+  const compUsed = usage.usage.comparison;
+  const compLimit = usage.limits.comparison || 0;
+  const compRatio = compLimit > 0 ? Math.min(1, compUsed / compLimit) : 0;
+  const assetUsed = usage.usage.asset;
+  const assetLimit = usage.limits.asset || 0;
+  const assetRatio = assetLimit > 0 ? Math.min(1, assetUsed / assetLimit) : 0;
+  const planLabel = usage.plan?.name || usage.plan?.id || "Research";
+  const commercial = usage.commercial_use_enabled || usage.plan?.commercial;
+  const planStyle = planLabel.toLowerCase().includes("scale")
+    ? "var(--plum)"
+    : planLabel.toLowerCase().includes("growth")
+    ? "var(--pistachio)"
+    : "var(--butter)";
+  return (
+    <div className="usage-badge" role="region" aria-label="Workspace usage">
+      <div className="usage-badge-head">
+        <span className="usage-plan" style={{ background: planStyle }}>
+          {planLabel}
+        </span>
+        <span className="usage-license" title={commercial ? "Commercial use enabled" : "Research-only"}>
+          {commercial ? "commercial" : "research"}
+        </span>
+      </div>
+      <UsageMeter label="Comparisons" used={compUsed} limit={compLimit} ratio={compRatio} />
+      <UsageMeter label="Assets" used={assetUsed} limit={assetLimit} ratio={assetRatio} />
+      <p className="hint usage-window">
+        Resets hourly · upgrade for higher limits
+      </p>
+    </div>
+  );
+}
+
+function UsageMeter({ label, used, limit, ratio }: { label: string; used: number; limit: number; ratio: number }) {
+  const danger = ratio >= 0.85;
+  const warning = ratio >= 0.6;
+  const fillColor = danger ? "var(--tomato)" : warning ? "var(--butter)" : "var(--pistachio)";
+  return (
+    <div className="usage-meter">
+      <div className="usage-meter-head">
+        <span>{label}</span>
+        <strong>
+          {used}
+          {limit > 0 ? <span className="usage-limit"> / {limit}</span> : null}
+        </strong>
+      </div>
+      <div className="usage-meter-track" role="progressbar" aria-valuenow={used} aria-valuemax={limit}>
+        <div
+          className="usage-meter-fill"
+          style={{ width: `${Math.max(2, Math.round(ratio * 100))}%`, background: fillColor }}
+        />
+      </div>
+    </div>
   );
 }
 

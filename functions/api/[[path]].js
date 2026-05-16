@@ -421,9 +421,34 @@ async function handleInvites(request, cookies, segments, authContext, headers) {
   return sendJson(405, { detail: "Method not allowed" }, headers, cookies);
 }
 
-async function handleBilling(request, segments, authContext, _workspaceId, headers, cookies) {
+async function handleBilling(request, segments, authContext, workspaceId, headers, cookies) {
   if (request.method === "GET" && segments[1] === "status") {
     return sendJson(200, await billingStatus(authContext.team), headers, cookies);
+  }
+  if (request.method === "GET" && segments[1] === "usage") {
+    // Frontend usage meter — current plan + hourly counts so the sidebar
+    // can show 'comparisons this hour: 3/12' without each view scraping
+    // /status separately.
+    const env = globalThis.__stimliEnv || {};
+    const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
+    const since = new Date(Date.now() - windowMs).toISOString();
+    const [status, limits, comparisonCount, assetCount] = await Promise.all([
+      billingStatus(authContext.team),
+      usageLimitsForWorkspace(workspaceId),
+      countUsageEvents({ kind: "comparison", since, workspaceId }),
+      countUsageEvents({ kind: "asset", since, workspaceId })
+    ]);
+    return sendJson(200, {
+      plan: status.current_plan,
+      billing_configured: status.billing_configured,
+      commercial_use_enabled: status.commercial_use_enabled,
+      limits,
+      usage: {
+        window_ms: windowMs,
+        comparison: comparisonCount,
+        asset: assetCount
+      }
+    }, headers, cookies);
   }
   if (request.method === "POST" && segments[1] === "checkout") {
     requirePermission(authContext, "billing:manage");
