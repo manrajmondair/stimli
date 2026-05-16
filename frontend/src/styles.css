@@ -937,6 +937,103 @@ h1, h2, h3, .display {
   padding-top: 14px; border-top: 1px dashed var(--line);
 }
 
+.neural-timeline-wrap {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+.neural-timeline-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.neural-timeline-head h4 {
+  font-family: var(--display);
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.neural-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.neural-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.neural-legend-item strong {
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 12px;
+}
+.neural-legend-item .swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.25px solid var(--ink);
+}
+.neural-legend-desc { font-size: 10.5px; color: var(--ink-soft); }
+.neural-readout {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--paper-warm);
+  border: 1.25px solid var(--ink);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 14px;
+}
+.neural-readout-time {
+  font-family: var(--display);
+  font-size: 22px;
+  color: var(--ink);
+}
+.neural-readout-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.neural-readout-variant {
+  display: grid;
+  grid-template-columns: 14px 110px 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 11.5px;
+}
+.neural-readout-variant .swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.25px solid var(--ink);
+}
+.neural-readout-variant strong {
+  font-weight: 600;
+}
+.neural-readout-values {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.neural-readout-cell {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+.neural-readout-label {
+  font-size: 9.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.neural-readout-value {
+  font-family: var(--display);
+  font-size: 14px;
+  color: var(--ink);
+}
+
 .result-side-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 @media (max-width: 1100px) { .result-side-grid { grid-template-columns: 1fr; } }
 

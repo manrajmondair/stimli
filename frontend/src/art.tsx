@@ -1,4 +1,6 @@
-import { useId, type CSSProperties } from "react";
+import { useId, useMemo, useRef, useState, type CSSProperties } from "react";
+
+import type { TimelinePoint } from "./types";
 
 type BrainBlobProps = {
   color?: string;
@@ -355,14 +357,45 @@ type BraidedTrailScores = {
   load: number;
 };
 
-export function BraidedTrail({ scores, width = 720, height = 220 }: { scores: BraidedTrailScores; width?: number; height?: number }) {
-  const colors: Array<[keyof BraidedTrailScores, string, string]> = [
-    ["hook", "var(--tomato)", "Hook"],
-    ["memory", "var(--pistachio)", "Memory"],
-    ["attention", "var(--butter)", "Attention"],
-    ["load", "var(--plum)", "Load"]
+export function BraidedTrail({
+  scores,
+  timeline,
+  width = 720,
+  height = 220
+}: {
+  scores: BraidedTrailScores;
+  timeline?: TimelinePoint[];
+  width?: number;
+  height?: number;
+}) {
+  // When we have a real predicted-brain-response timeline, the braided trail
+  // becomes the *stylized* view of that signal (Catmull-Rom smoothing applied
+  // for a hand-drawn feel) — but its shape is no longer made-up sine waves.
+  // The hook channel stays a static reference line at the hook score because
+  // there's no per-second hook signal — hook is a single judgement of the
+  // opening.
+  const samples = timeline && timeline.length >= 2 ? timeline : null;
+  const colors: Array<[keyof BraidedTrailScores, string]> = [
+    ["hook", "var(--tomato)"],
+    ["memory", "var(--pistachio)"],
+    ["attention", "var(--butter)"],
+    ["load", "var(--plum)"]
   ];
-  function pathFor(score: number, phase: number, ampMul: number): string {
+
+  const channelFor = (key: keyof BraidedTrailScores): keyof TimelinePoint | null => {
+    switch (key) {
+      case "attention":
+        return "attention";
+      case "memory":
+        return "memory";
+      case "load":
+        return "cognitive_load";
+      default:
+        return null;
+    }
+  };
+
+  function decorativePath(score: number, phase: number, ampMul: number): string {
     const steps = 28;
     const amp = (score / 100) * 60 * ampMul;
     const center = height / 2;
@@ -379,6 +412,31 @@ export function BraidedTrail({ scores, width = 720, height = 220 }: { scores: Br
     }
     return d;
   }
+
+  function timelinePath(channel: keyof TimelinePoint, ampMul: number): string {
+    if (!samples) return "";
+    const points: Array<[number, number]> = samples.map((point, idx) => {
+      const x = (idx / Math.max(samples.length - 1, 1)) * width;
+      const raw = Number(point[channel]);
+      const value = Number.isFinite(raw) ? raw : 0.5;
+      // Convert to a deviation from the channel's midline so all three
+      // channels share the same vertical canvas. ampMul flips load so a
+      // high load reads as an inverted curve (more load = more downward).
+      const center = height / 2;
+      const amp = (value - 0.5) * 120 * ampMul;
+      const y = center - amp;
+      return [x, y];
+    });
+    return catmullRomPath(points);
+  }
+
+  function hookReferencePath(score: number): string {
+    // A gentle quadratic floor anchored at the hook score — represents the
+    // 'opening promise' the rest of the curves are reacting against.
+    const baseline = height / 2 - ((score - 50) / 50) * 50;
+    return `M 0 ${baseline} Q ${width / 2} ${baseline - 8} ${width} ${baseline}`;
+  }
+
   return (
     <svg
       viewBox={`0 0 ${width} ${height}`}
@@ -386,7 +444,7 @@ export function BraidedTrail({ scores, width = 720, height = 220 }: { scores: Br
       height={height}
       style={{ overflow: "visible" }}
       role="img"
-      aria-label="Brain signal thought-trail visualization"
+      aria-label={samples ? "Predicted brain-response timeline" : "Stylized brain-response trail"}
     >
       {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
         <line
@@ -401,8 +459,17 @@ export function BraidedTrail({ scores, width = 720, height = 220 }: { scores: Br
         />
       ))}
       {colors.map(([k, c], i) => {
-        const ampMul = k === "load" ? -1 : 1;
-        const d = pathFor(scores[k] ?? 50, i * 0.9, ampMul);
+        const channel = channelFor(k);
+        let d: string;
+        if (samples && channel) {
+          const ampMul = k === "load" ? -1 : 1;
+          d = timelinePath(channel, ampMul);
+        } else if (samples && k === "hook") {
+          d = hookReferencePath(scores[k] ?? 50);
+        } else {
+          const ampMul = k === "load" ? -1 : 1;
+          d = decorativePath(scores[k] ?? 50, i * 0.9, ampMul);
+        }
         return (
           <g key={k} style={{ transform: `translateY(${(i - 1.5) * 8}px)` }}>
             <path d={d} stroke="var(--ink)" strokeWidth={11} fill="none" strokeLinecap="round" />
@@ -412,4 +479,313 @@ export function BraidedTrail({ scores, width = 720, height = 220 }: { scores: Br
       })}
     </svg>
   );
+}
+
+// Catmull-Rom -> cubic-Bezier converter. Produces a smooth path through the
+// sample points without the sine-wave fabrication the old BraidedTrail had.
+function catmullRomPath(points: Array<[number, number]>): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) {
+    const [x, y] = points[0];
+    return `M ${x} ${y}`;
+  }
+  const tension = 0.5;
+  let d = `M ${points[0][0]} ${points[0][1]}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const cp1x = p1[0] + ((p2[0] - p0[0]) / 6) * tension * 2;
+    const cp1y = p1[1] + ((p2[1] - p0[1]) / 6) * tension * 2;
+    const cp2x = p2[0] - ((p3[0] - p1[0]) / 6) * tension * 2;
+    const cp2y = p2[1] - ((p3[1] - p1[1]) / 6) * tension * 2;
+    d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2[0]} ${p2[1]}`;
+  }
+  return d;
+}
+
+// ---- NeuralTimeline -------------------------------------------------------
+//
+// Accurate, axis-aware plot of the predicted brain response. Plots attention,
+// memory, and cognitive_load as separate time series, optionally overlaying
+// multiple variants for direct comparison. Used as the "real chart" beneath
+// the stylized BraidedTrail.
+//
+// Channels are shown as smoothed curves (Catmull-Rom) over the actual second
+// axis, not a rescaled / hardcoded "0:00 hook / 0:08 build / ..." axis. The
+// y-axis is 0-100, mirroring how the scores are presented elsewhere. Hover
+// reveals exact values per channel at that second.
+
+export type NeuralVariant = {
+  id: string;
+  label: string;
+  color: string;
+  timeline: TimelinePoint[];
+};
+
+type Channel = {
+  key: "attention" | "memory" | "cognitive_load";
+  label: string;
+  color: string;
+  description: string;
+};
+
+const NEURAL_CHANNELS: Channel[] = [
+  { key: "attention", label: "Attention", color: "var(--butter)", description: "Predicted moment-to-moment viewer attention." },
+  { key: "memory", label: "Memory", color: "var(--pistachio)", description: "Predicted memory encoding strength." },
+  { key: "cognitive_load", label: "Load", color: "var(--plum)", description: "Predicted processing cost (lower is better)." }
+];
+
+const CHART_MARGIN = { top: 18, right: 18, bottom: 32, left: 38 };
+const CHART_HEIGHT = 240;
+
+export function NeuralTimeline({
+  variants,
+  activeVariantId,
+  width = 720,
+  visibleChannels = ["attention", "memory", "cognitive_load"]
+}: {
+  variants: NeuralVariant[];
+  activeVariantId?: string;
+  width?: number;
+  visibleChannels?: Array<Channel["key"]>;
+}) {
+  const usable = variants.filter((v) => v.timeline && v.timeline.length >= 2);
+
+  const maxSecond = useMemo(() => {
+    if (!usable.length) return 30;
+    const seconds = usable.flatMap((v) => v.timeline.map((p) => Number(p.second) || 0));
+    return Math.max(1, ...seconds);
+  }, [usable]);
+
+  const innerWidth = Math.max(120, width - CHART_MARGIN.left - CHART_MARGIN.right);
+  const innerHeight = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
+  const xFor = (second: number) => CHART_MARGIN.left + (second / Math.max(maxSecond, 0.001)) * innerWidth;
+  const yFor = (valueZeroOne: number) => CHART_MARGIN.top + (1 - clamp01(valueZeroOne)) * innerHeight;
+
+  const yTicks = [0, 25, 50, 75, 100];
+  const tickCount = 6;
+  const xTicks = Array.from({ length: tickCount + 1 }, (_, i) => round1((i / tickCount) * maxSecond));
+
+  const [hoverSecond, setHoverSecond] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  function handleMove(ev: React.MouseEvent<SVGSVGElement>) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const scale = rect.width / width;
+    const localX = (ev.clientX - rect.left) / scale - CHART_MARGIN.left;
+    const ratio = clamp01(localX / innerWidth);
+    setHoverSecond(round1(ratio * maxSecond));
+  }
+
+  function handleLeave() {
+    setHoverSecond(null);
+  }
+
+  function valueAt(variant: NeuralVariant, channel: Channel["key"], second: number): number {
+    const tl = variant.timeline;
+    if (!tl.length) return 0;
+    for (let i = 0; i < tl.length - 1; i++) {
+      const a = tl[i];
+      const b = tl[i + 1];
+      if (second >= a.second && second <= b.second) {
+        const span = Math.max(b.second - a.second, 0.001);
+        const t = (second - a.second) / span;
+        return clamp01(Number(a[channel]) * (1 - t) + Number(b[channel]) * t);
+      }
+    }
+    return clamp01(Number(tl[Math.min(tl.length - 1, Math.max(0, Math.round((second / maxSecond) * (tl.length - 1))))]?.[channel] ?? 0));
+  }
+
+  const hoverX = hoverSecond != null ? xFor(hoverSecond) : null;
+
+  if (!usable.length) {
+    return (
+      <div className="neural-timeline-empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-soft)" }}>
+        Predicted-response timeline isn't available for this comparison yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="neural-timeline" role="figure" aria-label="Predicted brain response over time">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
+        width="100%"
+        height={CHART_HEIGHT}
+        onMouseMove={handleMove}
+        onMouseLeave={handleLeave}
+        style={{ display: "block", overflow: "visible" }}
+        role="img"
+      >
+        <rect
+          x={CHART_MARGIN.left}
+          y={CHART_MARGIN.top}
+          width={innerWidth}
+          height={innerHeight}
+          fill="var(--paper-warm)"
+          stroke="var(--ink)"
+          strokeWidth={1.25}
+          rx={6}
+        />
+
+        {yTicks.map((value) => (
+          <g key={`y-${value}`}>
+            <line
+              x1={CHART_MARGIN.left}
+              x2={CHART_MARGIN.left + innerWidth}
+              y1={yFor(value / 100)}
+              y2={yFor(value / 100)}
+              stroke="var(--line)"
+              strokeWidth={value === 50 ? 1.25 : 0.75}
+              strokeDasharray={value === 50 ? "" : "3 4"}
+            />
+            <text
+              x={CHART_MARGIN.left - 6}
+              y={yFor(value / 100) + 3}
+              textAnchor="end"
+              fontSize="10"
+              fill="var(--ink-soft)"
+              fontFamily="var(--display)"
+            >
+              {value}
+            </text>
+          </g>
+        ))}
+
+        {xTicks.map((value, i) => (
+          <g key={`x-${i}`}>
+            <line
+              x1={xFor(value)}
+              x2={xFor(value)}
+              y1={CHART_MARGIN.top + innerHeight}
+              y2={CHART_MARGIN.top + innerHeight + 4}
+              stroke="var(--ink)"
+              strokeWidth={1}
+            />
+            <text
+              x={xFor(value)}
+              y={CHART_MARGIN.top + innerHeight + 16}
+              textAnchor="middle"
+              fontSize="10"
+              fill="var(--ink-soft)"
+              fontFamily="var(--display)"
+            >
+              {value.toFixed(1)}s
+            </text>
+          </g>
+        ))}
+
+        {usable.map((variant) =>
+          NEURAL_CHANNELS.filter((c) => visibleChannels.includes(c.key)).map((channel) => {
+            const isActive = !activeVariantId || activeVariantId === variant.id;
+            const points: Array<[number, number]> = variant.timeline.map((point) => [xFor(Number(point.second)), yFor(Number(point[channel.key]))]);
+            const path = catmullRomPath(points);
+            const channelColor = channel.color;
+            const variantOpacity = isActive ? 1 : 0.28;
+            return (
+              <g key={`${variant.id}-${channel.key}`} opacity={variantOpacity}>
+                <path
+                  d={path}
+                  stroke="var(--ink)"
+                  strokeWidth={isActive ? 4 : 2.5}
+                  fill="none"
+                  strokeLinecap="round"
+                />
+                <path
+                  d={path}
+                  stroke={channelColor}
+                  strokeWidth={isActive ? 2.5 : 1.5}
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeDasharray={variant.id === activeVariantId || !activeVariantId ? "" : "4 4"}
+                />
+              </g>
+            );
+          })
+        )}
+
+        {hoverX != null && (
+          <line
+            x1={hoverX}
+            x2={hoverX}
+            y1={CHART_MARGIN.top}
+            y2={CHART_MARGIN.top + innerHeight}
+            stroke="var(--ink)"
+            strokeWidth={0.75}
+            strokeDasharray="2 3"
+          />
+        )}
+
+        {hoverX != null && hoverSecond != null &&
+          usable.map((variant) => {
+            const isActive = !activeVariantId || activeVariantId === variant.id;
+            return NEURAL_CHANNELS.filter((c) => visibleChannels.includes(c.key)).map((channel) => {
+              const value = valueAt(variant, channel.key, hoverSecond);
+              return (
+                <circle
+                  key={`hover-${variant.id}-${channel.key}`}
+                  cx={hoverX}
+                  cy={yFor(value)}
+                  r={isActive ? 3.5 : 2.25}
+                  fill={channel.color}
+                  stroke="var(--ink)"
+                  strokeWidth={1}
+                  opacity={isActive ? 1 : 0.5}
+                />
+              );
+            });
+          })}
+      </svg>
+
+      <div className="neural-legend" aria-hidden="false">
+        {NEURAL_CHANNELS.filter((c) => visibleChannels.includes(c.key)).map((channel) => (
+          <span key={channel.key} className="neural-legend-item">
+            <span className="swatch" style={{ background: channel.color }} />
+            <strong>{channel.label}</strong>
+            <span className="neural-legend-desc">{channel.description}</span>
+          </span>
+        ))}
+      </div>
+
+      {hoverSecond != null && (
+        <div className="neural-readout" aria-live="polite">
+          <div className="neural-readout-time">{hoverSecond.toFixed(1)}s</div>
+          <div className="neural-readout-grid">
+            {usable.map((variant) => (
+              <div key={variant.id} className="neural-readout-variant">
+                <span className="swatch" style={{ background: variant.color }} />
+                <strong>{variant.label}</strong>
+                <div className="neural-readout-values">
+                  {NEURAL_CHANNELS.filter((c) => visibleChannels.includes(c.key)).map((channel) => {
+                    const value = valueAt(variant, channel.key, hoverSecond);
+                    return (
+                      <span key={channel.key} className="neural-readout-cell">
+                        <span className="neural-readout-label">{channel.label}</span>
+                        <span className="neural-readout-value">{Math.round(value * 100)}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
 }

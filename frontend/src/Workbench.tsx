@@ -25,7 +25,7 @@ import type {
   TimelinePoint,
   VariantResult
 } from "./types";
-import { BrainBlob, BraidedTrail, Sparkle, StickerStar } from "./art";
+import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
 
 type Step = "intake" | "inventory" | "analyzing" | "result";
 
@@ -1601,12 +1601,13 @@ function Result({
             </div>
           </div>
           <div className="braided-trail">
-            <BraidedTrail scores={trailScores} />
+            <BraidedTrail scores={trailScores} timeline={activeVariant.analysis.timeline} />
             <div className="trail-axis">
-              <span>0:00 · the hook</span>
-              <span>0:08 · build</span>
-              <span>0:18 · the offer</span>
-              <span>0:30 · the close</span>
+              {buildTrailAxis(activeVariant).map((tick, idx) => (
+                <span key={`tick-${idx}`}>
+                  {tick.label} · {tick.note}
+                </span>
+              ))}
             </div>
             <div className="trail-legend">
               {[
@@ -1624,6 +1625,21 @@ function Result({
                 </span>
               ))}
             </div>
+          </div>
+          <div className="neural-timeline-wrap">
+            <div className="panel-head neural-timeline-head">
+              <h4>Predicted response · per second</h4>
+              <span className="kicker">{activeVariant.analysis.provider}</span>
+            </div>
+            <NeuralTimeline
+              activeVariantId={activeVariant.asset.id}
+              variants={ranked.map<NeuralVariant>((variant, idx) => ({
+                id: variant.asset.id,
+                label: variant.asset.name.split("·")[0]?.trim() ?? variant.asset.name,
+                color: COLOR_CYCLE[idx % COLOR_CYCLE.length],
+                timeline: variant.analysis.timeline ?? []
+              }))}
+            />
           </div>
         </div>
       </div>
@@ -1785,6 +1801,48 @@ function labelFor(key: keyof ScoreBreakdown): string {
     default:
       return String(key);
   }
+}
+
+function formatTimestamp(seconds: number): string {
+  const safe = Math.max(0, Math.round(seconds));
+  const mm = Math.floor(safe / 60);
+  const ss = safe % 60;
+  return `${mm}:${ss.toString().padStart(2, "0")}`;
+}
+
+function buildTrailAxis(variant: VariantResult): Array<{ label: string; note: string }> {
+  const timeline = variant.analysis.timeline ?? [];
+  if (timeline.length === 0) {
+    return [
+      { label: "0:00", note: "start" },
+      { label: "—", note: "no data" }
+    ];
+  }
+  const duration = Math.max(timeline[timeline.length - 1].second, timeline[0].second + 1);
+  const ratios = [0, 1 / 3, 2 / 3, 1];
+  return ratios.map((ratio) => {
+    const second = ratio * duration;
+    const point = timeline.reduce((closest, candidate) =>
+      Math.abs(candidate.second - second) < Math.abs(closest.second - second) ? candidate : closest
+    , timeline[0]);
+    const note = labelForTimelinePoint(point, ratio);
+    return { label: formatTimestamp(second), note };
+  });
+}
+
+function labelForTimelinePoint(point: TimelinePoint, ratio: number): string {
+  const attention = Number(point.attention);
+  const memory = Number(point.memory);
+  const load = Number(point.cognitive_load);
+  if (load >= 0.68) return "load peak";
+  if (attention >= 0.72) return ratio < 0.34 ? "hook lands" : "attention peak";
+  if (attention < 0.45) return "attention dip";
+  if (memory >= 0.65) return ratio > 0.6 ? "memory anchors" : "memory builds";
+  if (ratio < 0.05) return "the hook";
+  if (ratio > 0.95) return "the close";
+  if (ratio < 0.4) return "setup";
+  if (ratio < 0.7) return "build";
+  return "payoff";
 }
 
 function trailScoresFor(variant: VariantResult): {
