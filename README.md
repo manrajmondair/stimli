@@ -1,11 +1,29 @@
 # Stimli
 
+[![ci](https://github.com/manrajmondair/stimli/actions/workflows/ci.yml/badge.svg)](https://github.com/manrajmondair/stimli/actions/workflows/ci.yml)
 [![deploy-pages](https://github.com/manrajmondair/stimli/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/manrajmondair/stimli/actions/workflows/deploy-pages.yml)
 [![stimli.pages.dev](https://img.shields.io/badge/live-stimli.pages.dev-e96a3d)](https://stimli.pages.dev)
+[![license: CC BY-NC 4.0](https://img.shields.io/badge/license-CC%20BY--NC%204.0-blue)](LICENSE)
+[![node: 22+](https://img.shields.io/badge/node-22%2B-3c873a)](.nvmrc)
 
-Stimli is a brain-aware creative decision engine for DTC growth teams. Upload two or more scripts, landing pages, static ads, audio clips, or short videos, then get a direct recommendation on which variant to ship and what to edit before spending media budget.
+Stimli is a brain-aware creative decision engine for DTC growth teams. Upload two or more scripts, landing pages, static ads, audio clips, or short videos, and get a direct ship / revise recommendation with a confidence score and the edits to make before spending media budget.
 
-> Live at **https://stimli.pages.dev**.
+> **Live:** https://stimli.pages.dev · **Status:** [stimli.pages.dev/api/health](https://stimli.pages.dev/api/health)
+
+## Table of contents
+
+- [What it does](#what-it-does)
+- [Project structure](#project-structure)
+- [Architecture in one paragraph](#architecture-in-one-paragraph)
+- [Deploy](#deploy)
+- [Authentication (Clerk)](#authentication-clerk)
+- [Subscription billing (Stripe)](#subscription-billing-stripe)
+- [Modal GPU inference](#modal-gpu-inference)
+- [Local development](#local-development)
+- [Tests](#tests)
+- [Contributing](#contributing)
+- [Security](#security)
+- [License & trust](#license--trust)
 
 ## What it does
 
@@ -214,8 +232,16 @@ Runs in order:
 2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`. 14 tests covering error-message parsing, Landing page rendering, and App router behavior.
 3. **`npm run build`** — TypeScript build + production Vite bundle as a final correctness check.
 
+## Contributing
+
+Bug fixes, accessibility wins, and clearer docs are all welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contribution loop, house style, and PR checklist. Open an issue first for new top-level features so we can align on scope before code lands.
+
+## Security
+
+Report vulnerabilities through a [private GitHub security advisory](https://github.com/manrajmondair/stimli/security/advisories/new) — see [`SECURITY.md`](SECURITY.md) for what's in scope, expected response times, and the hardening notes that apply to the codebase.
+
 ## License & trust
 
-Stimli is released under CC BY-NC 4.0 for non-commercial use. Built for CS 153 at Stanford. See [`/legal`](https://stimli.pages.dev/legal) on the live site for full terms.
+Stimli is released under [CC BY-NC 4.0](LICENSE) for non-commercial use. Built for CS 153 at Stanford. See [`/legal`](https://stimli.pages.dev/legal) on the live site for full terms.
 
 <sub>Assisted by Claude Code and Codex.</sub>

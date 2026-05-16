@@ -25,6 +25,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Run tests
+        # Gate every production deploy on the full Node + Vitest suite so a
+        # broken main never ships. npm test runs api → web → build sequentially
+        # so this step also produces the artifact the deploy step uploads.
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+        run: npm test
+
       - name: Build frontend
         env:
           # Vite reads VITE_* env vars at build time and bakes the values into
