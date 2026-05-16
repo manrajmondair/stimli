@@ -583,6 +583,10 @@ function LibraryView() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<LibraryAsset | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const { toast, show, dismiss } = useLocalToast();
 
   function refresh() {
@@ -634,7 +638,69 @@ function LibraryView() {
     return tally;
   }, [items]);
 
-  const visible = filter === "all" ? items : items.filter((asset) => asset.type === filter);
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((asset) => {
+      if (filter !== "all" && asset.type !== filter) return false;
+      if (!q) return true;
+      return (
+        asset.name.toLowerCase().includes(q) ||
+        (asset.extracted_text || "").toLowerCase().includes(q) ||
+        (asset.source_url || "").toLowerCase().includes(q)
+      );
+    });
+  }, [items, filter, query]);
+
+  function toggleSelected(id: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllVisible() {
+    setSelected(new Set(visible.map((asset) => asset.id)));
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  async function performBulkDelete() {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    const ids = Array.from(selected);
+    let success = 0;
+    let failure = 0;
+    // Sequential — Cloudflare Pages Functions don't love a burst of
+    // workspace-scoped writes from one client. Sequential keeps us under
+    // the per-IP rate limit and means partial failures don't strand
+    // half the selection in an unknown state.
+    for (const id of ids) {
+      try {
+        await deleteAsset(id);
+        success += 1;
+      } catch (err) {
+        console.warn(err);
+        failure += 1;
+      }
+    }
+    setItems((current) => current.filter((asset) => !selected.has(asset.id)));
+    setSelected(new Set());
+    setBulkBusy(false);
+    setConfirmBulkDelete(false);
+    if (failure === 0) {
+      show("success", `Deleted ${success} ${success === 1 ? "asset" : "assets"}.`);
+    } else if (success === 0) {
+      show("error", `Could not delete the selected ${failure === 1 ? "asset" : "assets"}.`);
+    } else {
+      show("info", `Deleted ${success}, ${failure} could not be removed.`);
+    }
+  }
+
+  const allVisibleSelected = visible.length > 0 && visible.every((asset) => selected.has(asset.id));
 
   return (
     <>
@@ -669,29 +735,69 @@ function LibraryView() {
       {error ? <div className="banner error">{error}</div> : null}
 
       {items.length > 0 ? (
-        <div className="filter-chips" role="tablist" aria-label="Filter assets by type">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={filter === "all"}
-            className={`filter-chip ${filter === "all" ? "active" : ""}`}
-            onClick={() => setFilter("all")}
-          >
-            All · {counts.all || 0}
-          </button>
-          {ASSET_TYPE_ORDER.map((type) => (
+        <div className="library-toolbar">
+          <input
+            type="search"
+            className="library-search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search variants by name, body text, or URL…"
+            aria-label="Search library"
+          />
+          <div className="filter-chips" role="tablist" aria-label="Filter assets by type">
             <button
-              key={type}
               type="button"
               role="tab"
-              aria-selected={filter === type}
-              className={`filter-chip ${filter === type ? "active" : ""}`}
-              onClick={() => setFilter(type)}
-              disabled={!counts[type]}
+              aria-selected={filter === "all"}
+              className={`filter-chip ${filter === "all" ? "active" : ""}`}
+              onClick={() => setFilter("all")}
             >
-              {ASSET_TYPE_LABEL[type]} · {counts[type] || 0}
+              All · {counts.all || 0}
             </button>
-          ))}
+            {ASSET_TYPE_ORDER.map((type) => (
+              <button
+                key={type}
+                type="button"
+                role="tab"
+                aria-selected={filter === type}
+                className={`filter-chip ${filter === type ? "active" : ""}`}
+                onClick={() => setFilter(type)}
+                disabled={!counts[type]}
+              >
+                {ASSET_TYPE_LABEL[type]} · {counts[type] || 0}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {selected.size > 0 ? (
+        <div className="bulk-bar" role="region" aria-label="Bulk actions">
+          <span>
+            <strong>{selected.size}</strong> {selected.size === 1 ? "asset" : "assets"} selected
+          </span>
+          <div className="bulk-bar-actions">
+            <button
+              type="button"
+              className="btn cream small"
+              onClick={allVisibleSelected ? clearSelection : selectAllVisible}
+            >
+              {allVisibleSelected ? "Clear selection" : `Select all ${visible.length}`}
+            </button>
+            <button
+              type="button"
+              className="btn cream small"
+              style={{
+                background: "var(--tomato-soft)",
+                borderColor: "var(--tomato-ink)",
+                color: "var(--tomato-ink)"
+              }}
+              onClick={() => setConfirmBulkDelete(true)}
+              disabled={bulkBusy}
+            >
+              {bulkBusy ? "Deleting…" : `Delete ${selected.size}`}
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -709,8 +815,13 @@ function LibraryView() {
       ) : visible.length === 0 ? (
         <div className="panel-card empty" style={{ paddingTop: 50, paddingBottom: 50 }}>
           <BrainBlob size={96} color="var(--ink-faint)" />
-          <h4>No assets in this filter.</h4>
-          <p>Try a different type or upload another variant from the workbench.</p>
+          <h4>{query.trim() ? "No matches for that search." : "No assets in this filter."}</h4>
+          <p>{query.trim() ? "Try a shorter or different term." : "Try a different type or upload another variant from the workbench."}</p>
+          {query.trim() ? (
+            <button className="btn cream" onClick={() => setQuery("")} style={{ marginTop: 12 }}>
+              Clear search
+            </button>
+          ) : null}
         </div>
       ) : (
         <div className="list-grid">
@@ -718,8 +829,20 @@ function LibraryView() {
             const accent = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"][idx % 4];
             const isOpen = expandedId === asset.id;
             const previewText = (asset.extracted_text || "").trim();
+            const isSelected = selected.has(asset.id);
             return (
-              <article key={asset.id} className="list-card" style={{ borderLeft: `6px solid ${accent}` }}>
+              <article
+                key={asset.id}
+                className={`list-card ${isSelected ? "selected" : ""}`}
+                style={{ borderLeft: `6px solid ${accent}` }}
+              >
+                <label className="list-select" aria-label={`Select ${asset.name}`}>
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelected(asset.id)}
+                  />
+                </label>
                 <span className="meta">
                   {ASSET_TYPE_LABEL[asset.type]} · {new Date(asset.created_at).toLocaleDateString()}
                 </span>
@@ -775,6 +898,23 @@ function LibraryView() {
         }
         onCancel={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && performDelete(confirmDelete)}
+      />
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} ${selected.size === 1 ? "asset" : "assets"}?`}
+        confirmLabel={bulkBusy ? "Deleting…" : `Delete ${selected.size}`}
+        message={
+          <>
+            <p>
+              The selected {selected.size === 1 ? "asset" : "assets"} will be removed from your library and
+              from any new comparisons. Existing comparison reports keep their snapshots.
+            </p>
+            <p style={{ marginTop: 8, color: "var(--ink-soft)", fontSize: 12 }}>This can't be undone.</p>
+          </>
+        }
+        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={performBulkDelete}
       />
 
       <ToastBar toast={toast} onDismiss={dismiss} />
