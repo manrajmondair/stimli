@@ -30,6 +30,9 @@ jobs:
         # Same chain the deploy workflow runs: node-native API tests, then the
         # Vitest frontend suite, then a production Vite build as a final
         # correctness check.
-        env:
-          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+        # Intentionally do NOT forward VITE_CLERK_PUBLISHABLE_KEY here: when
+        # it's set, the Landing component calls useUser() without a
+        # ClerkProvider wrapper in jsdom and the test crashes. The deploy
+        # workflow's build step threads it in for the production bundle where
+        # it actually needs to be baked.
         run: npm test
