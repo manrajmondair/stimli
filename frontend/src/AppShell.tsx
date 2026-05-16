@@ -1492,6 +1492,14 @@ function OutcomesView() {
             Refresh
           </button>
           <button
+            className="btn cream"
+            onClick={() => exportOutcomesCsv(outcomes)}
+            disabled={outcomes.length === 0}
+            title={outcomes.length === 0 ? "No outcomes to export yet" : "Download outcomes as CSV"}
+          >
+            Export CSV
+          </button>
+          <button
             className="btn primary"
             onClick={() => setLogOpen(true)}
             disabled={completedComparisons.length === 0}
@@ -2179,36 +2187,7 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
             </table>
           </div>
 
-          <div className="panel-card">
-            <div className="panel-head">
-              <h3>Audit log</h3>
-              <span className="kicker">last {Math.min(audit.length, 25)} events</span>
-            </div>
-            {audit.length === 0 ? (
-              <p className="hint">No audit events yet. Adding variants and running comparisons will start the trail.</p>
-            ) : (
-              <table className="simple-table">
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Actor</th>
-                    <th>Action</th>
-                    <th>Target</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {audit.slice(0, 25).map((event) => (
-                    <tr key={event.id}>
-                      <td>{new Date(event.created_at).toLocaleString()}</td>
-                      <td>{event.actor_email || "—"}</td>
-                      <td>{event.action}</td>
-                      <td>{event.target_type}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <AuditLogPanel audit={audit} />
         </section>
       </div>
 
@@ -2243,6 +2222,128 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
 
       <ToastBar toast={toast} onDismiss={dismiss} />
     </>
+  );
+}
+
+function AuditLogPanel({ audit }: { audit: AuditEvent[] }) {
+  const [query, setQuery] = useState("");
+  const [actionFilter, setActionFilter] = useState<string>("all");
+  const [showAll, setShowAll] = useState(false);
+
+  const actions = useMemo(() => {
+    const set = new Set<string>();
+    for (const event of audit) set.add(event.action);
+    return Array.from(set).sort();
+  }, [audit]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return audit.filter((event) => {
+      if (actionFilter !== "all" && event.action !== actionFilter) return false;
+      if (!q) return true;
+      return (
+        event.action.toLowerCase().includes(q) ||
+        (event.actor_email || "").toLowerCase().includes(q) ||
+        event.target_type.toLowerCase().includes(q) ||
+        (event.target_id || "").toLowerCase().includes(q)
+      );
+    });
+  }, [audit, actionFilter, query]);
+
+  const visible = showAll ? filtered : filtered.slice(0, 25);
+
+  return (
+    <div className="panel-card">
+      <div className="panel-head">
+        <h3>Audit log</h3>
+        <span className="kicker">
+          {filtered.length} {filtered.length === 1 ? "event" : "events"}
+          {filtered.length !== audit.length ? ` of ${audit.length}` : ""}
+        </span>
+      </div>
+      {audit.length === 0 ? (
+        <p className="hint">No audit events yet. Adding variants and running comparisons will start the trail.</p>
+      ) : (
+        <>
+          <div className="audit-toolbar">
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by actor, action, or target…"
+              aria-label="Search audit log"
+              className="library-search"
+              style={{ minWidth: 220 }}
+            />
+            <select
+              value={actionFilter}
+              onChange={(e) => setActionFilter(e.target.value)}
+              className="member-role-select"
+              aria-label="Filter by action"
+            >
+              <option value="all">All actions ({actions.length})</option>
+              {actions.map((action) => (
+                <option key={action} value={action}>
+                  {action}
+                </option>
+              ))}
+            </select>
+            {(query.trim() || actionFilter !== "all") && (
+              <button
+                type="button"
+                className="btn cream small"
+                onClick={() => {
+                  setQuery("");
+                  setActionFilter("all");
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {filtered.length === 0 ? (
+            <p className="hint" style={{ marginTop: 12 }}>
+              No events match those filters.
+            </p>
+          ) : (
+            <>
+              <table className="simple-table">
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Actor</th>
+                    <th>Action</th>
+                    <th>Target</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((event) => (
+                    <tr key={event.id}>
+                      <td>{new Date(event.created_at).toLocaleString()}</td>
+                      <td>{event.actor_email || "—"}</td>
+                      <td>
+                        <code>{event.action}</code>
+                      </td>
+                      <td>{event.target_type}{event.target_id ? ` · ${event.target_id.slice(0, 10)}` : ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filtered.length > 25 ? (
+                <button
+                  type="button"
+                  className="btn cream small"
+                  style={{ marginTop: 10 }}
+                  onClick={() => setShowAll((v) => !v)}
+                >
+                  {showAll ? "Show less" : `Show all ${filtered.length}`}
+                </button>
+              ) : null}
+            </>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -2566,6 +2667,73 @@ export function SharedReportPage({ token }: { token: string }) {
       </footer>
     </div>
   );
+}
+
+function exportOutcomesCsv(outcomes: WorkspaceOutcome[]): void {
+  if (!outcomes.length) return;
+  const headers = [
+    "created_at",
+    "comparison_id",
+    "comparison_objective",
+    "comparison_status",
+    "asset_id",
+    "asset_name",
+    "spend",
+    "revenue",
+    "profit",
+    "impressions",
+    "clicks",
+    "conversions",
+    "ctr",
+    "cvr",
+    "notes"
+  ];
+  const rows = outcomes.map((row) => {
+    const ctr = row.impressions > 0 ? row.clicks / row.impressions : 0;
+    const cvr = row.clicks > 0 ? row.conversions / row.clicks : 0;
+    return [
+      row.created_at,
+      row.comparison_id,
+      row.comparison_objective || "",
+      row.comparison_status || "",
+      row.asset_id,
+      row.asset_name || "",
+      row.spend,
+      row.revenue,
+      row.profit ?? "",
+      row.impressions,
+      row.clicks,
+      row.conversions,
+      ctr.toFixed(6),
+      cvr.toFixed(6),
+      row.notes || ""
+    ];
+  });
+  const csv = [headers, ...rows]
+    .map((cells) =>
+      cells
+        .map((cell) => {
+          const value = cell == null ? "" : String(cell);
+          // Quote and escape per RFC 4180 — only when needed, so the file
+          // stays readable when opened in a text editor.
+          if (/[",\n\r]/.test(value)) {
+            return `"${value.split('"').join('""')}"`;
+          }
+          return value;
+        })
+        .join(",")
+    )
+    .join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  const stamp = new Date().toISOString().slice(0, 10);
+  link.download = `stimli-outcomes-${stamp}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function formatNumber(value: number): string {
