@@ -1758,8 +1758,11 @@ function Result({
             <button className="btn ghost" onClick={() => onLogOutcome(winner.asset.id)}>
               Log outcome
             </button>
-            <button className="btn cream" onClick={onExport}>
-              Export
+            <button className="btn cream" onClick={onExport} title="Download markdown report">
+              Markdown
+            </button>
+            <button className="btn cream" onClick={() => window.print()} title="Print the result page or save as PDF">
+              Print / PDF
             </button>
             <button className="btn cream" onClick={onShare}>
               Share

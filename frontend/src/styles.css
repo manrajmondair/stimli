@@ -1431,16 +1431,55 @@ h1, h2, h3, .display {
 
 /* ============ PRINT ============ */
 @media print {
+  /* Take a working copy that prints cleanly without us having to wrap
+     everything in a special 'printable' div. We hide things that don't
+     make sense on paper and force everything else into a flat layout. */
   body { background: white; }
-  .no-print { display: none !important; }
+  .no-print,
+  .wb-side,
+  .wb-top-right,
+  .wb-col-intake,
+  .wb-col-inventory,
+  .filter-chips,
+  .bulk-bar,
+  .library-toolbar,
+  .neural-timeline-instructions,
+  .palette-overlay,
+  .auth-overlay,
+  .edit-actions,
+  .trail-tabs,
+  .neural-legend-toggle::after {
+    display: none !important;
+  }
   .paper-bg { background: white !important; }
+  .wb-main { margin-left: 0 !important; padding: 12px !important; }
+  .wb-root { display: block !important; }
+  .wb-grid {
+    display: block !important;
+  }
+  .wb-col-results { width: 100% !important; max-width: 100% !important; }
+  .result-side-grid { grid-template-columns: 1fr !important; }
   .shared-report {
     max-width: 100%;
     padding: 12px;
   }
-  .panel-card { box-shadow: none !important; break-inside: avoid; }
+  .panel-card {
+    box-shadow: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .neural-timeline svg, .braided-trail svg {
+    page-break-inside: avoid;
+  }
   .shared-report-headline { font-size: 24px; }
   .shared-report-title { font-size: 30px; }
+  .big-h, .result-hero h2 { font-size: 28px !important; }
+  a { color: var(--ink); text-decoration: none; }
+  /* Print all evidence chips and edit cards on light backgrounds so
+     ink-saver printers don't mangle them. */
+  .edit-chip, .edit-chip-window, .edit-chip-score, .edit-chip-lift {
+    background: white !important;
+  }
 }
 .neural-readout {
   margin-top: 12px;
