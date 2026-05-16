@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import {
   acceptInvite,
@@ -152,9 +152,26 @@ const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
 
 export function AppShell() {
   const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
+  const clerk = useClerk();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [view, setView] = useState<View>("workbench");
   const [bootError] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((current) => !current);
+      }
+      if (e.key === "Escape" && paletteOpen) {
+        setPaletteOpen(false);
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [paletteOpen]);
 
   useEffect(() => {
     if (!clerkLoaded) return;
@@ -226,6 +243,189 @@ export function AppShell() {
           <TeamView session={session} onUpdate={refreshSession} />
         ) : null}
       </main>
+
+      {paletteOpen ? (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onNavigate={(target) => {
+            setView(target);
+            setPaletteOpen(false);
+          }}
+          onSignIn={() => {
+            if (clerk) clerk.openSignIn({ forceRedirectUrl: "/app" });
+            setPaletteOpen(false);
+          }}
+          onAccount={() => {
+            if (clerk) clerk.openUserProfile();
+            setPaletteOpen(false);
+          }}
+          signedIn={signedIn}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const PALETTE_NAV: Array<{ id: View; label: string; hint: string; icon: string }> = [
+  { id: "workbench", label: "Go to Workbench", hint: "Run a new comparison", icon: "✦" },
+  { id: "library", label: "Go to Library", hint: "Saved variants + bulk actions", icon: "❒" },
+  { id: "brands", label: "Go to Brands", hint: "Re-usable briefs", icon: "✺" },
+  { id: "outcomes", label: "Go to Outcomes", hint: "Calibration vs real spend", icon: "$" },
+  { id: "team", label: "Go to Team", hint: "Members, invites, audit log", icon: "◐" }
+];
+
+type PaletteCommand = {
+  id: string;
+  label: string;
+  hint: string;
+  icon: string;
+  perform: () => void;
+};
+
+function CommandPalette({
+  onClose,
+  onNavigate,
+  onSignIn,
+  onAccount,
+  signedIn
+}: {
+  onClose: () => void;
+  onNavigate: (view: View) => void;
+  onSignIn: () => void;
+  onAccount: () => void;
+  signedIn: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [activeIdx, setActiveIdx] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const commands: PaletteCommand[] = useMemo(() => {
+    const base: PaletteCommand[] = PALETTE_NAV.map((item) => ({
+      id: `nav:${item.id}`,
+      label: item.label,
+      hint: item.hint,
+      icon: item.icon,
+      perform: () => onNavigate(item.id)
+    }));
+    base.push({
+      id: "external:repo",
+      label: "Open GitHub repository",
+      hint: "github.com/manrajmondair/stimli",
+      icon: "↗",
+      perform: () => window.open("https://github.com/manrajmondair/stimli", "_blank", "noopener,noreferrer")
+    });
+    base.push({
+      id: "external:legal",
+      label: "Open trust & license",
+      hint: "Data handling, model license",
+      icon: "§",
+      perform: () => {
+        window.location.href = "/legal";
+      }
+    });
+    if (signedIn) {
+      base.push({
+        id: "account",
+        label: "Manage account",
+        hint: "Profile, security, connected providers",
+        icon: "@",
+        perform: onAccount
+      });
+    } else {
+      base.push({
+        id: "signin",
+        label: "Sign in",
+        hint: "Save variants, log outcomes, share decisions",
+        icon: "→",
+        perform: onSignIn
+      });
+    }
+    return base;
+  }, [onNavigate, onSignIn, onAccount, signedIn]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return commands;
+    return commands.filter((cmd) =>
+      cmd.label.toLowerCase().includes(q) || cmd.hint.toLowerCase().includes(q)
+    );
+  }, [commands, query]);
+
+  useEffect(() => {
+    if (activeIdx >= filtered.length) setActiveIdx(0);
+  }, [filtered, activeIdx]);
+
+  function onKeyDown(ev: React.KeyboardEvent<HTMLInputElement>) {
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      setActiveIdx((idx) => Math.min(filtered.length - 1, idx + 1));
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      setActiveIdx((idx) => Math.max(0, idx - 1));
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      filtered[activeIdx]?.perform();
+    }
+  }
+
+  return (
+    <div className="palette-overlay" role="presentation" onClick={onClose}>
+      <div
+        className="palette-modal"
+        role="dialog"
+        aria-label="Command palette"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="palette-input-row">
+          <span className="palette-prefix">⌘K</span>
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setActiveIdx(0);
+            }}
+            onKeyDown={onKeyDown}
+            placeholder="Jump to a view, search a command…"
+            aria-label="Command palette search"
+            className="palette-input"
+          />
+          <button type="button" className="palette-close" onClick={onClose} aria-label="Close command palette">
+            ×
+          </button>
+        </div>
+        <ul className="palette-list" role="listbox">
+          {filtered.length === 0 ? (
+            <li className="palette-empty">No commands match.</li>
+          ) : (
+            filtered.map((cmd, idx) => (
+              <li key={cmd.id}>
+                <button
+                  type="button"
+                  className={`palette-item ${idx === activeIdx ? "active" : ""}`}
+                  onMouseEnter={() => setActiveIdx(idx)}
+                  onClick={() => cmd.perform()}
+                  role="option"
+                  aria-selected={idx === activeIdx}
+                >
+                  <span className="palette-icon">{cmd.icon}</span>
+                  <span className="palette-label">{cmd.label}</span>
+                  <span className="palette-hint">{cmd.hint}</span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+        <div className="palette-footer">
+          <kbd>↑↓</kbd> navigate · <kbd>↵</kbd> select · <kbd>esc</kbd> close
+        </div>
+      </div>
     </div>
   );
 }
@@ -275,6 +475,9 @@ function Sidebar({
           <span className="side-dot" style={{ background: "transparent", border: "1.5px dashed var(--ink)" }} />
           <span>Docs</span>
         </a>
+        <span className="cmdk-hint" aria-hidden="true" style={{ paddingLeft: 14 }}>
+          <kbd>⌘</kbd> <kbd>K</kbd> for commands
+        </span>
       </nav>
 
       {signedIn ? (
