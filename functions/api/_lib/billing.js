@@ -19,6 +19,7 @@
 
 import {
   getSubscription,
+  getSubscriptionByCustomerId,
   getSubscriptionByStripeId,
   getTeam,
   recordBillingEvent,
@@ -54,7 +55,7 @@ function getCatalog() {
       name: "Research",
       tagline: "Free for solo research and CS 153 demos.",
       price_cents_monthly: 0,
-      seats: 1,
+      seats: envNum("STIMLI_RESEARCH_SEATS", 3),
       asset_limit_per_hour: envNum("STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR", 40),
       comparison_limit_per_hour: envNum("STIMLI_RESEARCH_COMPARISON_LIMIT_PER_HOUR", 12),
       asset_limit_per_month: envNum("STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH", 200),
@@ -74,7 +75,7 @@ function getCatalog() {
       name: "Growth",
       tagline: "For DTC teams shipping creative every week.",
       price_cents_monthly: envNum("STIMLI_GROWTH_PRICE_CENTS_MONTHLY", 14900),
-      seats: 5,
+      seats: envNum("STIMLI_GROWTH_SEATS", 5),
       asset_limit_per_hour: envNum("STIMLI_GROWTH_ASSET_LIMIT_PER_HOUR", 300),
       comparison_limit_per_hour: envNum("STIMLI_GROWTH_COMPARISON_LIMIT_PER_HOUR", 100),
       asset_limit_per_month: envNum("STIMLI_GROWTH_ASSET_LIMIT_PER_MONTH", 4000),
@@ -95,7 +96,7 @@ function getCatalog() {
       name: "Scale",
       tagline: "For platforms and agencies with enterprise governance.",
       price_cents_monthly: envNum("STIMLI_SCALE_PRICE_CENTS_MONTHLY", 49900),
-      seats: 25,
+      seats: envNum("STIMLI_SCALE_SEATS", 25),
       asset_limit_per_hour: envNum("STIMLI_SCALE_ASSET_LIMIT_PER_HOUR", 2000),
       comparison_limit_per_hour: envNum("STIMLI_SCALE_COMPARISON_LIMIT_PER_HOUR", 500),
       asset_limit_per_month: envNum("STIMLI_SCALE_ASSET_LIMIT_PER_MONTH", 40000),
@@ -459,14 +460,11 @@ function planIdForSubscription(subscription) {
 
 async function teamIdForCustomer(customerId) {
   if (!customerId) return "";
-  // We don't index teams by stripe_customer_id, so check the existing
-  // subscription record first (it's keyed by team_id and carries the
-  // customer id). For brand-new checkouts the team was already saved with
-  // stripe_customer_id; the subscription record fills in afterwards.
-  // Cheap O(1) lookup via subscription store would require an index; the
-  // webhook path already filters by team metadata so this fallback path is
-  // rare enough that a linear scan is fine.
-  return ""; // Caller already tried metadata; downstream will short-circuit.
+  // Reverse-lookup via the dedicated index on stimli_subscriptions.
+  // Used when a webhook event arrives without team metadata (e.g. an
+  // invoice.payment_failed triggered by a manual Stripe Dashboard charge).
+  const sub = await getSubscriptionByCustomerId(customerId);
+  return sub?.team_id || "";
 }
 
 function currentPeriod(subscription) {

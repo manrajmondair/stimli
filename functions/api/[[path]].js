@@ -282,6 +282,10 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
     }
     if (request.method === "POST") {
       const payload = await parseJson(request);
+      // Seat enforcement: paid plans cap the number of seats. Count active
+      // members plus unaccepted pending invites against plan.seats so a team
+      // can't quietly grow past their plan by minting invites in advance.
+      await enforceSeatLimit(authContext.team);
       const token = randomBase64url(24);
       const invite = {
         id: newId("invite"),
@@ -389,6 +393,17 @@ async function handleInvites(request, cookies, segments, authContext, headers) {
     }
     if (invite.email && invite.email !== authContext.user.email) {
       throw httpError(403, "This invite belongs to a different email address.");
+    }
+    // Re-check seats at accept time: a Growth team might have minted 5 invites
+    // before downgrading, and we shouldn't honor a stale invite that pushes
+    // them over the new cap. Skipped if the invitee is already a member
+    // (re-accept idempotency).
+    const acceptingTeam = await getTeam(invite.team_id);
+    if (acceptingTeam) {
+      const existingMembership = await getTeamMember(invite.team_id, authContext.user.id);
+      if (!existingMembership) {
+        await enforceSeatLimit(acceptingTeam, { includePendingInvites: false });
+      }
     }
     await saveTeamMember({
       team_id: invite.team_id,
@@ -1742,6 +1757,34 @@ async function enforceUsageLimit(request, workspaceId, kind, quota) {
     },
     created_at: nowIso()
   });
+}
+
+async function enforceSeatLimit(team, options = {}) {
+  if (!team?.id) return;
+  const quota = await getQuotaForWorkspace(team.id);
+  const seats = Number(quota?.plan?.seats);
+  if (!Number.isFinite(seats) || seats <= 0) return;
+  const [members, invites] = await Promise.all([
+    listTeamMembers(team.id),
+    options.includePendingInvites === false ? Promise.resolve([]) : listTeamInvites(team.id)
+  ]);
+  const pending = invites.filter((invite) => !invite.accepted_at);
+  const used = members.length + pending.length;
+  if (used >= seats) {
+    const err = httpError(
+      402,
+      `Seat limit reached on the ${quota.plan?.name || "current"} plan (${seats} seats). Upgrade to invite more teammates.`
+    );
+    err.code = "seat_limit_reached";
+    err.details = {
+      kind: "seat",
+      limit: seats,
+      used,
+      plan: quota.plan?.id || null,
+      upgrade_url: "/?billing=upgrade"
+    };
+    throw err;
+  }
 }
 
 async function clientBucketKey(request, workspaceId) {

@@ -218,6 +218,28 @@ test("returns a structured 402 with quota_exceeded when the monthly cap is reach
   }
 });
 
+test("enforces plan seat limits when creating team invites", async () => {
+  // Force Research down to a single seat so an owner alone fills the plan and
+  // the first invite is blocked with a structured 402.
+  withEnv({ STIMLI_RESEARCH_SEATS: "1" });
+  const owner = await testAccount("Seat Limit Team", "owner");
+  try {
+    const blocked = await call(
+      "POST",
+      "/api/teams/invites",
+      { email: "second-seat@example.com", role: "analyst" },
+      { cookie: owner.cookie }
+    );
+    assert.equal(blocked.statusCode, 402);
+    assert.equal(blocked.json.code, "seat_limit_reached");
+    assert.equal(blocked.json.details.kind, "seat");
+    assert.equal(blocked.json.details.limit, 1);
+    assert.equal(blocked.json.details.plan, "research");
+  } finally {
+    withEnv({ STIMLI_RESEARCH_SEATS: undefined });
+  }
+});
+
 test("billing webhook short-circuits on a replayed Stripe event id", async () => {
   // We don't run real Stripe signature verification in tests (no secret key),
   // so this test exercises the idempotency store directly: writing the same

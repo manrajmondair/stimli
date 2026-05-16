@@ -990,6 +990,24 @@ export async function getSubscriptionByStripeId(stripeSubscriptionId) {
   return rows[0]?.payload || null;
 }
 
+export async function getSubscriptionByCustomerId(stripeCustomerId) {
+  if (!stripeCustomerId) return null;
+  const sql = getSql();
+  if (!sql) {
+    for (const sub of memoryStore.subscriptions.values()) {
+      if (sub.stripe_customer_id === stripeCustomerId) return sub;
+    }
+    return null;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select payload from stimli_subscriptions
+    where stripe_customer_id = ${stripeCustomerId}
+    limit 1
+  `;
+  return rows[0]?.payload || null;
+}
+
 // Idempotency log for Stripe webhooks. We key by the Stripe event id so a
 // replayed delivery never double-applies a plan change or invoice.
 export async function recordBillingEvent(event) {
