@@ -544,7 +544,7 @@ export function NeuralTimeline({
   variants,
   activeVariantId,
   width = 720,
-  visibleChannels = ["attention", "memory", "cognitive_load"]
+  visibleChannels: visibleChannelsProp
 }: {
   variants: NeuralVariant[];
   activeVariantId?: string;
@@ -569,7 +569,15 @@ export function NeuralTimeline({
   const xTicks = Array.from({ length: tickCount + 1 }, (_, i) => round1((i / tickCount) * maxSecond));
 
   const [hoverSecond, setHoverSecond] = useState<number | null>(null);
+  const [hiddenChannels, setHiddenChannels] = useState<Set<Channel["key"]>>(new Set());
   const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // When the caller passes visibleChannelsProp explicitly we treat it as
+  // the source of truth and ignore the user's toggle state. When the prop
+  // is undefined we let the user toggle locally via the legend.
+  const visibleChannels: Array<Channel["key"]> = visibleChannelsProp
+    ? visibleChannelsProp
+    : NEURAL_CHANNELS.map((c) => c.key).filter((k) => !hiddenChannels.has(k));
 
   function handleMove(ev: React.MouseEvent<SVGSVGElement>) {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -582,6 +590,41 @@ export function NeuralTimeline({
 
   function handleLeave() {
     setHoverSecond(null);
+  }
+
+  function handleKey(ev: React.KeyboardEvent<SVGSVGElement>) {
+    const step = Math.max(0.1, round1(maxSecond / 40));
+    const current = hoverSecond ?? maxSecond / 2;
+    if (ev.key === "ArrowLeft") {
+      ev.preventDefault();
+      setHoverSecond(round1(Math.max(0, current - step)));
+    } else if (ev.key === "ArrowRight") {
+      ev.preventDefault();
+      setHoverSecond(round1(Math.min(maxSecond, current + step)));
+    } else if (ev.key === "Home") {
+      ev.preventDefault();
+      setHoverSecond(0);
+    } else if (ev.key === "End") {
+      ev.preventDefault();
+      setHoverSecond(round1(maxSecond));
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      setHoverSecond(null);
+    }
+  }
+
+  function toggleChannel(key: Channel["key"]) {
+    if (visibleChannelsProp) return; // controlled mode; toggles are no-ops
+    setHiddenChannels((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else if (NEURAL_CHANNELS.length - next.size > 1) {
+        // Never let the user hide the last visible channel.
+        next.add(key);
+      }
+      return next;
+    });
   }
 
   function valueAt(variant: NeuralVariant, channel: Channel["key"], second: number): number {
@@ -618,8 +661,11 @@ export function NeuralTimeline({
         height={CHART_HEIGHT}
         onMouseMove={handleMove}
         onMouseLeave={handleLeave}
-        style={{ display: "block", overflow: "visible" }}
+        onKeyDown={handleKey}
+        tabIndex={0}
+        style={{ display: "block", overflow: "visible", outline: "none" }}
         role="img"
+        aria-describedby="neural-timeline-instructions"
       >
         <rect
           x={CHART_MARGIN.left}
@@ -742,14 +788,34 @@ export function NeuralTimeline({
       </svg>
 
       <div className="neural-legend" aria-hidden="false">
-        {NEURAL_CHANNELS.filter((c) => visibleChannels.includes(c.key)).map((channel) => (
-          <span key={channel.key} className="neural-legend-item">
-            <span className="swatch" style={{ background: channel.color }} />
-            <strong>{channel.label}</strong>
-            <span className="neural-legend-desc">{channel.description}</span>
-          </span>
-        ))}
+        {NEURAL_CHANNELS.map((channel) => {
+          const isVisible = visibleChannels.includes(channel.key);
+          const controllable = !visibleChannelsProp;
+          return controllable ? (
+            <button
+              type="button"
+              key={channel.key}
+              className={`neural-legend-item neural-legend-toggle ${isVisible ? "active" : "muted"}`}
+              onClick={() => toggleChannel(channel.key)}
+              aria-pressed={isVisible}
+              aria-label={`${isVisible ? "Hide" : "Show"} ${channel.label} channel — ${channel.description}`}
+            >
+              <span className="swatch" style={{ background: channel.color, opacity: isVisible ? 1 : 0.35 }} />
+              <strong>{channel.label}</strong>
+              <span className="neural-legend-desc">{channel.description}</span>
+            </button>
+          ) : (
+            <span key={channel.key} className={`neural-legend-item ${isVisible ? "active" : "muted"}`}>
+              <span className="swatch" style={{ background: channel.color, opacity: isVisible ? 1 : 0.35 }} />
+              <strong>{channel.label}</strong>
+              <span className="neural-legend-desc">{channel.description}</span>
+            </span>
+          );
+        })}
       </div>
+      <p id="neural-timeline-instructions" className="neural-timeline-instructions">
+        Hover or focus the chart and use Arrow keys / Home / End to scrub. Click a channel to hide it.
+      </p>
 
       {hoverSecond != null && (
         <div className="neural-readout" aria-live="polite">

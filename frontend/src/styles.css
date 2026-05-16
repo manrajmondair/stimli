@@ -975,6 +975,26 @@ h1, h2, h3, .display {
   border: 1.25px solid var(--ink);
 }
 .neural-legend-desc { font-size: 10.5px; color: var(--ink-soft); }
+.neural-legend-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+.neural-legend-toggle:hover { background: var(--paper-warm); }
+.neural-legend-toggle:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.neural-legend-item.muted strong { color: var(--ink-soft); text-decoration: line-through; }
+.neural-timeline-instructions {
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
 .neural-readout {
   margin-top: 12px;
   padding: 10px 12px;
