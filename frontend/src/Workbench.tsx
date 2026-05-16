@@ -78,12 +78,12 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     file: null
   });
   const [brief, setBrief] = useState<CreativeBrief>(() => ({
-    brand_name: briefDefaults?.brand_name ?? "Lumina",
-    audience: briefDefaults?.audience ?? "busy women with dry or sensitive skin",
-    product_category: briefDefaults?.product_category ?? "skincare hydration system",
-    primary_offer: briefDefaults?.primary_offer ?? "starter kit with free shipping",
-    required_claims: briefDefaults?.required_claims ?? ["24-hr hydration", "dermatologist tested"],
-    forbidden_terms: briefDefaults?.forbidden_terms ?? ["miracle cure", "guaranteed"]
+    brand_name: briefDefaults?.brand_name ?? "",
+    audience: briefDefaults?.audience ?? "",
+    product_category: briefDefaults?.product_category ?? "",
+    primary_offer: briefDefaults?.primary_offer ?? "",
+    required_claims: briefDefaults?.required_claims ?? [],
+    forbidden_terms: briefDefaults?.forbidden_terms ?? []
   }));
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
@@ -958,24 +958,56 @@ function IntakePanel({
         <div className="brief-grid">
           <label className="brief-row">
             <span>Brand</span>
-            <input value={brief.brand_name} onChange={(e) => setBrief({ ...brief, brand_name: e.target.value })} />
+            <input
+              value={brief.brand_name}
+              onChange={(e) => setBrief({ ...brief, brand_name: e.target.value })}
+              placeholder="e.g. Lumina"
+            />
           </label>
           <label className="brief-row">
             <span>Audience</span>
-            <input value={brief.audience} onChange={(e) => setBrief({ ...brief, audience: e.target.value })} />
+            <input
+              value={brief.audience}
+              onChange={(e) => setBrief({ ...brief, audience: e.target.value })}
+              placeholder="who you're talking to"
+            />
           </label>
           <label className="brief-row">
             <span>Category</span>
             <input
               value={brief.product_category}
               onChange={(e) => setBrief({ ...brief, product_category: e.target.value })}
+              placeholder="skincare, fitness, fintech, …"
             />
           </label>
           <label className="brief-row">
             <span>Offer</span>
-            <input value={brief.primary_offer} onChange={(e) => setBrief({ ...brief, primary_offer: e.target.value })} />
+            <input
+              value={brief.primary_offer}
+              onChange={(e) => setBrief({ ...brief, primary_offer: e.target.value })}
+              placeholder="starter kit, free trial, 20% off, …"
+            />
           </label>
         </div>
+        {isBriefEmpty(brief) ? (
+          <button
+            type="button"
+            className="btn cream small"
+            style={{ marginTop: 8 }}
+            onClick={() =>
+              setBrief({
+                brand_name: "Lumina",
+                audience: "busy women with dry or sensitive skin",
+                product_category: "skincare hydration system",
+                primary_offer: "starter kit with free shipping",
+                required_claims: ["24-hr hydration", "dermatologist tested"],
+                forbidden_terms: ["miracle cure", "guaranteed"]
+              })
+            }
+          >
+            Load demo brief
+          </button>
+        ) : null}
         <div className="brief-rules">
           <strong>Required claims</strong>
           {brief.required_claims.map((claim) => (
@@ -1801,6 +1833,17 @@ function labelFor(key: keyof ScoreBreakdown): string {
     default:
       return String(key);
   }
+}
+
+function isBriefEmpty(brief: CreativeBrief): boolean {
+  return (
+    !brief.brand_name.trim() &&
+    !brief.audience.trim() &&
+    !brief.product_category.trim() &&
+    !brief.primary_offer.trim() &&
+    brief.required_claims.length === 0 &&
+    brief.forbidden_terms.length === 0
+  );
 }
 
 function formatTimestamp(seconds: number): string {

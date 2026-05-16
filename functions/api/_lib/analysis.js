@@ -495,28 +495,89 @@ function buildRecommendation(variants) {
   const gap = best.analysis.scores.overall - runnerUp.analysis.scores.overall;
   const verdict = best.analysis.scores.overall >= 68 && gap >= 3 ? "ship" : "revise";
   const confidence = round(Math.min(0.94, 0.58 + gap / 45 + Math.max(0, best.analysis.scores.overall - 65) / 120), 2);
+  const reasons = buildRecommendationReasons(best, runnerUp, gap, verdict);
   return {
     winner_asset_id: best.asset.id,
     verdict,
     confidence,
     headline: verdict === "ship" ? `Ship ${best.asset.name}` : `Revise before shipping; ${best.asset.name} is the current leader`,
-    reasons: [
-      `Highest composite score at ${best.analysis.scores.overall}/100.`,
-      largestAdvantage(best, runnerUp),
-      "Recommendation is based on relative creative quality, predicted response, and editability before spend."
-    ]
+    reasons
   };
 }
 
-function largestAdvantage(best, other) {
-  const entries = Object.entries(best.analysis.scores)
+function buildRecommendationReasons(best, runnerUp, gap, verdict) {
+  const reasons = [];
+  // Reason 1 — headline composite score with the actual gap and winning-margin context.
+  reasons.push(
+    gap > 0
+      ? `Composite ${best.analysis.scores.overall}/100, ahead of ${runnerUp.asset.name} by ${round(gap, 1)} pts.`
+      : `Composite ${best.analysis.scores.overall}/100; tied with ${runnerUp.asset.name}.`
+  );
+
+  // Reason 2 — the strongest dimension the winner is winning on, with both
+  // sides' actual scores so the user can verify the claim.
+  const margins = Object.entries(best.analysis.scores)
     .filter(([key]) => key !== "overall")
-    .map(([key, value]) => [key, value - other.analysis.scores[key]]);
-  const [key, delta] = entries.sort((left, right) => right[1] - left[1])[0];
-  if (delta <= 0) {
-    return "The leader wins on balance rather than a single dominant signal.";
+    .map(([key, value]) => [key, value - (runnerUp.analysis.scores[key] ?? value)])
+    .filter(([, delta]) => Number.isFinite(delta));
+  margins.sort((a, b) => b[1] - a[1]);
+  const [topKey, topDelta] = margins[0] || [null, 0];
+  if (topKey && topDelta > 0.5) {
+    const label = DIMENSION_LABEL[topKey] || topKey.replaceAll("_", " ");
+    const bestVal = best.analysis.scores[topKey];
+    const otherVal = runnerUp.analysis.scores[topKey];
+    reasons.push(
+      `Biggest edge is ${label} (${round(bestVal, 1)} vs ${round(otherVal, 1)}, +${round(topDelta, 1)} pts).`
+    );
+  } else {
+    reasons.push("The winner takes it on balance, not on a single dimension.");
   }
-  return `Biggest edge is ${key.replaceAll("_", " ")}, ahead by ${round(delta, 1)} points.`;
+
+  // Reason 3 — point to the actual predicted-response peak the user can see
+  // on the timeline chart, so the recommendation grounds in the data instead
+  // of empty rhetoric.
+  const peak = findAttentionPeak(best.analysis.timeline);
+  if (peak) {
+    reasons.push(
+      `Predicted attention peaks at ${Math.round(peak.value * 100)}/100 around ${peak.second.toFixed(1)}s — that's where the hook is landing.`
+    );
+  }
+
+  // Reason 4 — context-aware caveat, depending on the verdict.
+  if (verdict === "revise") {
+    const weakest = Object.entries(best.analysis.scores)
+      .filter(([key]) => key !== "overall" && key !== "cognitive_load")
+      .sort((a, b) => a[1] - b[1])[0];
+    if (weakest) {
+      const label = DIMENSION_LABEL[weakest[0]] || weakest[0].replaceAll("_", " ");
+      reasons.push(
+        `Worth fixing the ${label} (${round(weakest[1], 1)}/100) before shipping — see the edit list below.`
+      );
+    } else {
+      reasons.push("Tighten the items in the edit list before allocating spend.");
+    }
+  } else if (best.analysis.scores.cognitive_load > 62) {
+    reasons.push(
+      `Cognitive load is at ${round(best.analysis.scores.cognitive_load, 1)}/100 — keep an eye on the dense beats in the edit list.`
+    );
+  } else {
+    reasons.push("Edits below would push the composite further, but none are launch blockers.");
+  }
+
+  return reasons;
+}
+
+function findAttentionPeak(timeline) {
+  if (!Array.isArray(timeline) || timeline.length === 0) return null;
+  let best = null;
+  for (const point of timeline) {
+    const value = Number(point.attention);
+    if (!Number.isFinite(value)) continue;
+    if (!best || value > best.value) {
+      best = { value, second: Number(point.second) || 0 };
+    }
+  }
+  return best;
 }
 
 // Dimension weights in overallScore — used to compute expected lift from a
