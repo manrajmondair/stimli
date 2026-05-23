@@ -14,13 +14,13 @@
 // - Env access flows through the configure*(env) calls on each lib.
 
 import {
-  buildChallengerText,
   cancelBrainJob,
   compareAssets,
   compareAssetsWithBrain,
   configureAnalysis,
   createPendingComparison,
   extractAssetText,
+  generateChallenger,
   getBrainJob,
   newId,
   nowIso,
@@ -962,7 +962,7 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
       name: `${sourceVariant.asset.name} - ${titleCase(focus)} Challenger`,
       source_url: sourceVariant.asset.source_url,
       file_path: null,
-      extracted_text: buildChallengerText(sourceVariant.asset, comparison.brief, focus),
+      extracted_text: await generateChallenger(sourceVariant.asset, comparison.brief, focus),
       duration_seconds: sourceVariant.asset.duration_seconds,
       metadata: {
         challenger: true,

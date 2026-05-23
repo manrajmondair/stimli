@@ -58,6 +58,7 @@ export type Recommendation = {
   confidence: number;
   headline: string;
   reasons: string[];
+  llm_polished?: boolean;
 };
 
 export type SuggestionTargetKind =
@@ -107,6 +108,23 @@ export type Suggestion = {
   compared_score?: number | null;
   evidence_window?: EvidenceWindow | null;
   expected_lift?: number;
+  // Set when the templated edit was rewritten by the OpenRouter copy polish path.
+  llm_polished?: boolean;
+};
+
+export type ComplianceCheck = {
+  claim?: string;
+  term?: string;
+  present: boolean;
+  evidence: string | null;
+};
+
+export type ComplianceReport = {
+  asset_id: string;
+  required_claims: ComplianceCheck[];
+  forbidden_terms: ComplianceCheck[];
+  missing_required: string[];
+  forbidden_hits: ComplianceCheck[];
 };
 
 export type CreativeBrief = {
@@ -128,6 +146,7 @@ export type Comparison = {
   recommendation: Recommendation;
   suggestions: Suggestion[];
   jobs?: ComparisonJob[];
+  compliance?: ComplianceReport[] | null;
   created_at: string;
 };
 

@@ -1891,6 +1891,30 @@ h1, h2, h3, .display {
 }
 .bar-val { line-height: 1; padding-right: 2px; mix-blend-mode: multiply; }
 
+.compliance-flags {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--r-md);
+  background: var(--paper-warm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compliance-title {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.compliance-flags ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.compliance-flags li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; font-size: 12.5px; color: var(--ink-soft); }
+.compliance-variant { font-family: var(--body); font-weight: 600; color: var(--ink); }
+.compliance-issue { font-family: var(--body); }
+.compliance-missing { color: var(--tomato-ink, var(--tomato)); }
+.compliance-forbidden { color: var(--plum, #5b2f7a); }
+
 .edit-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .edit-list li {
   display: grid;

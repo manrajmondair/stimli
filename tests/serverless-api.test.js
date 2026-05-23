@@ -997,6 +997,162 @@ test("retries failed hosted inference jobs from admin controls", async () => {
   }
 });
 
+test("comparison polishes edits, recommendation, and compliance when OpenRouter is enabled", async () => {
+  // Drives a real comparison through onRequest with the OpenRouter copy-polish
+  // path active. The actual upstream is stubbed via globalThis.fetch so the
+  // test stays hermetic; what we're verifying is the wiring:
+  //   • polished issue/suggested_edit/draft_revision come through on suggestions
+  //   • the recommendation gets the polished headline/reasons
+  //   • compliance issues from the LLM make it onto comparison.compliance
+  //   • providerHealth lists the openrouter provider when active
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  withEnv({
+    OPENROUTER_API_KEY: "test-openrouter-key",
+    STIMLI_LLM_MODEL: "anthropic/claude-haiku-4.5",
+    STIMLI_LLM_TIMEOUT_MS: "5000"
+  });
+
+  let editCallCount = 0;
+  let reasonsCalled = false;
+  let complianceCalled = false;
+  globalThis.fetch = async (url, options = {}) => {
+    if (typeof url !== "string" || !url.includes("openrouter.ai")) {
+      return new Response(JSON.stringify({ detail: "not stubbed" }), { status: 404 });
+    }
+    const body = JSON.parse(String(options.body || "{}"));
+    const userMsg = body.messages?.[1]?.content || "";
+    if (userMsg.includes("\"template_issue\"") || userMsg.includes("template_issue")) {
+      editCallCount += 1;
+      // The user payload contains a list of templated edits; echo them back as polished.
+      const payload = JSON.parse(userMsg.split("\n\nRespond with strict JSON")[0]);
+      const polishedEdits = (payload.edits || []).map((edit) => ({
+        score_key: edit.score_key,
+        issue: `Polished issue for ${edit.score_key} on variant ${payload.variant?.name || "?"}.`,
+        suggested_edit: `Polished edit (${edit.score_key}): lead with the painful moment then Calmcap.`,
+        draft_revision: edit.score_key === "cognitive_load" ? null : `Draft for ${edit.score_key}.`
+      }));
+      return jsonResponse({
+        choices: [{ message: { content: JSON.stringify({ edits: polishedEdits }) } }]
+      });
+    }
+    if (userMsg.includes("\"template_headline\"") || userMsg.includes("template_headline")) {
+      reasonsCalled = true;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                headline: "Ship Strong Variant on the strength of the first beat.",
+                reasons: [
+                  "Composite leads runner-up by the expected margin.",
+                  "Opening hook holds attention through the first three seconds."
+                ]
+              })
+            }
+          }
+        ]
+      });
+    }
+    if (userMsg.includes("\"required_claims\"") && userMsg.includes("\"forbidden_terms\"")) {
+      complianceCalled = true;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                required_claims: [{ claim: "clinically tested", present: false, evidence: null }],
+                forbidden_terms: [{ term: "miracle", present: false, evidence: null }]
+              })
+            }
+          }
+        ]
+      });
+    }
+    return jsonResponse({ choices: [{ message: { content: "{}" } }] });
+  };
+
+  try {
+    // providerHealth should now report openrouter as active.
+    const providers = await call("GET", "/api/brain/providers");
+    const openrouter = providers.json.find((entry) => entry.provider === "openrouter");
+    assert.ok(openrouter, "openrouter provider should be in providerHealth");
+    assert.equal(openrouter.active, true);
+
+    const project = await call("POST", "/api/projects", { name: "Polish Project" }, headers);
+    const strong = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "script",
+        name: "Strong Variant",
+        text: "Stop tossing all night. Calmcap helps you fall asleep in twelve minutes. Try the starter kit today.",
+        project_id: project.json.id
+      },
+      headers
+    );
+    const soft = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "script",
+        name: "Soft Variant",
+        text: "Our brand has a modern solution for everyone.",
+        project_id: project.json.id
+      },
+      headers
+    );
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      {
+        asset_ids: [strong.json.asset.id, soft.json.asset.id],
+        objective: "Pick the stronger sleep ad.",
+        brief: {
+          brand_name: "Calmcap",
+          audience: "thirty-something insomniacs",
+          primary_offer: "starter kit",
+          required_claims: ["clinically tested"],
+          forbidden_terms: ["miracle"]
+        },
+        project_id: project.json.id
+      },
+      headers
+    );
+    assert.equal(created.statusCode, 200);
+    assert.equal(created.json.status, "complete");
+
+    // At least one edit should be polished (the winner gets up to 4 edits, so
+    // at least one LLM call should have fired against the OpenRouter endpoint).
+    assert.ok(editCallCount > 0, "expected at least one edit polish LLM call");
+    const polishedSuggestion = created.json.suggestions.find((entry) => entry.llm_polished);
+    assert.ok(polishedSuggestion, "expected at least one suggestion with llm_polished=true");
+    assert.match(polishedSuggestion.issue, /Polished issue/);
+
+    // Recommendation should have the polished headline+reasons.
+    assert.equal(reasonsCalled, true);
+    assert.equal(created.json.recommendation.llm_polished, true);
+    assert.match(created.json.recommendation.headline, /strength of the first beat/);
+    assert.equal(created.json.recommendation.reasons.length, 2);
+
+    // Compliance result should attach when the brief carries required/forbidden lists.
+    assert.equal(complianceCalled, true);
+    assert.ok(Array.isArray(created.json.compliance));
+    assert.ok(created.json.compliance.length > 0);
+    const firstReport = created.json.compliance[0];
+    assert.ok(Array.isArray(firstReport.missing_required));
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({
+      OPENROUTER_API_KEY: undefined,
+      STIMLI_LLM_MODEL: undefined,
+      STIMLI_LLM_TIMEOUT_MS: undefined
+    });
+  }
+});
+
 async function call(method, url, body = null, headers = {}) {
   const hasBody = body !== null && body !== undefined && method !== "GET" && method !== "HEAD";
   // testAccount() and sessionCookie() return a Clerk user id wrapped as

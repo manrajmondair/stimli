@@ -80,6 +80,7 @@ npm run deploy:pages
   - `CLERK_PUBLISHABLE_KEY` — Clerk publishable key (pk_test_… / pk_live_…).
   - `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL` — Modal endpoint URLs.
   - `TRIBE_API_KEY` — bearer token shared with the Modal worker.
+  - `OPENROUTER_API_KEY` (optional) — turns on LLM copy polish for edit cards, reasons, challengers, and semantic compliance checks. See [Optional integrations](#optional-integrations).
 - **GitHub Actions secrets** (set via `gh secret set` or repo settings → Actions):
   - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` — used by `wrangler-action`.
   - `VITE_CLERK_PUBLISHABLE_KEY` — Vite reads this at build time and inlines it into the bundle. Same value as the Clerk publishable key.
@@ -96,6 +97,7 @@ Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
 ### Optional integrations
 
 - `STIMLI_TRIBE_COMMERCIAL_LICENSE=1` flips the license badge to `commercial-ready` for surfaces that gate commerce on the brain provider's license terms.
+- `OPENROUTER_API_KEY=sk-or-v1-…` turns on the LLM copy-polish path in `functions/api/_lib/copy_llm.js`. When set, templated edit cards, recommendation reasons, and challenger drafts are rewritten by an LLM grounded in the actual variant text + brief, and a semantic compliance check populates `comparison.compliance` with required-claim and forbidden-term hits. When unset, every path stays templated and deterministic. Default model is `anthropic/claude-haiku-4.5` (about $0.00004 per round-trip via OpenRouter); override with `STIMLI_LLM_MODEL` (any OpenRouter model id) and `STIMLI_LLM_TIMEOUT_MS` (default 8000).
 
 ### Subscription billing (Stripe)
 

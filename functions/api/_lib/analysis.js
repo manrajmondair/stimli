@@ -5,6 +5,21 @@
 // TRIBE_API_KEY come from the runtime env. UUIDs use globalThis.crypto.randomUUID.
 // Otherwise pure analysis code: deterministic heuristic timeline when no
 // remote provider is configured, hosted TRIBE timeline when it is.
+//
+// When OPENROUTER_API_KEY is set, the templated edit cards, recommendation
+// reasons, and challenger drafts are polished through copy_llm.js (OpenRouter
+// → Claude Haiku 4.5 by default). When it's unset, every output path is
+// purely deterministic so tests stay reproducible without a paid LLM.
+
+import {
+  checkCompliance,
+  configureCopyLlm,
+  copyLlmProviderHealth,
+  generateChallengerText as polishChallengerText,
+  isCopyLlmEnabled,
+  polishEditsForVariant,
+  polishRecommendation
+} from "./copy_llm.js";
 
 const ctaWords = new Set(["buy", "shop", "try", "start", "get", "claim", "book", "subscribe", "download", "order"]);
 const hookWords = new Set(["stop", "why", "secret", "mistake", "before", "after", "new", "finally", "without", "save"]);
@@ -16,6 +31,7 @@ let _env = {};
 
 export function configureAnalysis(env) {
   _env = env || {};
+  configureCopyLlm(env);
 }
 
 function getEnv(name) {
@@ -47,7 +63,8 @@ export async function providerHealth() {
       detail: remoteActive
         ? "Remote TRIBE inference endpoint is configured."
         : "Set TRIBE_INFERENCE_URL to use a hosted TRIBE inference service."
-    }
+    },
+    copyLlmProviderHealth()
   ];
 }
 
@@ -68,17 +85,19 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
     rank: index + 1,
     delta_from_best: round(bestScore - analysis.scores.overall, 1)
   }));
-  const recommendation = buildRecommendation(variants);
+  const baseRecommendation = buildRecommendation(variants);
   const winnerVariant = variants[0];
-  const suggestions = variants
-    .flatMap((variant) =>
-      suggestionsForVariant(variant.asset, variant.analysis, safeBrief, {
-        winnerAssetId: winnerVariant.asset.id,
-        winnerScores: winnerVariant.analysis.scores,
-        winnerTimeline: winnerVariant.analysis.timeline,
-        isWinner: variant.asset.id === winnerVariant.asset.id
-      })
-    )
+  const rawSuggestions = variants.flatMap((variant) =>
+    suggestionsForVariant(variant.asset, variant.analysis, safeBrief, {
+      winnerAssetId: winnerVariant.asset.id,
+      winnerScores: winnerVariant.analysis.scores,
+      winnerTimeline: winnerVariant.analysis.timeline,
+      isWinner: variant.asset.id === winnerVariant.asset.id
+    })
+  );
+
+  const polishedSuggestions = await polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief);
+  const finalSuggestions = polishedSuggestions
     .sort((a, b) => {
       // Winner's edits first (they're the ones we ship), then by expected lift, then severity.
       if (a.asset_id !== b.asset_id) {
@@ -90,6 +109,15 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
       return severityRank(a.severity) - severityRank(b.severity);
     })
     .slice(0, 8);
+
+  const recommendation = await polishRecommendation({
+    variants,
+    recommendation: baseRecommendation,
+    brief: safeBrief
+  });
+
+  const compliance = await collectCompliance(variants, safeBrief);
+
   return {
     id: comparisonId,
     objective: objective || "Find the variant most likely to earn attention, build memory, and convert.",
@@ -97,9 +125,55 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
     status: "complete",
     variants,
     recommendation,
-    suggestions,
+    suggestions: finalSuggestions,
+    compliance,
     created_at: createdAt
   };
+}
+
+async function polishSuggestionsAcrossVariants(suggestions, variants, brief) {
+  if (!isCopyLlmEnabled() || !suggestions.length) {
+    return suggestions;
+  }
+  // Group edits by asset so we send one LLM call per variant — that's the right
+  // batch boundary: each variant gets a single coherent rewrite pass with its
+  // own context, instead of N individual calls per edit card.
+  const byAsset = new Map();
+  for (const suggestion of suggestions) {
+    if (!byAsset.has(suggestion.asset_id)) byAsset.set(suggestion.asset_id, []);
+    byAsset.get(suggestion.asset_id).push(suggestion);
+  }
+  const variantByAssetId = new Map(variants.map((variant) => [variant.asset.id, variant]));
+  const polishedPairs = await Promise.all(
+    Array.from(byAsset.entries()).map(async ([assetId, edits]) => {
+      const variant = variantByAssetId.get(assetId);
+      if (!variant) return [assetId, edits];
+      const polished = await polishEditsForVariant({ asset: variant.asset, brief, edits });
+      return [assetId, polished];
+    })
+  );
+  const flat = [];
+  for (const [, edits] of polishedPairs) {
+    flat.push(...edits);
+  }
+  return flat;
+}
+
+async function collectCompliance(variants, brief) {
+  if (!isCopyLlmEnabled()) return null;
+  const required = (brief.required_claims || []).filter(Boolean);
+  const forbidden = (brief.forbidden_terms || []).filter(Boolean);
+  if (!required.length && !forbidden.length) return null;
+  const checks = await Promise.all(
+    variants.map(async (variant) => {
+      const text = variant.asset.extracted_text || variant.asset.name || "";
+      const result = await checkCompliance({ text, brief });
+      if (!result) return null;
+      return { asset_id: variant.asset.id, ...result };
+    })
+  );
+  const filtered = checks.filter(Boolean);
+  return filtered.length ? filtered : null;
 }
 
 export function shouldCreateAsyncComparison(payload = {}, assets = []) {
@@ -280,9 +354,19 @@ export function buildChallengerText(asset, brief = {}, focus = "hook") {
     return `Stop guessing what will work for ${audience}. ${brand}'s ${offer} gives you ${proof}. Shop the starter option today.`;
   }
   if (focus === "clarity") {
-    return `For ${audience}: one problem, one proof point, one next step. ${brand} gives you ${proof}. Try ${offer} today.`;
+    return `For ${audience}: one problem, one proof point, one next step. ${brand} gives you ${proof} with ${offer}. Try it today.`;
   }
   return `Stop settling for a routine that does not work for ${audience}. ${brand} gives you ${proof} with ${offer}. Try it today.`;
+}
+
+// Async variant. Calls the templated builder for the deterministic fallback and
+// optionally polishes through the LLM when OPENROUTER_API_KEY is set. Designed
+// so the handler can `await` a single call and never has to think about whether
+// LLM polish is on.
+export async function generateChallenger(asset, brief = {}, focus = "hook") {
+  const fallback = buildChallengerText(asset, brief, focus);
+  if (!isCopyLlmEnabled()) return fallback;
+  return polishChallengerText({ asset, brief: normalizeBrief(brief), focus, fallback });
 }
 
 async function predictBrain(asset) {

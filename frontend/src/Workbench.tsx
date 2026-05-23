@@ -19,6 +19,7 @@ import type {
   Asset,
   AssetType,
   Comparison,
+  ComplianceReport,
   CreativeBrief,
   ScoreBreakdown,
   Suggestion,
@@ -1737,6 +1738,7 @@ function Result({
             <h3>The edit list</h3>
             <span className="kicker">what to fix before launch</span>
           </div>
+          <ComplianceFlags comparison={comparison} ranked={ranked} />
           <ul className="edit-list">
             {editEntries(comparison, winner).map((entry, i) => {
               const accent = entry.accent;
@@ -2083,6 +2085,55 @@ const CHANNEL_LABEL: Record<string, string> = {
 
 function formatSeconds(value: number): string {
   return Number.isFinite(value) ? value.toFixed(1) : "0.0";
+}
+
+function ComplianceFlags({ comparison, ranked }: { comparison: Comparison; ranked: VariantResult[] }) {
+  // Surfaces semantic-check results from the OpenRouter copy polish path. When
+  // it's disabled (no OPENROUTER_API_KEY), comparison.compliance is null/undefined
+  // and this component renders nothing.
+  const reports = comparison.compliance;
+  if (!reports || !reports.length) return null;
+  const nameByAssetId = new Map(ranked.map((variant) => [variant.asset.id, variant.asset.name]));
+  const rows = reports
+    .map((report) => {
+      const missing = (report.missing_required ?? []).filter(Boolean);
+      const forbidden = (report.forbidden_hits ?? []).filter(Boolean);
+      if (!missing.length && !forbidden.length) return null;
+      return {
+        asset_id: report.asset_id,
+        name: nameByAssetId.get(report.asset_id) ?? "Variant",
+        missing,
+        forbidden
+      };
+    })
+    .filter(Boolean) as Array<{ asset_id: string; name: string; missing: string[]; forbidden: ComplianceReport["forbidden_hits"] }>;
+  if (!rows.length) return null;
+  return (
+    <div className="compliance-flags" role="note" aria-label="Compliance flags">
+      <strong className="compliance-title">Brief checks</strong>
+      <ul>
+        {rows.map((row) => (
+          <li key={row.asset_id}>
+            <span className="compliance-variant">{row.name.split("·")[0]?.trim() ?? row.name}</span>
+            {row.missing.length > 0 && (
+              <span className="compliance-issue compliance-missing">
+                Missing required claim{row.missing.length > 1 ? "s" : ""}: {row.missing.join("; ")}
+              </span>
+            )}
+            {row.forbidden.length > 0 && (
+              <span className="compliance-issue compliance-forbidden">
+                Forbidden term{row.forbidden.length > 1 ? "s" : ""}:{" "}
+                {row.forbidden
+                  .map((entry) => entry.term)
+                  .filter(Boolean)
+                  .join("; ")}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function editEntries(comparison: Comparison, winner: VariantResult): EditEntry[] {
