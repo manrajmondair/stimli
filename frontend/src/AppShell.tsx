@@ -3144,7 +3144,15 @@ function SharedComplianceBlock({ report }: { report: Report }) {
       (row.forbidden_hits && row.forbidden_hits.length > 0)
   );
   if (!flagged.length) return null;
-  const nameByAssetId = new Map(report.variants.map((variant) => [variant.asset.id, variant.asset.name]));
+  // Defensive guard for variants: a malformed/partial share payload (CDN edge
+  // truncation, schema drift) without variants would otherwise crash the
+  // whole shared report page, which is on the unauthenticated path.
+  const variants = Array.isArray(report.variants) ? report.variants : [];
+  const nameByAssetId = new Map<string, string>(
+    variants
+      .map((variant) => [variant?.asset?.id ?? "", variant?.asset?.name ?? ""] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[0]))
+  );
   return (
     <div className="panel-card" style={{ marginTop: 18 }}>
       <div className="panel-head">

@@ -644,28 +644,46 @@ test("truncateWords applies a char-cap fallback for CJK / whitespace-less script
 });
 
 test("retry budget is shared via deadline across response_format fallback", async () => {
-  // The retry inherits the original deadline rather than getting a fresh
-  // timeoutMs, so total wall clock stays bounded by the original budget.
-  setEnv({ STIMLI_LLM_TIMEOUT_MS: "5000" });
+  // Distinguishing test: when the budget is SHARED, the retry's AbortSignal
+  // fires before the stub's slow timer resolves, so the function falls back
+  // to templates. When the budget is FRESH (the bug), the retry has the
+  // full timeoutMs again and the stub's polished JSON wins.
+  //   timeoutMs=1200, first delay=600, retry stub timer=700.
+  //   Shared: retry has ~600ms; abort fires at ~600ms, before the 700ms timer.
+  //   Fresh:  retry has ~1200ms; the 700ms timer fires first → polished JSON.
+  setEnv({ STIMLI_LLM_TIMEOUT_MS: "1200" });
   let calls = 0;
   const restore = stubFetch(async (_url, options) => {
     calls += 1;
     const body = JSON.parse(options.body);
     if (body.response_format) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
       return new Response("response_format not supported", { status: 400 });
     }
-    return openRouterResponse(
-      JSON.stringify({
-        edits: [
-          {
-            score_key: "hook",
-            issue: "Polished issue after retry.",
-            suggested_edit: "Polished edit after retry.",
-            draft_revision: null
-          }
-        ]
-      })
-    );
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        resolve(
+          openRouterResponse(
+            JSON.stringify({
+              edits: [
+                {
+                  score_key: "hook",
+                  issue: "Polished issue after retry.",
+                  suggested_edit: "Polished edit after retry.",
+                  draft_revision: null
+                }
+              ]
+            })
+          )
+        );
+      }, 700);
+      if (options.signal) {
+        options.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          resolve(new Response("aborted", { status: 599 }));
+        });
+      }
+    });
   });
   try {
     const polished = await polishEditsForVariant({
@@ -674,7 +692,11 @@ test("retry budget is shared via deadline across response_format fallback", asyn
       edits: SAMPLE_EDITS
     });
     assert.equal(calls, 2, "should retry once without response_format");
-    assert.equal(polished[0].llm_polished, true);
+    // With a shared deadline the retry aborts before producing polished
+    // content; the function falls back to templates. If someone reverts to
+    // per-call timeoutMs, the retry succeeds and polished[0].llm_polished
+    // becomes true — that's the regression bait.
+    assert.equal(polished, SAMPLE_EDITS, "shared deadline should abort the retry → template fallback");
   } finally {
     restore();
     clearEnv();
@@ -704,6 +726,152 @@ test("retry is skipped when remaining budget is too small", async () => {
     });
     assert.equal(calls, 1, "should NOT retry when budget too small");
     assert.equal(polished, SAMPLE_EDITS);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("callOpenRouter retries on 502/503/504 transient upstream errors", async () => {
+  for (const status of [502, 503, 504]) {
+    setEnv();
+    let calls = 0;
+    const restore = stubFetch(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response("upstream blip", { status });
+      }
+      return openRouterResponse(
+        JSON.stringify({
+          edits: [
+            {
+              score_key: "hook",
+              issue: "Polished issue.",
+              suggested_edit: "Polished edit.",
+              draft_revision: null
+            }
+          ]
+        })
+      );
+    });
+    try {
+      const polished = await polishEditsForVariant({
+        asset: SAMPLE_ASSET,
+        brief: SAMPLE_BRIEF,
+        edits: SAMPLE_EDITS
+      });
+      assert.equal(calls, 2, `status ${status} should retry once`);
+      assert.equal(polished[0].llm_polished, true, `status ${status} retry should succeed`);
+    } finally {
+      restore();
+      clearEnv();
+    }
+  }
+});
+
+test("generateChallengerText catches compound forbidden terms (FDAapproved)", async () => {
+  // Word-boundary alone would miss 'FDAapproved'; the acronym-shaped term
+  // path falls back to substring so the brand-safety check still fires.
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        text: "Doctor-FDAapproved formula ships in twelve minutes.",
+        rationale: "compound form"
+      })
+    )
+  );
+  try {
+    const result = await generateChallengerText({
+      asset: SAMPLE_ASSET,
+      brief: { ...SAMPLE_BRIEF, forbidden_terms: ["FDA"] },
+      focus: "hook",
+      fallback: "templated fallback"
+    });
+    assert.equal(result, "templated fallback");
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("generateChallengerText catches de-hyphenated forbidden compounds", async () => {
+  // Brief lists 'state-of-the-art'; model emits the de-hyphenated form
+  // 'stateoftheart'. The fix must still flag this as a forbidden hit.
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        text: "Try our stateoftheart formula today.",
+        rationale: "compound denorm"
+      })
+    )
+  );
+  try {
+    const result = await generateChallengerText({
+      asset: SAMPLE_ASSET,
+      brief: { ...SAMPLE_BRIEF, forbidden_terms: ["state-of-the-art"] },
+      focus: "hook",
+      fallback: "templated fallback"
+    });
+    assert.equal(result, "templated fallback");
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("polishEditsForVariant does NOT mark polished on bare draft_revision:null", async () => {
+  // Model returns only {score_key, draft_revision: null} with empty
+  // issue/suggested_edit — this should NOT flip llm_polished and should NOT
+  // wipe the templated draft_revision.
+  setEnv();
+  const editWithDraft = [{
+    asset_id: "asset_unit",
+    score_key: "hook",
+    target_kind: "hook",
+    dimension_score: 60,
+    issue: "Template issue",
+    suggested_edit: "Template edit",
+    draft_revision: "Template draft you can paste.",
+    expected_lift: 1,
+    severity: "high"
+  }];
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        edits: [{ score_key: "hook", issue: "", suggested_edit: "  ", draft_revision: null }]
+      })
+    )
+  );
+  try {
+    const polished = await polishEditsForVariant({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: editWithDraft
+    });
+    assert.notEqual(polished[0].llm_polished, true);
+    assert.equal(polished[0].draft_revision, "Template draft you can paste.");
+    assert.equal(polished[0].issue, "Template issue");
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("copyLlmProviderHealth surfaces degraded state via the recent-error ring", async () => {
+  setEnv();
+  // Drive two failures within 60s; copyLlmProviderHealth's degraded threshold
+  // is >= 2 errors in the last minute.
+  const restore = stubFetch(async () => new Response("upstream", { status: 503 }));
+  try {
+    await polishEditsForVariant({ asset: SAMPLE_ASSET, brief: SAMPLE_BRIEF, edits: SAMPLE_EDITS });
+    await polishEditsForVariant({ asset: SAMPLE_ASSET, brief: SAMPLE_BRIEF, edits: SAMPLE_EDITS });
+    const health = copyLlmProviderHealth();
+    assert.equal(health.available, true);
+    assert.equal(health.active, false, "two failures in 60s should flip active=false");
+    assert.ok(health.recent_errors.count_last_60s >= 2);
+    assert.match(health.detail, /degraded/i);
   } finally {
     restore();
     clearEnv();

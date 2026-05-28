@@ -15,10 +15,20 @@
 const DEFAULT_MODEL = "anthropic/claude-haiku-4.5";
 const DEFAULT_TIMEOUT_MS = 8000;
 const MIN_RETRY_BUDGET_MS = 500;
+const RETRYABLE_RESPONSE_FORMAT_STATUSES = new Set([400, 422]);
+const RETRYABLE_TRANSIENT_STATUSES = new Set([502, 503, 504]);
 const COMPLIANCE_TEXT_CAP = 8000;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const ERROR_RING_BUFFER_LIMIT = 60;
+const ERROR_RING_BUFFER_WINDOW_MS = 5 * 60 * 1000;
 
 let _env = {};
+
+// Ring buffer of recent error timestamps + status codes. System-level data
+// only (HTTP status, transport class, parse-failure label) — never an upstream
+// response body or anything tenant-specific, so the cross-request visibility
+// is observability, not a tenant-info leak.
+const _recentErrors = [];
 
 export function configureCopyLlm(env) {
   _env = env || {};
@@ -43,22 +53,33 @@ export function copyLlmProviderHealth(env) {
       provider: "openrouter",
       available: false,
       active: false,
-      detail: "Set OPENROUTER_API_KEY to enable LLM-polished edit cards, reasons, and challengers."
+      detail: "Set OPENROUTER_API_KEY to enable LLM-polished edit cards, reasons, and challengers.",
+      recent_errors: emptyRecentErrors()
     };
   }
   const model = envValue(env, "STIMLI_LLM_MODEL") || DEFAULT_MODEL;
+  const recent = recentErrorsSnapshot();
+  // "active" means the integration is configured AND the recent error rate
+  // doesn't look like sustained breakage. Two-or-more errors inside the last
+  // 60s flips the indicator so admin status pages have a programmatic signal
+  // without us reintroducing tenant-message leakage.
+  const degraded = recent.count_last_60s >= 2;
   return {
     provider: "openrouter",
     available: true,
-    active: true,
-    detail: `OpenRouter copy polish on (${model}).`
+    active: !degraded,
+    detail: degraded
+      ? `OpenRouter copy polish degraded (${model}) — ${recent.count_last_60s} failures in the last 60s; last code: ${recent.last_code || "unknown"}.`
+      : `OpenRouter copy polish on (${model}).`,
+    recent_errors: recent
   };
 }
 
 export function copyLlmStatus(env) {
   return {
     enabled: isCopyLlmEnabled(env),
-    model: envValue(env, "STIMLI_LLM_MODEL") || DEFAULT_MODEL
+    model: envValue(env, "STIMLI_LLM_MODEL") || DEFAULT_MODEL,
+    recent_errors: recentErrorsSnapshot()
   };
 }
 
@@ -68,13 +89,40 @@ function parseTimeoutMs(raw) {
   return DEFAULT_TIMEOUT_MS;
 }
 
-// Errors are logged to console so an operator with Pages Function tail logs
-// can diagnose them. We deliberately do NOT keep error state at module level
-// — that would be cross-request shared mutable state, the same hazard the
-// env-snapshot pattern avoids.
-function logCopyLlmWarning(reason) {
+function emptyRecentErrors() {
+  return { count_last_60s: 0, last_code: null, last_at: null };
+}
+
+function recentErrorsSnapshot() {
+  const now = Date.now();
+  let count60 = 0;
+  for (const entry of _recentErrors) {
+    if (now - entry.at <= 60 * 1000) count60 += 1;
+  }
+  const last = _recentErrors.length ? _recentErrors[_recentErrors.length - 1] : null;
+  return {
+    count_last_60s: count60,
+    last_code: last ? last.code : null,
+    last_at: last ? last.at : null
+  };
+}
+
+// `code` MUST be a short, system-level identifier (e.g. "http 429",
+// "openrouter timeout", "json parse failed"). NEVER pass an upstream response
+// body — those can carry tenant-specific info and would leak across requests
+// inside a shared isolate.
+function logCopyLlmWarning(code) {
+  const safeCode = String(code || "").slice(0, 80);
+  const now = Date.now();
+  _recentErrors.push({ at: now, code: safeCode });
+  while (_recentErrors.length && now - _recentErrors[0].at > ERROR_RING_BUFFER_WINDOW_MS) {
+    _recentErrors.shift();
+  }
+  while (_recentErrors.length > ERROR_RING_BUFFER_LIMIT) {
+    _recentErrors.shift();
+  }
   try {
-    console.warn(`[copy_llm] ${String(reason || "").slice(0, 240)}`);
+    console.warn(`[copy_llm] ${safeCode}`);
   } catch {
     /* console may be unavailable in some isolates */
   }
@@ -89,7 +137,7 @@ async function callOpenRouter({ env, system, user, schemaHint, maxTokens = 900 }
 
   // Wrap user-controlled fields in a delimited <input> block so the system
   // prompt's anti-injection clause has something concrete to reference. The
-  // user JSON is sanitized to neutralize any embedded <input>/</input> tags
+  // user JSON is sanitized to neutralize any embedded <input>/</input> tokens
   // a workspace member could plant inside brief fields to escape the block.
   const sanitizedUser = neutralizeTagDelimiters(user);
   const userPrompt = `<input>\n${sanitizedUser}\n</input>${schemaHint ? `\n\nRespond with strict JSON matching this schema:\n${schemaHint}` : ""}`;
@@ -102,15 +150,22 @@ async function callOpenRouter({ env, system, user, schemaHint, maxTokens = 900 }
     userPrompt,
     maxTokens,
     useJsonResponseFormat: true,
-    deadlineAt: Date.now() + timeoutMs
+    deadlineAt: Date.now() + timeoutMs,
+    attempt: 0
   });
 }
 
-async function postOpenRouter({ apiKey, model, referer, system, userPrompt, maxTokens, useJsonResponseFormat, deadlineAt }) {
-  // Use the SHARED deadline across retries so the response_format fallback
-  // doesn't get a fresh full timeout budget — otherwise a 7s first attempt
-  // followed by an 8s retry could spend 15s on a single stage.
-  const remainingMs = Math.max(MIN_RETRY_BUDGET_MS, deadlineAt - Date.now());
+async function postOpenRouter({ apiKey, model, referer, system, userPrompt, maxTokens, useJsonResponseFormat, deadlineAt, attempt }) {
+  // Honour the operator's configured deadline directly — no minimum-budget
+  // floor on the FIRST call. The MIN_RETRY_BUDGET_MS guard only gates whether
+  // a SECOND attempt is allowed (line below), never inflates the initial
+  // timeoutMs above what the caller asked for.
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    logCopyLlmWarning("deadline expired");
+    return null;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("openrouter timeout")), remainingMs);
   try {
@@ -138,20 +193,27 @@ async function postOpenRouter({ apiKey, model, referer, system, userPrompt, maxT
       signal: controller.signal
     });
     if (!response.ok) {
-      // Only retry when the failure looks like response_format incompatibility
-      // (400 Bad Request or 422 Unprocessable Entity). Retrying on 401/403
-      // would amplify auth failures, and retrying on 429 would amplify rate-
-      // limit pressure during the exact window the upstream is throttling.
-      if (
-        useJsonResponseFormat &&
-        (response.status === 400 || response.status === 422) &&
-        Date.now() < deadlineAt - MIN_RETRY_BUDGET_MS
-      ) {
+      const canRetry = attempt === 0 && Date.now() < deadlineAt - MIN_RETRY_BUDGET_MS;
+      // 400/422: model rejected response_format=json_object — retry without it.
+      if (canRetry && useJsonResponseFormat && RETRYABLE_RESPONSE_FORMAT_STATUSES.has(response.status)) {
         clearTimeout(timer);
         return await postOpenRouter({
           apiKey, model, referer, system, userPrompt, maxTokens,
           useJsonResponseFormat: false,
-          deadlineAt
+          deadlineAt,
+          attempt: 1
+        });
+      }
+      // 502/503/504: transient upstream blip during a model rollout etc. —
+      // one quick retry with the same params is cheap insurance. Capped to a
+      // single attempt so we don't amplify load on a sustained outage.
+      if (canRetry && RETRYABLE_TRANSIENT_STATUSES.has(response.status)) {
+        clearTimeout(timer);
+        return await postOpenRouter({
+          apiKey, model, referer, system, userPrompt, maxTokens,
+          useJsonResponseFormat,
+          deadlineAt,
+          attempt: 1
         });
       }
       logCopyLlmWarning(`http ${response.status}`);
@@ -170,7 +232,14 @@ async function postOpenRouter({ apiKey, model, referer, system, userPrompt, maxT
     }
     return parsed;
   } catch (err) {
-    logCopyLlmWarning(err?.message || String(err) || "unknown error");
+    // Classify into a short code rather than echoing the upstream message —
+    // both for log readability and to keep tenant data out of the error
+    // ring buffer that copyLlmProviderHealth exposes.
+    const message = err?.message || String(err) || "";
+    let code = "fetch failed";
+    if (/timeout/i.test(message)) code = "openrouter timeout";
+    else if (err?.name === "AbortError") code = "aborted";
+    logCopyLlmWarning(code);
     return null;
   } finally {
     clearTimeout(timer);
@@ -198,13 +267,11 @@ function safeJsonParse(text) {
   }
 }
 
-// Replace any literal <input> / </input> tags that might appear inside the
-// user payload so a workspace member can't end the data block early by
-// embedding the closing tag in a brief field or asset name. The model
-// shouldn't ever produce these tokens normally; redacting them on input
-// keeps the anti-injection envelope intact.
+// Redact any literal <input> / </input> or bare <input / </input fragments
+// that might appear inside the user payload, so a workspace member can't
+// terminate the data block early — even via an unclosed tag.
 function neutralizeTagDelimiters(text) {
-  return String(text).replace(/<\/?\s*input\b[^>]*>/gi, "[redacted-tag]");
+  return String(text).replace(/<\s*\/?\s*input\b[^>]*>?/gi, "[redacted-tag]");
 }
 
 // Cheap and open-weight models routinely return string-encoded booleans even
@@ -224,7 +291,9 @@ function isTrueLike(value) {
 // Cap LLM output to its schema-declared length. For whitespace-separated
 // scripts we count words; for CJK / scripts without whitespace, a single
 // "word" can contain hundreds of characters, so apply a char-count cap of
-// roughly 12× the word cap to keep things bounded.
+// roughly 12× the word cap. We iterate code points (Array.from) rather than
+// UTF-16 code units so we never bisect a surrogate pair on emoji or rare
+// astral-plane characters.
 function truncateWords(value, maxWords) {
   if (typeof value !== "string") return "";
   const trimmed = value.trim();
@@ -234,26 +303,59 @@ function truncateWords(value, maxWords) {
     return `${words.slice(0, maxWords).join(" ")}…`;
   }
   const charCap = maxWords * 12;
-  if (trimmed.length > charCap) {
-    return `${trimmed.slice(0, charCap)}…`;
+  const codepoints = Array.from(trimmed);
+  if (codepoints.length > charCap) {
+    return `${codepoints.slice(0, charCap).join("")}…`;
   }
   return trimmed;
 }
 
-// Word-boundary forbidden-term match. For single-word terms we anchor on \b
-// so "cure" doesn't match "secure". For multi-word terms (e.g. "miracle
-// cure"), fall back to lowercase substring since \b doesn't span phrases.
+// Forbidden-term match with three strategies, picked to minimize both false
+// positives (e.g. "cure" matching "secure") and false negatives (e.g. "FDA"
+// missing "FDAapproved"):
+//   • multi-word terms → substring (regex can't span phrases)
+//   • acronym-shaped terms (digits, ALL-CAPS in source, contain `-`) →
+//     substring AND a de-hyphenated substring fallback so "state-of-the-art"
+//     still catches "stateoftheart"
+//   • single-word terms in mixed/lowercase letters → Unicode word-boundary
+//     regex so "cure" doesn't match "secure", with the de-hyphenated fallback
+//     for compound terms.
 function textContainsForbiddenTerm(text, term) {
   if (!term) return false;
   const termStr = String(term).trim();
   if (!termStr) return false;
   const lowerText = String(text || "").toLowerCase();
   const lowerTerm = termStr.toLowerCase();
+
+  if (/\s/.test(termStr)) {
+    return lowerText.includes(lowerTerm);
+  }
+
+  const looksLikeIdentifier =
+    /\d/.test(termStr) || /^[A-Z][A-Z0-9-]*$/.test(termStr);
+  if (looksLikeIdentifier) {
+    if (lowerText.includes(lowerTerm)) return true;
+    if (lowerTerm.includes("-")) {
+      const denormalized = lowerTerm.replace(/-/g, "");
+      if (denormalized && lowerText.includes(denormalized)) return true;
+    }
+    return false;
+  }
+
   if (/^[\p{L}\p{N}'_-]+$/u.test(termStr)) {
     const escaped = lowerTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}(?:[^\\p{L}\\p{N}_]|$)`, "iu");
-    return pattern.test(lowerText);
+    const pattern = new RegExp(
+      `(?:^|[^\\p{L}\\p{N}_])${escaped}(?:[^\\p{L}\\p{N}_]|$)`,
+      "iu"
+    );
+    if (pattern.test(lowerText)) return true;
+    if (lowerTerm.includes("-")) {
+      const denormalized = lowerTerm.replace(/-/g, "");
+      if (denormalized && lowerText.includes(denormalized)) return true;
+    }
+    return false;
   }
+
   return lowerText.includes(lowerTerm);
 }
 
@@ -347,25 +449,33 @@ export async function polishEditsForVariant({ env, asset, brief, edits }) {
 
     const issueCandidate = truncateWords(sanitizeString(polished.issue), 32);
     const editCandidate = truncateWords(sanitizeString(polished.suggested_edit), 32);
+    const hasIssue = Boolean(issueCandidate);
+    const hasEdit = Boolean(editCandidate);
 
     let draftRevision = edit.draft_revision;
-    let draftAccepted = false;
+    let draftHasContent = false;
     if (polished.draft_revision === null) {
-      draftRevision = null;
-      draftAccepted = true;
+      // Only respect an explicit null when the model also contributed
+      // substantive content elsewhere; otherwise a bare {score_key,
+      // draft_revision:null} would silently destroy a useful templated
+      // draft. The model is most likely bailing out rather than telling
+      // us this dimension is structural.
+      if (hasIssue || hasEdit) {
+        draftRevision = null;
+      }
     } else if (typeof polished.draft_revision === "string") {
       const cleaned = truncateWords(sanitizeString(polished.draft_revision), 32);
       if (cleaned) {
         draftRevision = cleaned;
-        draftAccepted = true;
+        draftHasContent = true;
       }
     }
 
-    // llm_polished means "the LLM was called and returned a usable entry for
-    // this score_key" — not "the output differs from the template". An LLM
-    // can legitimately echo a generic templated issue verbatim and that
-    // round-trip still counts as polished work for telemetry/billing.
-    const llmReturnedUsableContent = Boolean(issueCandidate) || Boolean(editCandidate) || draftAccepted;
+    // llm_polished is true ONLY when the LLM actually contributed usable copy
+    // for this score_key. A response of just {score_key, draft_revision:null}
+    // with empty issue/edit doesn't count — that's effectively a no-op and we
+    // shouldn't claim a paid polish round-trip for it.
+    const llmReturnedUsableContent = hasIssue || hasEdit || draftHasContent;
 
     return {
       ...edit,
@@ -454,9 +564,6 @@ export async function polishRecommendation({ env, variants, recommendation, brie
   }
 
   if (!reasons || !reasons.length) {
-    // Headline-only polish: preserve the templated reasons array so callers
-    // that iterate recommendation.reasons (e.g. reportToMarkdown) never see
-    // an undefined field.
     return {
       ...recommendation,
       headline: headlineCandidate || recommendation.headline,
@@ -487,7 +594,7 @@ The "focus" tells you the single dimension to upgrade vs the source variant.
 - focus=offer: lead with the offer itself, pair with one numeric proof point or concrete benefit.
 - focus=clarity: collapse to one problem, one proof, one action; cut filler.
 Hard rules — the output is persisted as a new asset, so brand-safety violations cost the user money:
-- The "text" output MUST NOT contain any of the brief's forbidden_terms, including paraphrases or close synonyms.
+- The "text" output MUST NOT contain any of the brief's forbidden_terms, including paraphrases, close synonyms, or de-hyphenated compounds.
 - When the brief lists required_claims, weave at least one in if it fits naturally; never invent claims that aren't supported by the source variant.
 - Stay <= 90 words.
 Output PLAIN text in the "text" field - no markdown, no quotes around it, no headlines.
@@ -532,12 +639,12 @@ export async function generateChallengerText({ env, asset, brief, focus, fallbac
   if (!polished) return fallback;
 
   // Belt-and-suspenders: even with the system-prompt hard rule, models can
-  // still leak forbidden vocabulary. Reject the LLM output and fall back to
-  // the deterministic challenger rather than persisting a brand-safety
-  // violation as a new asset.
+  // still leak forbidden vocabulary. textContainsForbiddenTerm catches both
+  // word-boundary and compound forms ("FDA" inside "FDAapproved",
+  // "state-of-the-art" inside "stateoftheart").
   for (const term of forbiddenTerms) {
     if (textContainsForbiddenTerm(polished, term)) {
-      logCopyLlmWarning(`challenger contained forbidden term: ${term}`);
+      logCopyLlmWarning("challenger forbidden-term leak");
       return fallback;
     }
   }

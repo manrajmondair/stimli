@@ -169,12 +169,22 @@ async function polishSuggestionsAcrossVariants(suggestions, variants, brief, env
     byAsset.get(suggestion.asset_id).push(suggestion);
   }
   const variantByAssetId = new Map(variants.map((variant) => [variant.asset.id, variant]));
+  // Per-variant try/catch so a throw on one variant's polish call doesn't
+  // discard the work already completed for sibling variants. polishEditsForVariant
+  // catches OpenRouter errors internally and returns passthrough; this wrapper
+  // is the defense against a future unexpected sync throw (e.g. JSON.stringify
+  // hitting a circular ref in user payload construction).
   const polishedPairs = await Promise.all(
     Array.from(byAsset.entries()).map(async ([assetId, edits]) => {
       const variant = variantByAssetId.get(assetId);
       if (!variant) return [assetId, edits];
-      const polished = await polishEditsForVariant({ env, asset: variant.asset, brief, edits });
-      return [assetId, polished];
+      try {
+        const polished = await polishEditsForVariant({ env, asset: variant.asset, brief, edits });
+        return [assetId, polished];
+      } catch (err) {
+        try { console.warn(`[analysis] polishEditsForVariant threw for ${assetId}: ${err?.message || err}`); } catch {}
+        return [assetId, edits];
+      }
     })
   );
   const flat = [];
@@ -249,12 +259,29 @@ export function createPendingComparison(comparisonId, objective, assets, created
   };
 }
 
-export async function startBrainJob(asset) {
-  const response = await fetch(getEnv("TRIBE_CONTROL_URL"), {
+// TRIBE-side helpers take an optional `env` so callers with a per-request
+// snapshot can avoid the module-state race; callers without env (legacy
+// dispatch sites in [[path]].js) fall back to the same env that
+// configureAnalysis just stashed. Both branches go through the same
+// resolveTribeEnv path so the read source is consistent.
+function resolveTribeEnv(env) {
+  return env || _env;
+}
+
+function tribeUrl(env) {
+  return resolveTribeEnv(env).TRIBE_CONTROL_URL || "";
+}
+
+function tribeTimeoutMs(env) {
+  return Number(resolveTribeEnv(env).TRIBE_CONTROL_TIMEOUT_MS || 20000);
+}
+
+export async function startBrainJob(asset, env) {
+  const response = await fetch(tribeUrl(env), {
     method: "POST",
-    headers: remoteHeaders(),
+    headers: remoteHeaders(env),
     body: JSON.stringify({ action: "start", asset }),
-    signal: AbortSignal.timeout(Number(getEnv("TRIBE_CONTROL_TIMEOUT_MS") || 20000))
+    signal: AbortSignal.timeout(tribeTimeoutMs(env))
   });
   if (!response.ok) {
     throw new Error(`Remote job provider returned ${response.status}`);
@@ -270,12 +297,12 @@ export async function startBrainJob(asset) {
   };
 }
 
-export async function getBrainJob(jobId) {
-  const response = await fetch(getEnv("TRIBE_CONTROL_URL"), {
+export async function getBrainJob(jobId, env) {
+  const response = await fetch(tribeUrl(env), {
     method: "POST",
-    headers: remoteHeaders(),
+    headers: remoteHeaders(env),
     body: JSON.stringify({ action: "status", job_id: jobId }),
-    signal: AbortSignal.timeout(Number(getEnv("TRIBE_CONTROL_TIMEOUT_MS") || 20000))
+    signal: AbortSignal.timeout(tribeTimeoutMs(env))
   });
   if (!response.ok) {
     throw new Error(`Remote job status returned ${response.status}`);
@@ -283,12 +310,12 @@ export async function getBrainJob(jobId) {
   return response.json();
 }
 
-export async function cancelBrainJob(jobId) {
-  const response = await fetch(getEnv("TRIBE_CONTROL_URL"), {
+export async function cancelBrainJob(jobId, env) {
+  const response = await fetch(tribeUrl(env), {
     method: "POST",
-    headers: remoteHeaders(),
+    headers: remoteHeaders(env),
     body: JSON.stringify({ action: "cancel", job_id: jobId }),
-    signal: AbortSignal.timeout(Number(getEnv("TRIBE_CONTROL_TIMEOUT_MS") || 20000))
+    signal: AbortSignal.timeout(tribeTimeoutMs(env))
   });
   if (!response.ok) {
     throw new Error(`Remote job cancel returned ${response.status}`);
@@ -296,17 +323,18 @@ export async function cancelBrainJob(jobId) {
   return response.json();
 }
 
-export async function extractAssetText(asset) {
-  const extractUrl = getEnv("STIMLI_EXTRACT_URL") || "";
+export async function extractAssetText(asset, env) {
+  const source = resolveTribeEnv(env);
+  const extractUrl = source.STIMLI_EXTRACT_URL || "";
   if (!extractUrl) {
     return null;
   }
   try {
     const response = await fetch(extractUrl, {
       method: "POST",
-      headers: remoteHeaders(),
+      headers: remoteHeaders(env),
       body: JSON.stringify({ asset }),
-      signal: AbortSignal.timeout(Number(getEnv("STIMLI_EXTRACT_TIMEOUT_MS") || 25000))
+      signal: AbortSignal.timeout(Number(source.STIMLI_EXTRACT_TIMEOUT_MS || 25000))
     });
     if (!response.ok) {
       throw new Error(`Extractor returned ${response.status}`);
@@ -438,10 +466,11 @@ async function predictBrain(asset, env) {
   return { provider: "web-heuristic-brain", timeline: heuristicTimeline(asset) };
 }
 
-function remoteHeaders() {
+function remoteHeaders(env) {
+  const source = resolveTribeEnv(env);
   return {
     "Content-Type": "application/json",
-    ...(getEnv("TRIBE_API_KEY") ? { Authorization: `Bearer ${getEnv("TRIBE_API_KEY")}` } : {})
+    ...(source.TRIBE_API_KEY ? { Authorization: `Bearer ${source.TRIBE_API_KEY}` } : {})
   };
 }
 

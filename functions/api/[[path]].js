@@ -811,7 +811,7 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
         extracted_text: "",
         duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
         metadata: baseMetadata
-      });
+      }, env);
       if (extracted?.text) {
         extractedText = extracted.text;
       }
@@ -948,17 +948,15 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments[2] === "challengers") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    // Only enforce the asset quota when LLM polish is actually enabled. With
-    // OPENROUTER_API_KEY unset, generateChallenger returns deterministic
-    // templated text the caller could have produced client-side — charging a
-    // monthly asset slot for that is gratuitous. When the key IS set, every
-    // challenger attempt costs an OpenRouter round-trip (success or 4xx), so
-    // it stays on the quota the same way as direct uploads.
-    const llmPolishOn = Boolean(globalThis.__stimliEnv && globalThis.__stimliEnv.OPENROUTER_API_KEY);
-    if (llmPolishOn) {
-      const quota = await getQuotaForWorkspace(workspaceId);
-      await enforceUsageLimit(request, workspaceId, "asset", quota);
-    }
+    // Always enforce the asset quota — /challengers creates a persistent
+    // asset (saveAsset below) just like a direct /assets upload, and we need
+    // the hourly abuse-protection bucket regardless of whether LLM polish
+    // actually runs. The previous "skip when LLM off" optimization let
+    // unauthenticated clients (allowAnonymous: true) flood the workspace
+    // with templated asset rows; consistency with /assets POST is the safer
+    // default.
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", quota);
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
@@ -1179,12 +1177,20 @@ async function requireCompleteComparison(comparisonId, workspaceId) {
 }
 
 async function createAsyncComparison(comparisonId, objective, assets, createdAt, brief) {
-  const jobs = await Promise.all(assets.map((asset) => startBrainJob(asset)));
+  // Snapshot the request env at entry so all TRIBE control-plane calls below
+  // land on the same TRIBE_CONTROL_URL / TRIBE_API_KEY even if a concurrent
+  // request overwrites globalThis.__stimliEnv mid-await.
+  const requestEnv = globalThis.__stimliEnv || {};
+  const jobs = await Promise.all(assets.map((asset) => startBrainJob(asset, requestEnv)));
   return createPendingComparison(comparisonId, objective, assets, createdAt, brief, jobs);
 }
 
 async function refreshComparison(comparison, workspaceId) {
-  if (comparison.status !== "processing" || !Array.isArray(comparison.jobs) || !globalThis.__stimliEnv?.TRIBE_CONTROL_URL) {
+  // Snapshot env at function entry so every TRIBE control-plane call below
+  // hits the same endpoint+key, even if a concurrent request overwrites
+  // globalThis.__stimliEnv between the awaits in this function.
+  const requestEnv = globalThis.__stimliEnv || {};
+  if (comparison.status !== "processing" || !Array.isArray(comparison.jobs) || !requestEnv.TRIBE_CONTROL_URL) {
     return comparison;
   }
   if (comparisonExpired(comparison)) {
@@ -1194,7 +1200,7 @@ async function refreshComparison(comparison, workspaceId) {
   const jobStatuses = await Promise.all(
     comparison.jobs.map(async (job) => {
       try {
-        return await getBrainJob(job.job_id);
+        return await getBrainJob(job.job_id, requestEnv);
       } catch (error) {
         return { ...job, status: job.status || "processing", polling_error: error.message };
       }
@@ -1270,6 +1276,7 @@ async function refreshComparison(comparison, workspaceId) {
 }
 
 async function cancelComparison(comparisonId, workspaceId, reason = "Analysis was cancelled.") {
+  const requestEnv = globalThis.__stimliEnv || {};
   const comparison = await getComparison(comparisonId, workspaceId);
   if (!comparison) {
     throw httpError(404, "Comparison not found");
@@ -1277,11 +1284,11 @@ async function cancelComparison(comparisonId, workspaceId, reason = "Analysis wa
   const jobs = Array.isArray(comparison.jobs) ? comparison.jobs : [];
   const updatedJobs = await Promise.all(
     jobs.map(async (job) => {
-      if (!globalThis.__stimliEnv?.TRIBE_CONTROL_URL || ["complete", "failed", "cancelled"].includes(job.status)) {
+      if (!requestEnv.TRIBE_CONTROL_URL || ["complete", "failed", "cancelled"].includes(job.status)) {
         return job;
       }
       try {
-        return publicJobStatus(await cancelBrainJob(job.job_id));
+        return publicJobStatus(await cancelBrainJob(job.job_id, requestEnv));
       } catch (error) {
         return { ...job, status: "cancelled", error: error.message, updated_at: nowIso() };
       }
@@ -1913,7 +1920,7 @@ async function retryComparisonJob(jobId, workspaceId, actor, env) {
   if (attempt > maxRetries) throw httpError(409, "Retry limit reached for this job.");
   const asset = await getAsset(job.asset_id, workspaceId);
   if (!asset) throw httpError(404, "Job asset was deleted or is unavailable.");
-  const started = publicJobStatus(await startBrainJob(asset));
+  const started = publicJobStatus(await startBrainJob(asset, env));
   const retryJob = { ...started, attempt, previous_job_id: job.job_id, status: started.status || "queued", updated_at: nowIso() };
   const jobs = comparison.jobs.map((item) => (item.job_id === jobId ? retryJob : item));
   const updated = {
