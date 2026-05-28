@@ -948,6 +948,12 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments[2] === "challengers") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    // Challengers create a new asset (saveAsset below) and, when OPENROUTER_API_KEY
+    // is set, fire an OpenRouter call. Without a quota guard a scripted client
+    // could fan out unlimited LLM calls per workspace. Same kind ("asset") as the
+    // direct-upload path so the monthly cap applies consistently.
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", quota);
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
@@ -1094,6 +1100,7 @@ async function buildReport(comparisonId, workspaceId) {
     variants: comparison.variants,
     suggestions: comparison.suggestions,
     brief: comparison.brief,
+    compliance: comparison.compliance ?? null,
     learning_summary: learning,
     next_steps: [
       "Apply high-severity edits to the current leader.",
@@ -1548,6 +1555,30 @@ function reportToMarkdown(report) {
       `Draft: ${suggestion.draft_revision || "No draft available."}`,
       ""
     );
+  }
+  const complianceReports = Array.isArray(report.compliance) ? report.compliance : [];
+  if (complianceReports.length) {
+    const variantNameById = new Map(report.variants.map((variant) => [variant.asset.id, variant.asset.name]));
+    const flaggedRows = complianceReports.filter(
+      (row) => (row.missing_required && row.missing_required.length) || (row.forbidden_hits && row.forbidden_hits.length)
+    );
+    if (flaggedRows.length) {
+      lines.push("## Brief Checks", "");
+      for (const row of flaggedRows) {
+        const variantLabel = variantNameById.get(row.asset_id) || row.asset_id;
+        lines.push(`### ${variantLabel}`, "");
+        if (Array.isArray(row.missing_required) && row.missing_required.length) {
+          lines.push(`- Missing required: ${row.missing_required.join("; ")}`);
+        }
+        if (Array.isArray(row.forbidden_hits) && row.forbidden_hits.length) {
+          const hits = row.forbidden_hits
+            .map((hit) => hit.evidence ? `${hit.term} (“${hit.evidence}”)` : hit.term)
+            .join("; ");
+          lines.push(`- Forbidden term hits: ${hits}`);
+        }
+        lines.push("");
+      }
+    }
   }
   lines.push("## Next Steps", "", ...report.next_steps.map((step) => `- ${step}`), "");
   return lines.join("\n");

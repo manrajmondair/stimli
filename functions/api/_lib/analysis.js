@@ -64,7 +64,7 @@ export async function providerHealth() {
         ? "Remote TRIBE inference endpoint is configured."
         : "Set TRIBE_INFERENCE_URL to use a hosted TRIBE inference service."
     },
-    copyLlmProviderHealth()
+    copyLlmProviderHealth(_env)
   ];
 }
 
@@ -73,6 +73,13 @@ export async function compareAssets(comparisonId, objective, assets, createdAt, 
 }
 
 export async function compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief = {}, brainByAssetId = {}) {
+  // Snapshot the env reference at entry. Module-level _env can be overwritten
+  // by a concurrent request's configureAnalysis call between the time we
+  // enter compareAssetsWithBrain and the time the polish calls fire — but the
+  // captured reference holds the env that was active when this comparison
+  // started. Pass it explicitly so the copy_llm layer never reads shared
+  // mutable state.
+  const requestEnv = _env;
   const safeBrief = normalizeBrief(brief);
   const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief, brainByAssetId[asset.id])));
   const ranked = assets
@@ -96,7 +103,20 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
     })
   );
 
-  const polishedSuggestions = await polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief);
+  // The three LLM stages share no inputs — fan them out in parallel so a slow
+  // OpenRouter response in any single stage doesn't compound onto the other
+  // two and blow past Cloudflare Pages Functions' wall-clock budget.
+  const [polishedSuggestions, recommendation, compliance] = await Promise.all([
+    polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv),
+    polishRecommendation({
+      env: requestEnv,
+      variants,
+      recommendation: baseRecommendation,
+      brief: safeBrief
+    }),
+    collectCompliance(variants, safeBrief, requestEnv)
+  ]);
+
   const finalSuggestions = polishedSuggestions
     .sort((a, b) => {
       // Winner's edits first (they're the ones we ship), then by expected lift, then severity.
@@ -109,14 +129,6 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
       return severityRank(a.severity) - severityRank(b.severity);
     })
     .slice(0, 8);
-
-  const recommendation = await polishRecommendation({
-    variants,
-    recommendation: baseRecommendation,
-    brief: safeBrief
-  });
-
-  const compliance = await collectCompliance(variants, safeBrief);
 
   return {
     id: comparisonId,
@@ -131,8 +143,8 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
   };
 }
 
-async function polishSuggestionsAcrossVariants(suggestions, variants, brief) {
-  if (!isCopyLlmEnabled() || !suggestions.length) {
+async function polishSuggestionsAcrossVariants(suggestions, variants, brief, env) {
+  if (!isCopyLlmEnabled(env) || !suggestions.length) {
     return suggestions;
   }
   // Group edits by asset so we send one LLM call per variant — that's the right
@@ -148,7 +160,7 @@ async function polishSuggestionsAcrossVariants(suggestions, variants, brief) {
     Array.from(byAsset.entries()).map(async ([assetId, edits]) => {
       const variant = variantByAssetId.get(assetId);
       if (!variant) return [assetId, edits];
-      const polished = await polishEditsForVariant({ asset: variant.asset, brief, edits });
+      const polished = await polishEditsForVariant({ env, asset: variant.asset, brief, edits });
       return [assetId, polished];
     })
   );
@@ -159,15 +171,20 @@ async function polishSuggestionsAcrossVariants(suggestions, variants, brief) {
   return flat;
 }
 
-async function collectCompliance(variants, brief) {
-  if (!isCopyLlmEnabled()) return null;
+async function collectCompliance(variants, brief, env) {
+  if (!isCopyLlmEnabled(env)) return null;
   const required = (brief.required_claims || []).filter(Boolean);
   const forbidden = (brief.forbidden_terms || []).filter(Boolean);
   if (!required.length && !forbidden.length) return null;
   const checks = await Promise.all(
     variants.map(async (variant) => {
-      const text = variant.asset.extracted_text || variant.asset.name || "";
-      const result = await checkCompliance({ text, brief });
+      // Skip compliance entirely when extraction yielded nothing — falling
+      // back to asset.name would let a filename like
+      // "cures-cancer-miracle-drops.mp4" trigger false forbidden-term hits
+      // (or worse, mask the real ad content with a clean filename).
+      const text = typeof variant.asset.extracted_text === "string" ? variant.asset.extracted_text.trim() : "";
+      if (!text) return null;
+      const result = await checkCompliance({ env, text, brief });
       if (!result) return null;
       return { asset_id: variant.asset.id, ...result };
     })
@@ -364,9 +381,10 @@ export function buildChallengerText(asset, brief = {}, focus = "hook") {
 // so the handler can `await` a single call and never has to think about whether
 // LLM polish is on.
 export async function generateChallenger(asset, brief = {}, focus = "hook") {
+  const requestEnv = _env;
   const fallback = buildChallengerText(asset, brief, focus);
-  if (!isCopyLlmEnabled()) return fallback;
-  return polishChallengerText({ asset, brief: normalizeBrief(brief), focus, fallback });
+  if (!isCopyLlmEnabled(requestEnv)) return fallback;
+  return polishChallengerText({ env: requestEnv, asset, brief: normalizeBrief(brief), focus, fallback });
 }
 
 async function predictBrain(asset) {

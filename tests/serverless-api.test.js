@@ -1024,10 +1024,14 @@ test("comparison polishes edits, recommendation, and compliance when OpenRouter 
     }
     const body = JSON.parse(String(options.body || "{}"));
     const userMsg = body.messages?.[1]?.content || "";
+    // copy_llm wraps the user JSON in <input>…</input> for anti-injection;
+    // peel it off (with a graceful fallback to the legacy unwrapped shape).
+    const userJsonText = userMsg.match(/<input>\n([\s\S]*?)\n<\/input>/)?.[1]
+      ?? userMsg.split("\n\nRespond with strict JSON")[0];
     if (userMsg.includes("\"template_issue\"") || userMsg.includes("template_issue")) {
       editCallCount += 1;
       // The user payload contains a list of templated edits; echo them back as polished.
-      const payload = JSON.parse(userMsg.split("\n\nRespond with strict JSON")[0]);
+      const payload = JSON.parse(userJsonText);
       const polishedEdits = (payload.edits || []).map((edit) => ({
         score_key: edit.score_key,
         issue: `Polished issue for ${edit.score_key} on variant ${payload.variant?.name || "?"}.`,

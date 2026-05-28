@@ -373,3 +373,194 @@ test("copyLlmStatus reports the active model", () => {
   clearEnv();
   assert.equal(copyLlmStatus().enabled, false);
 });
+
+test("checkCompliance treats string-encoded booleans correctly", async () => {
+  // Cheap models routinely return JSON-stringified booleans. "false" must
+  // resolve to NOT present (no false forbidden hits), "true" must resolve to
+  // present.
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        required_claims: [{ claim: "clinically tested", present: "false", evidence: null }],
+        forbidden_terms: [
+          { term: "miracle", present: "false", evidence: null },
+          { term: "guaranteed", present: "true", evidence: "guaranteed sleep" }
+        ]
+      })
+    )
+  );
+  try {
+    const report = await checkCompliance({
+      text: "Calmcap promises guaranteed sleep with no caveats.",
+      brief: { required_claims: ["clinically tested"], forbidden_terms: ["miracle", "guaranteed"] }
+    });
+    assert.deepEqual(report.missing_required, ["clinically tested"]);
+    assert.equal(report.forbidden_hits.length, 1);
+    assert.equal(report.forbidden_hits[0].term, "guaranteed");
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("generateChallengerText falls back when LLM returns a forbidden term", async () => {
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        text: "Calmcap is the miracle cure for thirty-something insomniacs - try it today.",
+        rationale: "Leads with the magic word."
+      })
+    )
+  );
+  try {
+    const result = await generateChallengerText({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      focus: "hook",
+      fallback: "templated fallback"
+    });
+    // SAMPLE_BRIEF.forbidden_terms includes "miracle"; the LLM output uses it
+    // so we MUST drop to the deterministic fallback rather than persist a
+    // brand-safety violation as a new asset.
+    assert.equal(result, "templated fallback");
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("callOpenRouter retries without response_format on 4xx", async () => {
+  setEnv();
+  let calls = 0;
+  let firstBody = null;
+  let secondBody = null;
+  const restore = stubFetch(async (_url, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    if (calls === 1) {
+      firstBody = body;
+      return new Response("response_format not supported", { status: 400 });
+    }
+    secondBody = body;
+    return openRouterResponse(
+      JSON.stringify({
+        edits: [
+          {
+            score_key: "hook",
+            issue: "Polished issue after retry.",
+            suggested_edit: "Polished edit after retry.",
+            draft_revision: null
+          }
+        ]
+      })
+    );
+  });
+  try {
+    const polished = await polishEditsForVariant({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: SAMPLE_EDITS
+    });
+    assert.equal(calls, 2, "second attempt should fire without response_format");
+    assert.equal(firstBody.response_format?.type, "json_object");
+    assert.equal(secondBody.response_format, undefined);
+    assert.equal(polished[0].llm_polished, true);
+    assert.match(polished[0].issue, /after retry/);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("STIMLI_LLM_TIMEOUT_MS falls back to default when malformed", async () => {
+  // "8s" coerces to NaN. setTimeout(fn, NaN) would fire immediately and abort
+  // every call, silently disabling polish. The parser must treat any
+  // non-finite or non-positive value as default-timeout instead.
+  setEnv({ STIMLI_LLM_TIMEOUT_MS: "8s" });
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        edits: [
+          {
+            score_key: "hook",
+            issue: "Polished issue.",
+            suggested_edit: "Polished edit.",
+            draft_revision: null
+          }
+        ]
+      })
+    )
+  );
+  try {
+    const polished = await polishEditsForVariant({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: SAMPLE_EDITS
+    });
+    assert.equal(polished[0].llm_polished, true);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("polishEditsForVariant wraps user payload in <input> for anti-injection", async () => {
+  setEnv();
+  let capturedUserMsg = null;
+  let capturedSystem = null;
+  const restore = stubFetch(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    capturedSystem = body.messages?.[0]?.content || "";
+    capturedUserMsg = body.messages?.[1]?.content || "";
+    return openRouterResponse(JSON.stringify({ edits: [] }));
+  });
+  try {
+    await polishEditsForVariant({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: SAMPLE_EDITS
+    });
+    assert.match(capturedUserMsg, /^<input>\n/);
+    assert.match(capturedUserMsg, /\n<\/input>/);
+    // System prompt must tell the model the input block is data, not instructions.
+    assert.match(capturedSystem, /<input>/);
+    assert.match(capturedSystem, /untrusted data/i);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("env passed explicitly bypasses module-state configureCopyLlm", async () => {
+  // The race fix: when env is passed explicitly to a polish call, it must NOT
+  // read the module-level _env (which a concurrent request could overwrite).
+  configureCopyLlm({}); // _env empty
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        edits: [
+          {
+            score_key: "hook",
+            issue: "Polished via explicit env.",
+            suggested_edit: "Polished edit.",
+            draft_revision: null
+          }
+        ]
+      })
+    )
+  );
+  try {
+    const polished = await polishEditsForVariant({
+      env: { OPENROUTER_API_KEY: "explicit-key", STIMLI_LLM_TIMEOUT_MS: "5000" },
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: SAMPLE_EDITS
+    });
+    assert.equal(polished[0].llm_polished, true);
+    assert.match(polished[0].issue, /via explicit env/);
+  } finally {
+    restore();
+  }
+});
