@@ -948,12 +948,17 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments[2] === "challengers") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    // Challengers create a new asset (saveAsset below) and, when OPENROUTER_API_KEY
-    // is set, fire an OpenRouter call. Without a quota guard a scripted client
-    // could fan out unlimited LLM calls per workspace. Same kind ("asset") as the
-    // direct-upload path so the monthly cap applies consistently.
-    const quota = await getQuotaForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "asset", quota);
+    // Only enforce the asset quota when LLM polish is actually enabled. With
+    // OPENROUTER_API_KEY unset, generateChallenger returns deterministic
+    // templated text the caller could have produced client-side — charging a
+    // monthly asset slot for that is gratuitous. When the key IS set, every
+    // challenger attempt costs an OpenRouter round-trip (success or 4xx), so
+    // it stays on the quota the same way as direct uploads.
+    const llmPolishOn = Boolean(globalThis.__stimliEnv && globalThis.__stimliEnv.OPENROUTER_API_KEY);
+    if (llmPolishOn) {
+      const quota = await getQuotaForWorkspace(workspaceId);
+      await enforceUsageLimit(request, workspaceId, "asset", quota);
+    }
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
@@ -1575,6 +1580,9 @@ function reportToMarkdown(report) {
             .map((hit) => hit.evidence ? `${hit.term} (“${hit.evidence}”)` : hit.term)
             .join("; ");
           lines.push(`- Forbidden term hits: ${hits}`);
+        }
+        if (row.truncated) {
+          lines.push("- Note: variant text exceeded the brief-check sample window; missing-claim verdicts may be incomplete.");
         }
         lines.push("");
       }

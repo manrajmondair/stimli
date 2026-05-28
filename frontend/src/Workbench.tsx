@@ -2103,10 +2103,17 @@ function ComplianceFlags({ comparison, ranked }: { comparison: Comparison; ranke
         asset_id: report.asset_id,
         name: nameByAssetId.get(report.asset_id) ?? "Variant",
         missing,
-        forbidden
+        forbidden,
+        truncated: Boolean(report.truncated)
       };
     })
-    .filter(Boolean) as Array<{ asset_id: string; name: string; missing: string[]; forbidden: ComplianceReport["forbidden_hits"] }>;
+    .filter(Boolean) as Array<{
+      asset_id: string;
+      name: string;
+      missing: string[];
+      forbidden: ComplianceReport["forbidden_hits"];
+      truncated: boolean;
+    }>;
   if (!rows.length) return null;
   return (
     <div className="compliance-flags" role="note" aria-label="Compliance flags">
@@ -2127,6 +2134,11 @@ function ComplianceFlags({ comparison, ranked }: { comparison: Comparison; ranke
                   .map((entry) => entry.term)
                   .filter(Boolean)
                   .join("; ")}
+              </span>
+            )}
+            {row.truncated && (
+              <span className="compliance-issue compliance-truncated">
+                Variant text exceeded the sample window — missing-claim verdicts may be incomplete.
               </span>
             )}
           </li>

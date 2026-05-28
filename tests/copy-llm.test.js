@@ -533,6 +533,183 @@ test("polishEditsForVariant wraps user payload in <input> for anti-injection", a
   }
 });
 
+test("callOpenRouter does NOT retry on 401/403/429", async () => {
+  // Old behavior retried on every 4xx — amplified rate-limit pressure and
+  // doubled auth-failure noise. New gating only retries on 400/422, where
+  // response_format incompatibility is the plausible cause.
+  setEnv();
+  const seenStatuses = [];
+  for (const status of [401, 403, 429]) {
+    let calls = 0;
+    const restore = stubFetch(async () => {
+      calls += 1;
+      return new Response("backoff", { status });
+    });
+    try {
+      await polishEditsForVariant({
+        asset: SAMPLE_ASSET,
+        brief: SAMPLE_BRIEF,
+        edits: SAMPLE_EDITS
+      });
+      seenStatuses.push({ status, calls });
+    } finally {
+      restore();
+    }
+  }
+  clearEnv();
+  for (const observed of seenStatuses) {
+    assert.equal(observed.calls, 1, `status ${observed.status} should NOT retry`);
+  }
+});
+
+test("generateChallengerText uses word-boundary matching for forbidden terms", async () => {
+  // Substring match would falsely reject "secure" when the brief forbids
+  // "cure". The polished output should survive because "cure" is not a
+  // standalone word in the text.
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        text: "Feel secure with overnight delivery and a clear path forward.",
+        rationale: "Hook leads with reassurance."
+      })
+    )
+  );
+  try {
+    const result = await generateChallengerText({
+      asset: SAMPLE_ASSET,
+      brief: { ...SAMPLE_BRIEF, forbidden_terms: ["cure"] },
+      focus: "hook",
+      fallback: "templated fallback"
+    });
+    assert.match(result, /Feel secure/);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("generateChallengerText still rejects whole-word forbidden terms", async () => {
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        text: "Calmcap is the cure for thirty-something insomniacs.",
+        rationale: "Whole-word forbidden term present."
+      })
+    )
+  );
+  try {
+    const result = await generateChallengerText({
+      asset: SAMPLE_ASSET,
+      brief: { ...SAMPLE_BRIEF, forbidden_terms: ["cure"] },
+      focus: "hook",
+      fallback: "templated fallback"
+    });
+    assert.equal(result, "templated fallback");
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("truncateWords applies a char-cap fallback for CJK / whitespace-less scripts", async () => {
+  // A model that returns a 400-char CJK headline has words.length=1 under a
+  // /\s+/ split; the char-cap fallback should still cap the output.
+  setEnv();
+  const longHeadline = "日本語".repeat(120); // 360 chars, no whitespace
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        headline: longHeadline,
+        reasons: ["Composite leads runner-up by the expected margin."]
+      })
+    )
+  );
+  try {
+    const polished = await polishRecommendation({
+      variants: [
+        { asset: { id: "a", name: "A", extracted_text: "Strong" }, analysis: { scores: { overall: 80 }, timeline: [] } },
+        { asset: { id: "b", name: "B", extracted_text: "Weak" }, analysis: { scores: { overall: 70 }, timeline: [] } }
+      ],
+      recommendation: { winner_asset_id: "a", verdict: "ship", confidence: 0.8, headline: "Ship A", reasons: ["templated"] },
+      brief: SAMPLE_BRIEF
+    });
+    // 14 * 12 = 168 chars + ellipsis. Result should be much shorter than 360.
+    assert.ok(polished.headline.length < 180, `headline length ${polished.headline.length} exceeded char cap`);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("retry budget is shared via deadline across response_format fallback", async () => {
+  // The retry inherits the original deadline rather than getting a fresh
+  // timeoutMs, so total wall clock stays bounded by the original budget.
+  setEnv({ STIMLI_LLM_TIMEOUT_MS: "5000" });
+  let calls = 0;
+  const restore = stubFetch(async (_url, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    if (body.response_format) {
+      return new Response("response_format not supported", { status: 400 });
+    }
+    return openRouterResponse(
+      JSON.stringify({
+        edits: [
+          {
+            score_key: "hook",
+            issue: "Polished issue after retry.",
+            suggested_edit: "Polished edit after retry.",
+            draft_revision: null
+          }
+        ]
+      })
+    );
+  });
+  try {
+    const polished = await polishEditsForVariant({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: SAMPLE_EDITS
+    });
+    assert.equal(calls, 2, "should retry once without response_format");
+    assert.equal(polished[0].llm_polished, true);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
+test("retry is skipped when remaining budget is too small", async () => {
+  // MIN_RETRY_BUDGET_MS guards against firing a retry that immediately aborts
+  // — e.g., when the configured timeout is shorter than the budget guard
+  // itself. The first attempt's 400 should fall straight through to
+  // template fallback rather than trying a doomed retry.
+  setEnv({ STIMLI_LLM_TIMEOUT_MS: "100" });
+  let calls = 0;
+  const restore = stubFetch(async (_url, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    if (body.response_format) {
+      return new Response("response_format not supported", { status: 400 });
+    }
+    return openRouterResponse(JSON.stringify({ edits: [] }));
+  });
+  try {
+    const polished = await polishEditsForVariant({
+      asset: SAMPLE_ASSET,
+      brief: SAMPLE_BRIEF,
+      edits: SAMPLE_EDITS
+    });
+    assert.equal(calls, 1, "should NOT retry when budget too small");
+    assert.equal(polished, SAMPLE_EDITS);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
 test("env passed explicitly bypasses module-state configureCopyLlm", async () => {
   // The race fix: when env is passed explicitly to a polish call, it must NOT
   // read the module-level _env (which a concurrent request could overwrite).

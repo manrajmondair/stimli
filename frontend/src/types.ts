@@ -125,6 +125,7 @@ export type ComplianceReport = {
   forbidden_terms: ComplianceCheck[];
   missing_required: string[];
   forbidden_hits: ComplianceCheck[];
+  truncated?: boolean;
 };
 
 export type CreativeBrief = {
@@ -276,6 +277,7 @@ export type Report = {
   suggestions: Suggestion[];
   next_steps: string[];
   brief: CreativeBrief;
+  compliance?: ComplianceReport[] | null;
   learning_summary: LearningSummary | null;
 };
 

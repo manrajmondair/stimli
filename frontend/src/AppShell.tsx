@@ -3108,6 +3108,8 @@ export function SharedReportPage({ token }: { token: string }) {
         </div>
       ) : null}
 
+      <SharedComplianceBlock report={report} />
+
       {report.next_steps?.length ? (
         <div className="panel-card" style={{ marginTop: 18 }}>
           <div className="panel-head">
@@ -3130,6 +3132,52 @@ export function SharedReportPage({ token }: { token: string }) {
           Run your own comparison →
         </a>
       </footer>
+    </div>
+  );
+}
+
+function SharedComplianceBlock({ report }: { report: Report }) {
+  const compliance = Array.isArray(report.compliance) ? report.compliance : [];
+  const flagged = compliance.filter(
+    (row) =>
+      (row.missing_required && row.missing_required.length > 0) ||
+      (row.forbidden_hits && row.forbidden_hits.length > 0)
+  );
+  if (!flagged.length) return null;
+  const nameByAssetId = new Map(report.variants.map((variant) => [variant.asset.id, variant.asset.name]));
+  return (
+    <div className="panel-card" style={{ marginTop: 18 }}>
+      <div className="panel-head">
+        <h3>Brief checks</h3>
+        <span className="kicker">{flagged.length} flagged</span>
+      </div>
+      <ul className="shared-compliance">
+        {flagged.map((row) => {
+          const variantLabel = nameByAssetId.get(row.asset_id) ?? "Variant";
+          const missing = row.missing_required ?? [];
+          const forbidden = row.forbidden_hits ?? [];
+          return (
+            <li key={row.asset_id}>
+              <strong>{variantLabel.split("·")[0]?.trim() ?? variantLabel}</strong>
+              {missing.length ? (
+                <span className="compliance-issue compliance-missing">
+                  Missing required: {missing.join("; ")}
+                </span>
+              ) : null}
+              {forbidden.length ? (
+                <span className="compliance-issue compliance-forbidden">
+                  Forbidden hits: {forbidden.map((hit) => (hit.evidence ? `${hit.term} (“${hit.evidence}”)` : hit.term)).join("; ")}
+                </span>
+              ) : null}
+              {row.truncated ? (
+                <span className="hint">
+                  Note: variant text exceeded the brief-check sample window; missing-claim verdicts may be incomplete.
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

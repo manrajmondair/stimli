@@ -75,13 +75,14 @@ export async function compareAssets(comparisonId, objective, assets, createdAt, 
 export async function compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief = {}, brainByAssetId = {}) {
   // Snapshot the env reference at entry. Module-level _env can be overwritten
   // by a concurrent request's configureAnalysis call between the time we
-  // enter compareAssetsWithBrain and the time the polish calls fire — but the
-  // captured reference holds the env that was active when this comparison
-  // started. Pass it explicitly so the copy_llm layer never reads shared
-  // mutable state.
+  // enter compareAssetsWithBrain and the time downstream awaits fire. Threading
+  // requestEnv explicitly through analyzeAsset (for TRIBE inference) and the
+  // polish stages keeps every async branch on the env that was active when
+  // this comparison started, not whatever the module state happens to point
+  // at after a yield.
   const requestEnv = _env;
   const safeBrief = normalizeBrief(brief);
-  const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief, brainByAssetId[asset.id])));
+  const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief, brainByAssetId[asset.id], requestEnv)));
   const ranked = assets
     .map((asset, index) => [asset, analyses[index]])
     .sort((left, right) => right[1].scores.overall - left[1].scores.overall);
@@ -105,16 +106,28 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
 
   // The three LLM stages share no inputs — fan them out in parallel so a slow
   // OpenRouter response in any single stage doesn't compound onto the other
-  // two and blow past Cloudflare Pages Functions' wall-clock budget.
+  // two and blow past Cloudflare Pages Functions' wall-clock budget. Each
+  // stage is wrapped in a defensive .catch so a thrown error in any one of
+  // them degrades to the deterministic fallback for that stage instead of
+  // rejecting the whole Promise.all and failing the comparison.
   const [polishedSuggestions, recommendation, compliance] = await Promise.all([
-    polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv),
+    polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv).catch((err) => {
+      try { console.warn(`[analysis] polishSuggestions failed: ${err?.message || err}`); } catch {}
+      return rawSuggestions;
+    }),
     polishRecommendation({
       env: requestEnv,
       variants,
       recommendation: baseRecommendation,
       brief: safeBrief
+    }).catch((err) => {
+      try { console.warn(`[analysis] polishRecommendation failed: ${err?.message || err}`); } catch {}
+      return baseRecommendation;
     }),
-    collectCompliance(variants, safeBrief, requestEnv)
+    collectCompliance(variants, safeBrief, requestEnv).catch((err) => {
+      try { console.warn(`[analysis] collectCompliance failed: ${err?.message || err}`); } catch {}
+      return null;
+    })
   ]);
 
   const finalSuggestions = polishedSuggestions
@@ -318,11 +331,11 @@ export async function extractAssetText(asset) {
   }
 }
 
-export async function analyzeAsset(asset, brief = {}, brainOverride = null) {
+export async function analyzeAsset(asset, brief = {}, brainOverride = null, env) {
   const safeBrief = normalizeBrief(brief);
   const text = asset.extracted_text || asset.name || asset.source_url || "";
   const words = tokenize(text);
-  const { provider, timeline } = brainOverride ? normalizeBrainOverride(brainOverride) : await predictBrain(asset);
+  const { provider, timeline } = brainOverride ? normalizeBrainOverride(brainOverride) : await predictBrain(asset, env);
   const neuralAttention = average(timeline.map((point) => point.attention));
   const memory = average(timeline.map((point) => point.memory));
   const cognitiveLoad = average(timeline.map((point) => point.cognitive_load));
@@ -387,18 +400,25 @@ export async function generateChallenger(asset, brief = {}, focus = "hook") {
   return polishChallengerText({ env: requestEnv, asset, brief: normalizeBrief(brief), focus, fallback });
 }
 
-async function predictBrain(asset) {
-  const remoteUrl = getEnv("TRIBE_INFERENCE_URL") || "";
+async function predictBrain(asset, env) {
+  // Prefer the env snapshot threaded from compareAssetsWithBrain; fall back
+  // to module-level _env only when this function is called outside the
+  // request-scoped path (legacy callers, tests). Reading from a snapshot
+  // here keeps TRIBE inference on the same env the polish layer uses, even
+  // when a concurrent configureAnalysis has overwritten module state mid-
+  // request.
+  const source = env || _env;
+  const remoteUrl = source.TRIBE_INFERENCE_URL || "";
   if (remoteUrl) {
     try {
       const response = await fetch(remoteUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(getEnv("TRIBE_API_KEY") ? { Authorization: `Bearer ${getEnv("TRIBE_API_KEY")}` } : {})
+          ...(source.TRIBE_API_KEY ? { Authorization: `Bearer ${source.TRIBE_API_KEY}` } : {})
         },
         body: JSON.stringify({ asset }),
-        signal: AbortSignal.timeout(Number(getEnv("TRIBE_INFERENCE_TIMEOUT_MS") || 55000))
+        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 55000))
       });
       if (!response.ok) {
         throw new Error(`Remote provider returned ${response.status}`);
@@ -410,7 +430,7 @@ async function predictBrain(asset) {
       }
       throw new Error("Remote provider returned no timeline.");
     } catch (error) {
-      if (getEnv("STIMLI_BRAIN_PROVIDER") === "tribe-remote") {
+      if (source.STIMLI_BRAIN_PROVIDER === "tribe-remote") {
         throw error;
       }
     }
