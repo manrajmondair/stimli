@@ -486,6 +486,26 @@ test("organizes assets and comparisons by project", async () => {
   assert.equal(comparison.json.project_id, project.json.id);
 });
 
+test("rejects anonymous access to a team-scoped workspace via the header", async () => {
+  // An anonymous request (no session) must not be able to target another
+  // tenant's data by setting X-Stimli-Workspace to a team id.
+  const teamWorkspace = `team_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const read = await call("GET", "/api/assets", null, { "x-stimli-workspace": teamWorkspace });
+  assert.equal(read.statusCode, 403);
+  const write = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Intruder", text: "Trying to write into a team workspace anonymously." },
+    { "x-stimli-workspace": teamWorkspace }
+  );
+  assert.equal(write.statusCode, 403);
+  // A normal anonymous ws_* workspace still works.
+  const ok = await call("GET", "/api/assets", null, {
+    "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`
+  });
+  assert.equal(ok.statusCode, 200);
+});
+
 test("scopes persistent objects by workspace header", async () => {
   const workspaceA = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const workspaceB = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;

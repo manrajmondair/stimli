@@ -1709,6 +1709,16 @@ function workspaceForRequest(request) {
   if (!/^[A-Za-z0-9_-]{3,96}$/.test(workspaceId)) {
     throw httpError(400, "Invalid workspace id.");
   }
+  // This fallback is only reached for requests with no authenticated session
+  // (the caller short-circuits on authContext.workspace_id first). team_*
+  // workspaces are server-issued and belong to a real tenant; reaching one here
+  // means an anonymous client is trying to read/write another team's data by
+  // setting the X-Stimli-Workspace header to a team id. Reject it — team data
+  // is only reachable through an authenticated session whose membership
+  // resolves to that team.
+  if (/^team_/i.test(workspaceId)) {
+    throw httpError(403, "This workspace requires sign-in.");
+  }
   return workspaceId;
 }
 
