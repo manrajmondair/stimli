@@ -97,6 +97,28 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
+// Races a promise against a wall-clock deadline, resolving to `fallback` if the
+// deadline wins (and swallowing a late rejection from the original). Used to cap
+// the optional LLM-polish stages so a slow/retrying provider can't dominate the
+// request latency — the deterministic templated result is always a valid result.
+function withDeadline(promise, ms, fallback) {
+  let timer;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  const settled = Promise.resolve(promise).then(
+    (value) => {
+      clearTimeout(timer);
+      return value;
+    },
+    () => {
+      clearTimeout(timer);
+      return fallback;
+    }
+  );
+  return Promise.race([settled, deadline]);
+}
+
 export function newId(prefix) {
   return `${prefix}_${globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
 }
@@ -191,25 +213,43 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
   // two and blow past Cloudflare Pages Functions' wall-clock budget. Each
   // stage is wrapped in a defensive .catch so a thrown error in any one of
   // them degrades to the deterministic fallback for that stage instead of
-  // rejecting the whole Promise.all and failing the comparison.
+  // rejecting the whole Promise.all and failing the comparison. On top of that
+  // each stage is bounded by a wall-clock deadline: a single OpenRouter attempt
+  // can already take STIMLI_LLM_TIMEOUT_MS, and a transient-5xx retry doubles
+  // it — the deadline (one attempt + a small buffer) cuts that retry tail to
+  // the templated fallback so polish can't add ~16s to the p99 latency. The
+  // common case (fast LLM) never hits the deadline and is unchanged.
+  const polishDeadlineMs = Number(requestEnv.STIMLI_LLM_TIMEOUT_MS || 8000) + 1500;
   const [polishedSuggestions, recommendation, compliance] = await Promise.all([
-    polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv).catch((err) => {
-      try { console.warn(`[analysis] polishSuggestions failed: ${err?.message || err}`); } catch {}
-      return rawSuggestions;
-    }),
-    polishRecommendation({
-      env: requestEnv,
-      variants,
-      recommendation: baseRecommendation,
-      brief: safeBrief
-    }).catch((err) => {
-      try { console.warn(`[analysis] polishRecommendation failed: ${err?.message || err}`); } catch {}
-      return baseRecommendation;
-    }),
-    collectCompliance(variants, safeBrief, requestEnv).catch((err) => {
-      try { console.warn(`[analysis] collectCompliance failed: ${err?.message || err}`); } catch {}
-      return null;
-    })
+    withDeadline(
+      polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv).catch((err) => {
+        try { console.warn(`[analysis] polishSuggestions failed: ${err?.message || err}`); } catch {}
+        return rawSuggestions;
+      }),
+      polishDeadlineMs,
+      rawSuggestions
+    ),
+    withDeadline(
+      polishRecommendation({
+        env: requestEnv,
+        variants,
+        recommendation: baseRecommendation,
+        brief: safeBrief
+      }).catch((err) => {
+        try { console.warn(`[analysis] polishRecommendation failed: ${err?.message || err}`); } catch {}
+        return baseRecommendation;
+      }),
+      polishDeadlineMs,
+      baseRecommendation
+    ),
+    withDeadline(
+      collectCompliance(variants, safeBrief, requestEnv).catch((err) => {
+        try { console.warn(`[analysis] collectCompliance failed: ${err?.message || err}`); } catch {}
+        return null;
+      }),
+      polishDeadlineMs,
+      null
+    )
   ]);
 
   const finalSuggestions = polishedSuggestions
