@@ -561,9 +561,12 @@ async function predictBrain(asset, env) {
         // Budget-safe default: the inline path must abort well inside the
         // Cloudflare request window so the catch below (heuristic fallback)
         // actually runs. Genuinely slow GPU jobs belong on the async Modal
-        // pipeline, not inline. Override via TRIBE_INFERENCE_TIMEOUT_MS only if
-        // the inference endpoint is known-fast.
-        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 4000))
+        // pipeline, not inline. Warm text inference returns in 1-2s, so a 3s
+        // probe captures it while keeping a cold/flaky endpoint from spending
+        // the user's latency budget on a call that will be discarded anyway
+        // (a partial remote result is normalized back to the heuristic for
+        // fairness). Override via TRIBE_INFERENCE_TIMEOUT_MS if known-fast.
+        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 3000))
       });
       if (!response.ok) {
         throw new Error(`Remote provider returned ${response.status}`);
