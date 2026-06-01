@@ -149,7 +149,22 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
   // at after a yield.
   const requestEnv = _env;
   const safeBrief = normalizeBrief(brief);
-  const analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief, brainByAssetId[asset.id], requestEnv)));
+  let analyses = await Promise.all(assets.map((asset) => analyzeAsset(asset, safeBrief, brainByAssetId[asset.id], requestEnv)));
+  // Fairness: every variant in one comparison must be scored by the same engine.
+  // A flaky remote can answer for some variants and time out for others on the
+  // inline path, which would pit a neural-scored variant against a heuristic-
+  // scored one. If the providers aren't uniform, fall the whole comparison back
+  // to the deterministic heuristic so the ranking stays apples-to-apples. (The
+  // async path only reaches here once every job is complete, so it's already
+  // uniform and this never re-runs it.)
+  if (new Set(analyses.map((analysis) => analysis.provider)).size > 1) {
+    try { console.warn("[analysis] mixed brain providers in one comparison; normalizing to heuristic for fairness"); } catch {}
+    analyses = await Promise.all(
+      assets.map((asset) =>
+        analyzeAsset(asset, safeBrief, { provider: "web-heuristic-brain", timeline: heuristicTimeline(asset) }, requestEnv)
+      )
+    );
+  }
   const ranked = assets
     .map((asset, index) => [asset, analyses[index]])
     .sort((left, right) => right[1].scores.overall - left[1].scores.overall);

@@ -881,6 +881,51 @@ test("async job that completes with no timeline degrades to the heuristic instea
   }
 });
 
+test("a flaky remote that answers some variants but not others normalizes to one engine", async () => {
+  // Fairness: if the inline remote answers for one variant and times out for
+  // another, the whole comparison must fall back to the heuristic so variants
+  // aren't scored by different engines.
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  resetRemoteBrainHealth();
+  withEnv({ STIMLI_BRAIN_PROVIDER: "tribe-remote", TRIBE_INFERENCE_URL: "https://modal.test/inference", TRIBE_API_KEY: "k" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    const name = body?.asset?.name || "";
+    if (name.includes("Lucky")) {
+      return jsonResponse({
+        timeline: [
+          { second: 0, attention: 0.7, memory: 0.6, cognitive_load: 0.4 },
+          { second: 3, attention: 0.8, memory: 0.7, cognitive_load: 0.45 },
+          { second: 6, attention: 0.66, memory: 0.72, cognitive_load: 0.4 }
+        ]
+      });
+    }
+    return new Response("upstream down", { status: 503 });
+  };
+
+  try {
+    const a = await call("POST", "/api/assets", { asset_type: "script", name: "Lucky variant", text: "Stop weak hooks. Try the starter kit today." }, headers);
+    const b = await call("POST", "/api/assets", { asset_type: "script", name: "Unlucky variant", text: "A modern solution for everyone, holistic and seamless." }, headers);
+    const cmp = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [a.json.asset.id, b.json.asset.id], objective: "Mixed engine test." },
+      headers
+    );
+    assert.equal(cmp.statusCode, 200);
+    assert.equal(cmp.json.status, "complete");
+    const providers = new Set(cmp.json.variants.map((v) => v.analysis.provider));
+    assert.equal(providers.size, 1, "all variants must share one engine");
+    assert.equal([...providers][0], "web-heuristic-brain", "mixed result normalizes to the heuristic");
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ STIMLI_BRAIN_PROVIDER: undefined, TRIBE_INFERENCE_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
 test("async media enqueue failure falls back to a synchronous comparison instead of 500", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
