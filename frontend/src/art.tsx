@@ -594,13 +594,14 @@ export function NeuralTimeline({
 
   function handleKey(ev: React.KeyboardEvent<SVGSVGElement>) {
     const step = Math.max(0.1, round1(maxSecond / 40));
-    const current = hoverSecond ?? maxSecond / 2;
     if (ev.key === "ArrowLeft") {
       ev.preventDefault();
-      setHoverSecond(round1(Math.max(0, current - step)));
+      // First press enters from the end; subsequent presses step left.
+      setHoverSecond(hoverSecond == null ? round1(maxSecond) : round1(Math.max(0, hoverSecond - step)));
     } else if (ev.key === "ArrowRight") {
       ev.preventDefault();
-      setHoverSecond(round1(Math.min(maxSecond, current + step)));
+      // First press enters from the start; subsequent presses step right.
+      setHoverSecond(hoverSecond == null ? 0 : round1(Math.min(maxSecond, hoverSecond + step)));
     } else if (ev.key === "Home") {
       ev.preventDefault();
       setHoverSecond(0);
@@ -664,7 +665,13 @@ export function NeuralTimeline({
         onKeyDown={handleKey}
         tabIndex={0}
         style={{ display: "block", overflow: "visible", outline: "none" }}
-        role="img"
+        role="slider"
+        aria-label="Scrub the predicted brain response timeline"
+        aria-orientation="horizontal"
+        aria-valuemin={0}
+        aria-valuemax={maxSecond}
+        aria-valuenow={hoverSecond ?? 0}
+        aria-valuetext={hoverSecond == null ? "Not scrubbing" : `${hoverSecond.toFixed(1)} seconds`}
         aria-describedby="neural-timeline-instructions"
       >
         <rect
