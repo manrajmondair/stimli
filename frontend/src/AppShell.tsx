@@ -612,11 +612,15 @@ function Sidebar({
   );
 }
 
-const CHANGELOG_VERSION = "2026-05-16";
+const CHANGELOG_VERSION = "2026-06-01";
 const CHANGELOG_KEY = "stimli.changelog_seen";
 
 type ChangelogEntry = { title: string; body: string };
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    title: "Switch between teams + searchable decision history",
+    body: "Belong to more than one team? The Team view now has a team switcher that re-scopes every view to the team you pick. And the workbench's Recent decisions panel keeps your full history with a search box so you can find any past comparison by objective, winner, or variant name."
+  },
   {
     title: "Real predicted-brain-response chart",
     body: "The Thought-trail now plots the actual per-second timeline from the inference provider. New NeuralTimeline panel below it shows the full chart with proper axes, multi-variant overlay, keyboard scrubbing, channel toggles, and live read-outs."

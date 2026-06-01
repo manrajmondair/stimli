@@ -187,7 +187,9 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   async function refreshComparisons() {
     try {
       const list = await listComparisons();
-      setRecentComparisons(list.slice(0, 5));
+      // Keep a fuller history (capped) so the decisions panel can search past
+      // comparisons, not just show the last five.
+      setRecentComparisons(list.slice(0, 200));
     } catch (err) {
       console.warn(err);
     }
@@ -1208,6 +1210,28 @@ function InventoryPanel({
   recents: Comparison[];
   onOpenRecent: (comparisonId: string) => void;
 }) {
+  const [recentQuery, setRecentQuery] = useState("");
+  const query = recentQuery.trim().toLowerCase();
+  const filteredRecents = useMemo(() => {
+    if (!query) return recents;
+    return recents.filter((recent) => {
+      const winner = recent.variants.find((v) => v.asset.id === recent.recommendation.winner_asset_id);
+      const haystack = [
+        recent.objective,
+        recent.recommendation.headline,
+        recent.status,
+        winner?.asset.name,
+        ...recent.variants.map((v) => v.asset.name)
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [recents, query]);
+  // Without a search, keep the panel tidy by showing the most recent handful;
+  // when searching, reveal every match across the full history.
+  const visibleRecents = query ? filteredRecents : filteredRecents.slice(0, 6);
   return (
     <section className="wb-col wb-col-inventory">
       <div className="panel-card">
@@ -1276,12 +1300,27 @@ function InventoryPanel({
       <div className="panel-card recents">
         <div className="panel-head">
           <h3>Recent decisions</h3>
-          <span className="kicker">last {recents.length || 0}</span>
+          <span className="kicker">
+            {query ? `${filteredRecents.length} of ${recents.length}` : recents.length ? `${recents.length} total` : "none yet"}
+          </span>
         </div>
+        {recents.length > 6 ? (
+          <label className="field" style={{ marginBottom: 10 }}>
+            <input
+              type="search"
+              value={recentQuery}
+              onChange={(e) => setRecentQuery(e.target.value)}
+              placeholder="Search past decisions…"
+              aria-label="Search past decisions"
+            />
+          </label>
+        ) : null}
         {recents.length === 0 ? (
           <p className="hint">No decisions yet. Run a comparison to start a history.</p>
+        ) : visibleRecents.length === 0 ? (
+          <p className="hint">No decisions match “{recentQuery.trim()}”.</p>
         ) : (
-          recents.map((recent) => {
+          visibleRecents.map((recent) => {
             const winner = recent.variants.find((v) => v.asset.id === recent.recommendation.winner_asset_id);
             const verb = recent.recommendation.verdict === "ship" ? "Ship" : "Revise";
             const isOpen = recent.status === "processing" || recent.status === "complete";
