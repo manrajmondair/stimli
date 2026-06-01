@@ -97,4 +97,38 @@ describe("Workbench", () => {
     await screen.findByText(/Ship Only winner\./i);
     expect(screen.getByLabelText(/delete decision: ship only winner/i)).toBeInTheDocument();
   });
+
+  it("runs the core flow: load the demo set, then compare to a recommendation", async () => {
+    const demoAssets = [
+      { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
+      { id: "asset_d2", type: "script", name: "Demo B", extracted_text: "A modern holistic ecosystem." }
+    ];
+    const result = makeComparison("cmp_new", "demo run", "Demo A");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = (init?.method || "GET").toUpperCase();
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+        if (u.includes("/demo/seed") && method === "POST") return json(demoAssets);
+        if (u.includes("/comparisons") && method === "POST") return json(result);
+        if (u.includes("/comparisons")) return json([]);
+        if (u.includes("/assets")) return json([]);
+        if (u.includes("/brand-profiles")) return json([]);
+        return json([]);
+      })
+    );
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    // Load the demo set (toolbar affordance), which seeds + auto-selects two.
+    const demoButtons = await screen.findAllByRole("button", { name: /demo set/i });
+    fireEvent.click(demoButtons[0]);
+    expect((await screen.findAllByText(/Demo A/)).length).toBeGreaterThan(0);
+
+    // Compare -> the stubbed complete comparison renders its recommendation.
+    const compare = screen.getByRole("button", { name: /^Compare/i });
+    fireEvent.click(compare);
+    expect(await screen.findByText(/Ship Demo A/i)).toBeInTheDocument();
+  });
 });
