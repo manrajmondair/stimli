@@ -618,8 +618,8 @@ const CHANGELOG_KEY = "stimli.changelog_seen";
 type ChangelogEntry = { title: string; body: string };
 const CHANGELOG: ChangelogEntry[] = [
   {
-    title: "Switch between teams + searchable decision history",
-    body: "Belong to more than one team? The Team view now has a team switcher that re-scopes every view to the team you pick. And the workbench's Recent decisions panel keeps your full history with a search box so you can find any past comparison by objective, winner, or variant name."
+    title: "Switch teams + search, prune your decision history",
+    body: "Belong to more than one team? The Team view now has a team switcher that re-scopes every view to the team you pick. The workbench's Recent decisions panel keeps your full history with a search box (find any past comparison by objective, winner, or variant name) and a delete control to prune ones you no longer need. Comparisons also run noticeably faster now."
   },
   {
     title: "Real predicted-brain-response chart",
