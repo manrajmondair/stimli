@@ -941,12 +941,15 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
       rawComparison.brand_profile_id = payload.brand_profile_id || payload.brandProfileId;
     }
     const comparison = publicComparison(rawComparison);
-    await saveComparison(comparison);
-    await audit(workspaceId, authContext.user, "comparison.created", "comparison", comparison.id, {
-      status: comparison.status,
-      asset_count: comparison.variants.length,
-      project_id: comparison.project_id || null
-    });
+    // Independent writes to different tables — run them together.
+    await Promise.all([
+      saveComparison(comparison),
+      audit(workspaceId, authContext.user, "comparison.created", "comparison", comparison.id, {
+        status: comparison.status,
+        asset_count: comparison.variants.length,
+        project_id: comparison.project_id || null
+      })
+    ]);
     return sendJson(comparison.status === "processing" ? 202 : 200, comparison, headers, cookies);
   }
 
@@ -975,6 +978,8 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
     if (!removed) {
       throw httpError(404, "Comparison not found");
     }
+    // audit stays sequential here — it must only run once the delete is
+    // confirmed, otherwise a 404 would log a delete that never happened.
     await audit(workspaceId, authContext.user, "comparison.deleted", "comparison", comparisonId, {});
     return sendJson(200, { deleted: comparisonId }, headers, cookies);
   }

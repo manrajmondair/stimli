@@ -157,8 +157,18 @@ export async function billingStatus(team = null) {
 // falls back to the UTC calendar month — same behavior as a fresh free tenant.
 export async function getQuotaForWorkspace(workspaceId) {
   const catalog = getCatalog();
-  const team = workspaceId && workspaceId !== "public" ? await getTeam(workspaceId) : null;
-  const subscription = team ? await getSubscription(team.id) : null;
+  // The workspace id IS the team id, so the team and its subscription can be
+  // fetched in one parallel round-trip instead of fetching the team, then the
+  // subscription. We only honor the subscription when the team actually exists
+  // — a subscription is always written against a real team via Stripe webhooks,
+  // so this is identical to the old getSubscription(team.id) without the extra
+  // sequential Neon round-trip on the hot path.
+  const useWorkspace = workspaceId && workspaceId !== "public";
+  const [team, rawSubscription] = await Promise.all([
+    useWorkspace ? getTeam(workspaceId) : Promise.resolve(null),
+    useWorkspace ? getSubscription(workspaceId) : Promise.resolve(null)
+  ]);
+  const subscription = team ? rawSubscription : null;
   const planId = normalizePlan(subscription?.plan || team?.plan, catalog);
   const plan = catalog.find((p) => p.id === planId) || catalog[0];
 
