@@ -1,4 +1,5 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Component, Suspense, lazy, useEffect } from "react";
+import type { ReactNode } from "react";
 import { Landing } from "./Landing";
 import { BrainBlob } from "./art";
 
@@ -26,6 +27,81 @@ function RouteFallback() {
   );
 }
 
+// Catches lazy-chunk load failures (deploy skew, flaky network, offline) so a
+// failed dynamic import surfaces a recovery screen instead of an unhandled
+// error / blank page. A new deploy fingerprints the chunk filenames, so a
+// client holding a stale index can 404 on the old chunk — one reload pulls the
+// fresh manifest. We auto-reload once (guarded against a loop) and otherwise
+// offer a manual retry.
+const RELOAD_GUARD_KEY = "stimli.chunk_reloaded";
+
+class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch() {
+    let reloadedOnce = false;
+    try {
+      reloadedOnce = window.sessionStorage.getItem(RELOAD_GUARD_KEY) === "1";
+      if (!reloadedOnce) window.sessionStorage.setItem(RELOAD_GUARD_KEY, "1");
+    } catch {
+      /* sessionStorage can throw in private mode — fall back to manual retry */
+    }
+    if (!reloadedOnce) {
+      window.location.reload();
+    }
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="paper-bg" style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+        <div style={{ textAlign: "center", maxWidth: 420, padding: 24 }}>
+          <BrainBlob size={84} color="var(--tomato)" eyes />
+          <p style={{ marginTop: 16, fontFamily: "var(--mono)", fontSize: 13, color: "var(--ink-soft)" }}>
+            We couldn't finish loading this view. A new version may have just shipped.
+          </p>
+          <button
+            className="btn cream"
+            style={{ marginTop: 16 }}
+            onClick={() => {
+              try {
+                window.sessionStorage.removeItem(RELOAD_GUARD_KEY);
+              } catch {
+                /* ignore */
+              }
+              window.location.reload();
+            }}
+          >
+            Reload
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
+// Lazy routes get both: the error boundary (load failure) wrapping Suspense
+// (load pending). A successful render clears the one-shot reload guard so a
+// future chunk failure can auto-reload again.
+function LazyRoute({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    try {
+      window.sessionStorage.removeItem(RELOAD_GUARD_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  return (
+    <RouteErrorBoundary>
+      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
+    </RouteErrorBoundary>
+  );
+}
+
 export function App() {
   const path = window.location.pathname;
 
@@ -43,34 +119,34 @@ export function App() {
 
   if (path === "/legal") {
     return (
-      <Suspense fallback={<RouteFallback />}>
+      <LazyRoute>
         <LegalPage />
-      </Suspense>
+      </LazyRoute>
     );
   }
   const inviteMatch = path.match(/^\/invite\/([^/]+)$/);
   if (inviteMatch) {
     if (!clerkPublishableKey) return <AuthSetupNeeded />;
     return (
-      <Suspense fallback={<RouteFallback />}>
+      <LazyRoute>
         <InvitePage token={inviteMatch[1]} />
-      </Suspense>
+      </LazyRoute>
     );
   }
   const shareMatch = path.match(/^\/share\/([^/]+)$/);
   if (shareMatch) {
     return (
-      <Suspense fallback={<RouteFallback />}>
+      <LazyRoute>
         <SharedReportPage token={shareMatch[1]} />
-      </Suspense>
+      </LazyRoute>
     );
   }
   if (path === "/app" || path.startsWith("/app/")) {
     if (!clerkPublishableKey) return <AuthSetupNeeded />;
     return (
-      <Suspense fallback={<RouteFallback />}>
+      <LazyRoute>
         <AppShell />
-      </Suspense>
+      </LazyRoute>
     );
   }
   return <Landing />;
