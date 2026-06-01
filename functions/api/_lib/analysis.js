@@ -64,6 +64,24 @@ function recentBrainErrors() {
   };
 }
 
+// Trips the inline circuit breaker once the remote endpoint has failed this many
+// times inside the rolling 60s window. Kept low because a comparison fans out
+// one inference call per variant, so two failures already means "this endpoint
+// is down right now" — stop probing it inline until the window clears. The
+// breaker closes automatically as failures age out of the 60s window.
+const BRAIN_CIRCUIT_OPEN_THRESHOLD = 2;
+
+function isRemoteBrainCircuitOpen() {
+  return recentBrainErrors().count_last_60s >= BRAIN_CIRCUIT_OPEN_THRESHOLD;
+}
+
+// Test-only: clears the failure ring so brain-health/circuit-breaker tests can
+// assert from a known-clean state regardless of execution order. Harmless in
+// production (never called there).
+export function resetRemoteBrainHealth() {
+  _recentBrainErrors.length = 0;
+}
+
 let _env = {};
 
 export function configureAnalysis(env) {
@@ -425,7 +443,17 @@ export async function analyzeAsset(asset, brief = {}, brainOverride = null, env)
   const safeBrief = normalizeBrief(brief);
   const text = asset.extracted_text || asset.name || asset.source_url || "";
   const words = tokenize(text);
-  const { provider, timeline } = brainOverride ? normalizeBrainOverride(brainOverride) : await predictBrain(asset, env);
+  let { provider, timeline } = brainOverride ? normalizeBrainOverride(brainOverride) : await predictBrain(asset, env);
+  // Guarantee a usable timeline. A remote job can report "complete" with an
+  // empty or garbled timeline; rather than throw (which would reject the whole
+  // comparison's Promise.all with an opaque 500) or crash the feature-vector
+  // math below on a zero-length array, fall back to the deterministic heuristic
+  // so the variant still scores. heuristicTimeline always returns >= 3 points.
+  if (!Array.isArray(timeline) || timeline.length === 0) {
+    if (brainOverride) noteRemoteBrainFailure("empty job timeline");
+    provider = "web-heuristic-brain";
+    timeline = heuristicTimeline(asset);
+  }
   const neuralAttention = average(timeline.map((point) => point.attention));
   const memory = average(timeline.map((point) => point.memory));
   const cognitiveLoad = average(timeline.map((point) => point.cognitive_load));
@@ -499,7 +527,14 @@ async function predictBrain(asset, env) {
   // request.
   const source = env || _env;
   const remoteUrl = source.TRIBE_INFERENCE_URL || "";
-  if (remoteUrl) {
+  // Circuit breaker: once the hosted endpoint has failed repeatedly in the last
+  // 60s, stop probing it inline and serve the heuristic immediately. A cold or
+  // unreachable Modal app would otherwise cost every comparison a full inference
+  // timeout, which — stacked with the LLM polish stage — can exceed the
+  // Cloudflare Pages Functions request budget and turn into a hard 500 ("Request
+  // failed") before the catch below ever runs. The breaker closes itself once
+  // the failures age out of the window.
+  if (remoteUrl && !isRemoteBrainCircuitOpen()) {
     try {
       const response = await fetch(remoteUrl, {
         method: "POST",
@@ -508,7 +543,12 @@ async function predictBrain(asset, env) {
           ...(source.TRIBE_API_KEY ? { Authorization: `Bearer ${source.TRIBE_API_KEY}` } : {})
         },
         body: JSON.stringify({ asset }),
-        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 55000))
+        // Budget-safe default: the inline path must abort well inside the
+        // Cloudflare request window so the catch below (heuristic fallback)
+        // actually runs. Genuinely slow GPU jobs belong on the async Modal
+        // pipeline, not inline. Override via TRIBE_INFERENCE_TIMEOUT_MS only if
+        // the inference endpoint is known-fast.
+        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 6000))
       });
       if (!response.ok) {
         throw new Error(`Remote provider returned ${response.status}`);
@@ -543,13 +583,12 @@ function remoteHeaders(env) {
 }
 
 function normalizeBrainOverride(override) {
-  const timeline = normalizeTimeline(override.timeline || override.result?.timeline || []);
-  if (!timeline.length) {
-    throw new Error("Remote job returned no timeline.");
-  }
+  // Returns a possibly-empty timeline rather than throwing — analyzeAsset is
+  // responsible for falling back to the heuristic when a "complete" job hands
+  // back no usable timeline, so this never hard-fails a comparison.
   return {
     provider: override.provider || override.result?.provider || "tribe-remote",
-    timeline
+    timeline: normalizeTimeline(override.timeline || override.result?.timeline || [])
   };
 }
 

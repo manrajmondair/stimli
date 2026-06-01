@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 
 import { onRequest } from "../functions/api/[[path]].js";
-import { nowIso } from "../functions/api/_lib/analysis.js";
+import { nowIso, resetRemoteBrainHealth } from "../functions/api/_lib/analysis.js";
 import {
   configureStore,
   getTeamMember,
@@ -633,6 +633,9 @@ test("text comparison stays synchronous and completes when the hosted brain is c
   let inferenceCalls = 0;
   let controlCalls = 0;
 
+  // Start from a clean failure ring so the inline circuit breaker is closed and
+  // both variants actually probe the (stubbed-failing) inference endpoint.
+  resetRemoteBrainHealth();
   withEnv({
     STIMLI_BRAIN_PROVIDER: "tribe-remote",
     TRIBE_CONTROL_URL: "https://modal.test/control",
@@ -687,6 +690,57 @@ test("text comparison stays synchronous and completes when the hosted brain is c
   }
 });
 
+test("async job that completes with no timeline degrades to the heuristic instead of 500", async () => {
+  // A Modal job can report status:"complete" with an empty/garbled timeline.
+  // That must not reject the whole comparison's Promise.all with an opaque 500.
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const jobs = new Map();
+  let jobIndex = 0;
+
+  resetRemoteBrainHealth();
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `empty_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      // "complete" but with an empty timeline — the degenerate case.
+      return jsonResponse({ ...jobs.get(body.job_id), status: "complete", result: { provider: "tribe-v2", timeline: [] } });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Audio A", text: "Stop wasting spend." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Audio B", text: "A modern solution." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Empty timeline job." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+    const refreshed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    // No 500: the comparison finalizes via the heuristic.
+    assert.equal(refreshed.statusCode, 200);
+    assert.equal(refreshed.json.status, "complete");
+    assert.equal(refreshed.json.variants.length, 2);
+    for (const variant of refreshed.json.variants) {
+      assert.equal(variant.analysis.provider, "web-heuristic-brain");
+      assert.ok(variant.analysis.timeline.length >= 3, "heuristic timeline should backfill the empty job result");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
 test("async media enqueue failure falls back to a synchronous comparison instead of 500", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
@@ -731,6 +785,7 @@ test("brain provider health reports degraded after repeated remote inference fai
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
 
+  resetRemoteBrainHealth();
   withEnv({
     STIMLI_BRAIN_PROVIDER: "tribe-remote",
     TRIBE_INFERENCE_URL: "https://modal.test/inference",

@@ -895,9 +895,11 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
     const quota = await getQuotaForWorkspace(workspaceId);
     await enforceUsageLimit(request, workspaceId, "comparison", quota);
     const payload = await parseJson(request);
-    const assetIds = Array.isArray(payload.asset_ids) ? payload.asset_ids : [];
+    // Dedupe while preserving order: passing the same id twice would otherwise
+    // pass the < 2 guard and produce a degenerate "tied with itself" comparison.
+    const assetIds = [...new Set(Array.isArray(payload.asset_ids) ? payload.asset_ids : [])];
     if (assetIds.length < 2) {
-      throw httpError(400, "At least two asset_ids are required.");
+      throw httpError(400, "At least two distinct asset_ids are required.");
     }
 
     const assets = [];
