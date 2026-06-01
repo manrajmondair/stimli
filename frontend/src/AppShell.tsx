@@ -112,8 +112,19 @@ function ConfirmDialog({
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onCancel();
-      if (e.key === "Enter") onConfirm();
+      if (e.key === "Escape") {
+        onCancel();
+        return;
+      }
+      // Only confirm on a deliberate Enter. Ignore IME composition commits and
+      // auto-repeat so a destructive action can't fire from a held key or while
+      // the user is finishing a character in another field.
+      if (e.key === "Enter" && !e.isComposing && !e.repeat) {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+        onConfirm();
+      }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
