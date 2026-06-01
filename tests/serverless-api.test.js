@@ -443,6 +443,64 @@ test("blocks demoting the team's last owner via a role change", async () => {
   assert.equal((await getTeamMember(owner.team.id, owner.user.id)).role, "owner");
 });
 
+test("full journey: seed, compare, report, share, outcome, calibrate, challenger, delete", async () => {
+  // One integration test that walks the whole product loop so a regression in
+  // how the features compose (not just each in isolation) is caught.
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  assert.equal(seeded.statusCode, 200);
+
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    {
+      asset_ids: seeded.json.slice(0, 2).map((a) => a.id),
+      objective: "Full journey",
+      brief: { brand_name: "Lumina", audience: "skincare buyers", primary_offer: "starter kit" }
+    },
+    headers
+  );
+  assert.equal(comparison.statusCode, 200);
+  assert.equal(comparison.json.status, "complete");
+  const cid = comparison.json.id;
+  const winner = comparison.json.recommendation.winner_asset_id;
+  assert.ok(winner);
+
+  // Report + markdown + share + anonymous shared report.
+  assert.equal((await call("GET", `/api/reports/${cid}`, null, headers)).statusCode, 200);
+  assert.equal((await call("GET", `/api/reports/${cid}/markdown`, null, headers)).statusCode, 200);
+  const share = await call("POST", `/api/reports/${cid}/share`, null, headers);
+  assert.equal(share.statusCode, 200);
+  assert.equal((await call("GET", `/api/share/${share.json.token}`)).statusCode, 200);
+
+  // Log an outcome on the predicted winner, then confirm calibration counts it.
+  const outcome = await call(
+    "POST",
+    `/api/comparisons/${cid}/outcomes`,
+    { asset_id: winner, spend: 100, impressions: 10000, clicks: 500, conversions: 40, revenue: 900, notes: "" },
+    headers
+  );
+  assert.equal(outcome.statusCode, 200);
+  const learning = await call("GET", "/api/learning/summary", null, headers);
+  assert.equal(learning.statusCode, 200);
+  assert.equal(learning.json.calibration.evaluated_comparisons, 1);
+
+  // Draft a challenger (creates a new asset), then prune the comparison.
+  const challenger = await call("POST", `/api/comparisons/${cid}/challengers`, { source_asset_id: winner, focus: "hook" }, headers);
+  assert.equal(challenger.statusCode, 200);
+  assert.ok(challenger.json.asset.id);
+
+  const del = await call("DELETE", `/api/comparisons/${cid}`, null, headers);
+  assert.equal(del.statusCode, 200);
+  // Cascade: comparison, its outcome, and its share link are all gone.
+  assert.equal((await call("GET", `/api/comparisons/${cid}`, null, headers)).statusCode, 404);
+  assert.equal((await call("GET", `/api/share/${share.json.token}`)).statusCode, 404);
+  const outcomesAfter = await call("GET", "/api/outcomes", null, headers);
+  assert.equal(outcomesAfter.json.some((o) => o.comparison_id === cid), false);
+});
+
 test("seeds assets and creates a comparison", async () => {
   const seeded = await call("POST", "/api/demo/seed");
   assert.equal(seeded.statusCode, 200);
