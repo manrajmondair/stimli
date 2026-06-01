@@ -340,6 +340,60 @@ test("enforces granular team roles for workspace writes", async () => {
   assert.equal(allowed.statusCode, 200);
 });
 
+test("a multi-team member can act on a selected team and is scoped to it", async () => {
+  // Build a user who owns their personal team AND is an analyst on a second
+  // team, then drive the production team-selection headers (X-Stimli-Team and a
+  // team_* X-Stimli-Workspace) to confirm the active team — and its role — are
+  // resolved from the selection, not pinned to the personal team.
+  const teamB = await testAccount("Shared Team B", "owner");
+  const user = await testAccount("Multi Team Member", "owner");
+  await saveTeamMember({ team_id: teamB.team.id, user_id: user.user.id, role: "analyst", created_at: nowIso() });
+
+  // Acting on the personal team (no selection header).
+  const personalAsset = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Personal asset", text: "Stop weak hooks before launch. Try the starter kit today." },
+    { cookie: user.cookie }
+  );
+  assert.equal(personalAsset.statusCode, 200);
+
+  // Acting on team B via the dedicated X-Stimli-Team header (analyst can write).
+  const teamBAsset = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Team B asset", text: "Upload creative and review the variant before paid media spend." },
+    { cookie: user.cookie, "x-stimli-team": teamB.team.id }
+  );
+  assert.equal(teamBAsset.statusCode, 200);
+
+  // Scoping: team B's view sees the team B asset, not the personal one.
+  const teamBView = await call("GET", "/api/assets", null, { cookie: user.cookie, "x-stimli-team": teamB.team.id });
+  assert.equal(teamBView.json.some((a) => a.id === teamBAsset.json.asset.id), true);
+  assert.equal(teamBView.json.some((a) => a.id === personalAsset.json.asset.id), false);
+
+  // The team_* X-Stimli-Workspace header resolves the same way.
+  const viaWorkspaceHeader = await call("GET", "/api/assets", null, {
+    cookie: user.cookie,
+    "x-stimli-workspace": teamB.team.id
+  });
+  assert.equal(viaWorkspaceHeader.json.some((a) => a.id === teamBAsset.json.asset.id), true);
+
+  // Role is resolved from the selected team: analyst on B cannot manage members.
+  const blockedManage = await call("GET", "/api/teams/members", null, {
+    cookie: user.cookie,
+    "x-stimli-team": teamB.team.id
+  });
+  assert.equal(blockedManage.statusCode, 403);
+
+  // Selecting a team the user does NOT belong to falls back to the personal team.
+  const intruderTeam = `team_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const fallback = await call("GET", "/api/assets", null, { cookie: user.cookie, "x-stimli-team": intruderTeam });
+  assert.equal(fallback.statusCode, 200);
+  assert.equal(fallback.json.some((a) => a.id === personalAsset.json.asset.id), true);
+  assert.equal(fallback.json.some((a) => a.id === teamBAsset.json.asset.id), false);
+});
+
 test("blocks demoting the team's last owner via a role change", async () => {
   const owner = await testAccount("Last Owner Team", "owner");
   // An admin has members:manage but is not an owner, so they could otherwise

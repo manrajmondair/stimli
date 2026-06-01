@@ -92,14 +92,28 @@ export async function getAuthContext(request) {
     return anonymousContext(`ensureStimliUser-returned-null: ${clerkUserId}`);
   }
 
-  let team;
+  let personalTeam;
   try {
-    team = await ensurePersonalTeam(user);
+    personalTeam = await ensurePersonalTeam(user);
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     return anonymousContext(`ensurePersonalTeam-threw: ${msg}`);
   }
-  const membership = await getTeamMember(team.id, user.id);
+
+  // Honor an explicit active-team selection so a user who belongs to several
+  // teams can actually operate on the one they've switched to — not just the
+  // personal team. The selection only takes effect when the user is a verified
+  // member of the requested team; otherwise we stay on the personal team.
+  const teams = await listTeamsForUser(user.id);
+  let team = resolveActiveTeam(request, teams, personalTeam);
+  let membership = await getTeamMember(team.id, user.id);
+  if (!membership && team.id !== personalTeam.id) {
+    // Membership vanished between the list and the lookup (deleted concurrently).
+    // Fall back to the personal team rather than defaulting to owner perms on a
+    // team we can no longer confirm the user belongs to.
+    team = personalTeam;
+    membership = await getTeamMember(personalTeam.id, user.id);
+  }
 
   return {
     authenticated: true,
@@ -112,14 +126,36 @@ export async function getAuthContext(request) {
   };
 }
 
+// Resolves which of the user's teams a request is acting on. A request can
+// select an active team via the dedicated X-Stimli-Team header, a team_* value
+// in X-Stimli-Workspace (so the existing workspace plumbing drives switching),
+// or X-Stimli-Test-Team in the test harness. The selection is honored only when
+// the user is a verified member of that team; otherwise the fallback team
+// (personal team in prod, first team in tests) is used.
+function resolveActiveTeam(request, teams, fallbackTeam) {
+  const requested = (headerValue(request, "x-stimli-test-team") || "").trim() || requestedTeamId(request);
+  if (requested && (!fallbackTeam || requested !== fallbackTeam.id)) {
+    const match = teams.find((item) => item.id === requested);
+    if (match) return match;
+  }
+  return fallbackTeam;
+}
+
+function requestedTeamId(request) {
+  const dedicated = (headerValue(request, "x-stimli-team") || "").trim();
+  if (dedicated) return dedicated;
+  const ws = (headerValue(request, "x-stimli-workspace") || "").trim();
+  return /^team_/i.test(ws) ? ws : "";
+}
+
 async function synthesizeTestContext(testUserId, request) {
   const user = await getUser(testUserId);
   if (!user) return anonymousContext();
   const teams = await listTeamsForUser(user.id);
   // Tests can override which team becomes the active workspace by passing
-  // X-Stimli-Test-Team. Defaults to the first team the user belongs to.
-  const requestedTeamId = headerValue(request, "x-stimli-test-team");
-  const team = (requestedTeamId && teams.find((item) => item.id === requestedTeamId)) || teams[0];
+  // X-Stimli-Test-Team (or the production X-Stimli-Team header). Defaults to the
+  // first team the user belongs to. Shares resolveActiveTeam with the real path.
+  const team = resolveActiveTeam(request, teams, teams[0]);
   if (!team) return anonymousContext();
   const membership = await getTeamMember(team.id, user.id);
   return {

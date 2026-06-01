@@ -25,6 +25,7 @@ import {
   openBillingPortal,
   removeTeamMember,
   revokeTeamInvite,
+  setActiveTeam,
   startCheckout,
   updateBrandProfile,
   updateTeamMemberRole,
@@ -2491,10 +2492,35 @@ function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate
                 {pendingInvites.length} pending {pendingInvites.length === 1 ? "invite" : "invites"}
               </span>
             ) : null}
-            <span className="pill">
-              <span className="dot" style={{ background: "var(--tomato)" }} />
-              {session.team?.name}
-            </span>
+            {(session.teams?.length ?? 0) > 1 ? (
+              <label className="pill" style={{ gap: 6, cursor: "pointer" }} title="Switch active team">
+                <span className="dot" style={{ background: "var(--tomato)" }} />
+                <select
+                  aria-label="Active team"
+                  value={session.team?.id ?? ""}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (!next || next === session.team?.id) return;
+                    setActiveTeam(next);
+                    // Reload so every view re-fetches under the newly active
+                    // team's workspace.
+                    window.location.reload();
+                  }}
+                  style={{ border: 0, background: "transparent", font: "inherit", color: "inherit", cursor: "pointer" }}
+                >
+                  {session.teams.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <span className="pill">
+                <span className="dot" style={{ background: "var(--tomato)" }} />
+                {session.team?.name}
+              </span>
+            )}
           </span>
         </div>
         <div className="wb-top-right">
