@@ -99,6 +99,12 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   );
   const [defaultBrandName, setDefaultBrandName] = useState<string | null>(null);
   const progressTimerRef = useRef<number | null>(null);
+  // Monotonic token identifying the active poll loop. Cancel / continue-in-
+  // background / re-compare / unmount bump it; the loop bails as soon as its
+  // captured token no longer matches, so a finished job can't hijack the screen
+  // and two overlapping compares can't fight over the same state.
+  const pollTokenRef = useRef(0);
+  const toastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     void refreshAssets();
@@ -150,11 +156,24 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
 
   useEffect(() => {
     return () => {
+      // Invalidate any in-flight poll loop and clear pending timers so a
+      // resolved fetch can't call setState after the component has unmounted.
+      pollTokenRef.current += 1;
       if (progressTimerRef.current !== null) {
         window.clearInterval(progressTimerRef.current);
       }
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
     };
   }, []);
+
+  // Bumps the poll token to stop the active loop, returning the new token so a
+  // caller that is about to start a fresh poll can capture it.
+  function invalidatePoll() {
+    pollTokenRef.current += 1;
+    return pollTokenRef.current;
+  }
 
   async function refreshAssets() {
     try {
@@ -175,9 +194,19 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   }
 
   function flash(toast: Toast) {
+    // Clear any previously-scheduled auto-dismiss before scheduling a new one.
+    // Without this, an earlier toast's 4.5s timer fires while a newer toast is
+    // showing and dismisses it early — error messages vanish during bursts.
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
     setToast(toast);
     if (toast) {
-      window.setTimeout(() => setToast(null), 4500);
+      toastTimerRef.current = window.setTimeout(() => {
+        setToast(null);
+        toastTimerRef.current = null;
+      }, 4500);
     }
   }
 
@@ -277,6 +306,10 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
       flash({ kind: "error", message: "Pick at least two variants." });
       return;
     }
+    // Guard against double-submit: a second run while one is analyzing would
+    // spawn a duplicate backend job and a second poll loop racing the first.
+    if (busy || step === "analyzing") return;
+    const token = invalidatePoll();
     setBusy(true);
     setComparison(null);
     setPollNote(null);
@@ -291,10 +324,17 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
         null,
         defaultBrandId
       );
+      // The user cancelled / navigated / re-submitted while the POST was in
+      // flight — drop this result rather than yanking them back.
+      if (pollTokenRef.current !== token) return;
       setComparison(next);
       if (next.status === "processing") {
         applyJobProgress(next);
-        await pollComparison(next.id);
+        // Release busy now: the analyzing view (driven by step) owns the UI
+        // during polling, and holding busy across a 15-minute poll would wedge
+        // the toolbar after "Continue in background".
+        setBusy(false);
+        await pollComparison(next.id, token);
       } else {
         finishProgressAnimation();
         setStep("result");
@@ -302,6 +342,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
         await refreshComparisons();
       }
     } catch (err) {
+      if (pollTokenRef.current !== token) return;
       const message = err instanceof Error ? err.message : "Could not run comparison.";
       finishProgressAnimation();
       if (/auth|login|session/i.test(message)) onRequireAuth();
@@ -319,7 +360,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     setProgress((current) => Math.max(current, next));
   }
 
-  async function pollComparison(comparisonId: string) {
+  async function pollComparison(comparisonId: string, token: number) {
     let consecutiveErrors = 0;
     const start = Date.now();
     // Keep polling for ~15 minutes. Modal video jobs can take a while; we'd rather
@@ -327,12 +368,18 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     const MAX_MS = 15 * 60 * 1000;
     let attempt = 0;
     while (Date.now() - start < MAX_MS) {
+      // Superseded (cancel / background / re-compare / unmount): stop silently
+      // without touching state — another flow now owns the screen.
+      if (pollTokenRef.current !== token) return;
       const wait = Math.min(2500 + attempt * 200, 6000);
       await delay(wait);
       attempt += 1;
+      if (pollTokenRef.current !== token) return;
       try {
         const fresh = await getComparison(comparisonId);
+        if (pollTokenRef.current !== token) return;
         consecutiveErrors = 0;
+        setPollNote(null);
         setComparison(fresh);
         applyJobProgress(fresh);
         if (fresh.status === "complete") {
@@ -366,6 +413,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
           );
         }
       } catch (err) {
+        if (pollTokenRef.current !== token) return;
         consecutiveErrors += 1;
         const msg = err instanceof Error ? err.message : "Unknown error";
         setPollNote(
@@ -384,6 +432,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     }
     // Timed out client-side; the comparison may still finish on the backend, so
     // surface it in Recent decisions instead of erroring out the user.
+    if (pollTokenRef.current !== token) return;
     finishProgressAnimation();
     setStep("inventory");
     flash({
@@ -396,11 +445,14 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
 
   async function handleCancel() {
     if (!comparison) return;
+    // Stop the poll loop first so it can't flip the view back to "result" if a
+    // late completion lands while the cancel request is in flight.
+    invalidatePoll();
+    finishProgressAnimation();
+    setStep("inventory");
     try {
       const cancelled = await cancelComparison(comparison.id);
       setComparison(cancelled);
-      finishProgressAnimation();
-      setStep("inventory");
     } catch (err) {
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not cancel." });
     }
@@ -503,6 +555,9 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   }
 
   function reCompare() {
+    // Invalidate any active/background poll so it can't write over the fresh
+    // inventory state the user is returning to.
+    invalidatePoll();
     setComparison(null);
     setStep("inventory");
     setProgress(0);
@@ -511,8 +566,11 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   }
 
   function continueInBackground() {
-    // Stop showing the analyzing view but keep the comparison id so the user
-    // can pick it up from Recent decisions when ready.
+    // Stop showing the analyzing view and stop the poll loop. We intentionally
+    // do NOT keep polling in the background — the comparison finishes on the
+    // backend regardless, and the user re-opens it from Recent decisions. A
+    // lingering loop would surprise them by snapping back to the result view.
+    invalidatePoll();
     stopProgressAnimation();
     setStep("inventory");
     setPollNote(null);
@@ -524,9 +582,11 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   }
 
   async function openRecent(comparisonId: string) {
+    const token = invalidatePoll();
     setBusy(true);
     try {
       const fresh = await getComparison(comparisonId);
+      if (pollTokenRef.current !== token) return;
       setComparison(fresh);
       if (fresh.status === "complete") {
         setStep("result");
@@ -538,7 +598,10 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
         setStep("analyzing");
         startProgressAnimation();
         applyJobProgress(fresh);
-        await pollComparison(fresh.id);
+        // Release busy before the long poll so the toolbar stays responsive;
+        // the analyzing view (driven by step) owns the screen meanwhile.
+        setBusy(false);
+        await pollComparison(fresh.id, token);
         return;
       }
       flash({
@@ -546,6 +609,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
         message: `Comparison ${fresh.status}. Recreate from the inventory to retry.`
       });
     } catch (err) {
+      if (pollTokenRef.current !== token) return;
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not open comparison." });
     } finally {
       setBusy(false);
@@ -619,7 +683,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
           <button
             className="btn primary"
             onClick={handleCompare}
-            disabled={selected.length < 2 || busy}
+            disabled={selected.length < 2 || busy || step === "analyzing"}
             title={selected.length < 2 ? "Select at least two variants to compare." : undefined}
             aria-describedby={selected.length < 2 ? "compare-hint" : undefined}
           >
