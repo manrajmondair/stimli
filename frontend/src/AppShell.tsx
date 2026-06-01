@@ -2313,7 +2313,7 @@ function LogOutcomeModal({
 
 const ROLE_OPTIONS: TeamRole[] = ["owner", "admin", "analyst", "viewer"];
 
-function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate: () => Promise<void> }) {
+export function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate: () => Promise<void> }) {
   // Clerk is the source of truth for "is the user signed in" — when the
   // backend session lookup is still pending (or has briefly failed), we
   // shouldn't pretend the user is anonymous and hide the team UI.
