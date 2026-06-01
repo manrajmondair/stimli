@@ -291,6 +291,42 @@ export async function countUsageEvents({ kind, since, workspaceId = null, bucket
   return rows[0]?.count || 0;
 }
 
+// Atomically records a usage event only if all provided limits still have
+// headroom. Closes the check-then-insert race in quota/rate-limit enforcement:
+// two concurrent requests can't both read "under limit" and both insert,
+// because the limit guards live in the INSERT ... SELECT ... WHERE and Postgres
+// evaluates them as part of the write. Returns true if recorded, false if a
+// limit blocked it. Disabled tiers should pass a huge limit so they never block.
+export async function saveUsageEventConditional(event, limits) {
+  const { workspaceId, bucketKey, monthlySince, monthlyLimit, hourlySince, hourlyLimit } = limits;
+  const sql = getSql();
+  if (!sql) {
+    // Memory mode is single-threaded in tests, so count-then-insert is race-free.
+    const countSince = (since, field, value) =>
+      [...memoryStore.usageEvents.values()].filter(
+        (e) => e.kind === event.kind && e.created_at >= since && e[field] === value
+      ).length;
+    if (countSince(monthlySince, "workspace_id", workspaceId) >= monthlyLimit) return false;
+    if (countSince(hourlySince, "workspace_id", workspaceId) >= hourlyLimit) return false;
+    if (countSince(hourlySince, "bucket_key", bucketKey) >= hourlyLimit) return false;
+    // Persist workspace_id/bucket_key on the stored row so later counts (quota
+    // checks, /billing/usage) can filter on them — the SQL path sets these as
+    // columns from the same limits.
+    memoryStore.usageEvents.set(event.id, { ...event, workspace_id: workspaceId, bucket_key: bucketKey });
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    insert into stimli_usage_events (id, workspace_id, bucket_key, kind, payload, created_at)
+    select ${event.id}, ${workspaceId}, ${bucketKey}, ${event.kind}, ${JSON.stringify(event.payload || {})}::jsonb, ${event.created_at}
+    where (select count(*) from stimli_usage_events where workspace_id = ${workspaceId} and kind = ${event.kind} and created_at >= ${monthlySince}) < ${monthlyLimit}
+      and (select count(*) from stimli_usage_events where workspace_id = ${workspaceId} and kind = ${event.kind} and created_at >= ${hourlySince}) < ${hourlyLimit}
+      and (select count(*) from stimli_usage_events where bucket_key = ${bucketKey} and kind = ${event.kind} and created_at >= ${hourlySince}) < ${hourlyLimit}
+    returning id
+  `;
+  return rows.length > 0;
+}
+
 export async function saveUser(user) {
   const sql = getSql();
   if (!sql) {

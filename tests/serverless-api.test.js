@@ -259,6 +259,36 @@ test("billing webhook short-circuits on a replayed Stripe event id", async () =>
   assert.equal(second, false, "replayed event should be ignored");
 });
 
+test("conditional usage insert blocks at the limit (atomic quota gate)", async () => {
+  // The conditional INSERT is what closes the check-then-insert race: it only
+  // records the event when every limit still has headroom. Here we drive the
+  // store directly to confirm the gate blocks the Nth+1 write.
+  const { saveUsageEventConditional } = await import("../functions/api/_lib/store.js");
+  const huge = Number.MAX_SAFE_INTEGER;
+  const ws = `ws_quota_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const bucket = `client_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const limits = {
+    workspaceId: ws,
+    bucketKey: bucket,
+    monthlySince: "2026-01-01T00:00:00.000Z",
+    monthlyLimit: 2,
+    hourlySince: "2026-06-01T00:00:00.000Z",
+    hourlyLimit: huge
+  };
+  const ev = () => ({ id: `usage_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`, kind: "comparison", payload: {}, created_at: nowIso() });
+  assert.equal(await saveUsageEventConditional(ev(), limits), true, "1st under limit");
+  assert.equal(await saveUsageEventConditional(ev(), limits), true, "2nd hits the limit exactly");
+  assert.equal(await saveUsageEventConditional(ev(), limits), false, "3rd is blocked");
+
+  // Hourly bucket guard blocks independently of the monthly one.
+  const hourly = { ...limits, monthlyLimit: huge, hourlyLimit: 1 };
+  const ws2 = `ws_quota2_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const bucket2 = `client2_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const h = { ...hourly, workspaceId: ws2, bucketKey: bucket2 };
+  assert.equal(await saveUsageEventConditional(ev(), h), true, "1st hourly under limit");
+  assert.equal(await saveUsageEventConditional(ev(), h), false, "2nd blocked by hourly bucket");
+});
+
 test("releasing a billing event claim lets the same event be reprocessed", async () => {
   // When webhook processing fails after the idempotency claim, the handler
   // deletes the claim so Stripe's retry reprocesses instead of being dropped.

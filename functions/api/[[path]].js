@@ -78,7 +78,7 @@ import {
   saveTeamInvite,
   saveTeamMember,
   saveShareLink,
-  saveUsageEvent,
+  saveUsageEventConditional,
   storageHealth,
   updateTeamMemberRole
 } from "./_lib/store.js";
@@ -1795,6 +1795,62 @@ async function enforceUsageLimit(request, workspaceId, kind, quota) {
   }
   const [hourlyWorkspace, hourlyClient, monthlyWorkspace] = await Promise.all(queries);
 
+  // Fast path: pre-check the counts so the common over-limit case returns a
+  // precise 402/429 with good detail before we attempt the write.
+  throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, { kind, hourlyLimit, monthlyLimit, windowMs, quota });
+
+  // Atomic gate: record the usage event only if every limit still has headroom.
+  // Disabled tiers pass a huge limit so they never block. This closes the
+  // check-then-insert race — without it two concurrent requests both pass the
+  // pre-check and both write, overshooting the quota.
+  const huge = Number.MAX_SAFE_INTEGER;
+  const effMonthlyLimit = Number.isFinite(monthlyLimit) && monthlyLimit > 0 && quota?.period?.start ? monthlyLimit : huge;
+  const effHourlyLimit = Number.isFinite(hourlyLimit) && hourlyLimit > 0 ? hourlyLimit : huge;
+  const recorded = await saveUsageEventConditional(
+    {
+      id: newId("usage"),
+      kind,
+      payload: {
+        hourly_limit: hourlyLimit || null,
+        monthly_limit: monthlyLimit || null,
+        window_ms: windowMs,
+        plan: quota.plan?.id || null
+      },
+      created_at: nowIso()
+    },
+    {
+      workspaceId,
+      bucketKey,
+      monthlySince: quota?.period?.start || hourlySince,
+      monthlyLimit: effMonthlyLimit,
+      hourlySince,
+      hourlyLimit: effHourlyLimit
+    }
+  );
+
+  if (!recorded) {
+    // Lost the race: another request consumed the last of the quota between our
+    // pre-check and our conditional insert. Re-read the counts to report the
+    // limit that actually blocked us.
+    const [hw, hc, mw] = await Promise.all([
+      Number.isFinite(hourlyLimit) && hourlyLimit > 0 ? countUsageEvents({ kind, since: hourlySince, workspaceId }) : Promise.resolve(0),
+      Number.isFinite(hourlyLimit) && hourlyLimit > 0 ? countUsageEvents({ kind, since: hourlySince, bucketKey }) : Promise.resolve(0),
+      Number.isFinite(monthlyLimit) && monthlyLimit > 0 && quota?.period?.start
+        ? countUsageEvents({ kind, since: quota.period.start, workspaceId })
+        : Promise.resolve(0)
+    ]);
+    throwIfOverLimit({ hourlyWorkspace: hw, hourlyClient: hc, monthlyWorkspace: mw }, { kind, hourlyLimit, monthlyLimit, windowMs, quota });
+    // The guard blocked the insert but a re-read shows headroom (rare clock/
+    // window edge). Treat as a transient rate-limit rather than silently
+    // allowing an unrecorded request through.
+    const err = httpError(429, "Rate limit reached. Try again in a few minutes.");
+    err.code = "rate_limited";
+    err.details = { kind, limit: hourlyLimit || monthlyLimit || null, window_ms: windowMs, plan: quota.plan?.id || null };
+    throw err;
+  }
+}
+
+function throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, { kind, hourlyLimit, monthlyLimit, windowMs, quota }) {
   if (Number.isFinite(monthlyLimit) && monthlyLimit > 0 && monthlyWorkspace >= monthlyLimit) {
     // 402 is the right status for a billing-quota block — the client should
     // surface an upgrade CTA, not a generic retry-later message.
@@ -1825,20 +1881,6 @@ async function enforceUsageLimit(request, workspaceId, kind, quota) {
     };
     throw err;
   }
-
-  await saveUsageEvent({
-    id: newId("usage"),
-    workspace_id: workspaceId,
-    bucket_key: bucketKey,
-    kind,
-    payload: {
-      hourly_limit: hourlyLimit || null,
-      monthly_limit: monthlyLimit || null,
-      window_ms: windowMs,
-      plan: quota.plan?.id || null
-    },
-    created_at: nowIso()
-  });
 }
 
 async function enforceSeatLimit(team, options = {}) {
