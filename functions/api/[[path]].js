@@ -914,13 +914,13 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
       throw httpError(400, "At least two distinct asset_ids are required.");
     }
 
-    const assets = [];
-    for (const assetId of assetIds) {
-      const asset = await getAsset(assetId, workspaceId);
-      if (!asset) {
-        throw httpError(404, `Asset not found: ${assetId}`);
-      }
-      assets.push(asset);
+    // Fetch the assets concurrently — each getAsset is a separate Neon HTTP
+    // round-trip, so a sequential loop added one round-trip of latency per
+    // variant to a request that's already on the slow path.
+    const assets = await Promise.all(assetIds.map((assetId) => getAsset(assetId, workspaceId)));
+    const missingIndex = assets.findIndex((asset) => !asset);
+    if (missingIndex !== -1) {
+      throw httpError(404, `Asset not found: ${assetIds[missingIndex]}`);
     }
     const projectId = await resolveComparisonProjectId(payload.project_id || payload.projectId, assets, workspaceId);
 
