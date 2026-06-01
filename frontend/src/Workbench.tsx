@@ -52,6 +52,24 @@ const COLOR_CYCLE = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(
 const FALLBACK_OBJECTIVE =
   "Pick the DTC creative most likely to earn attention, build memory, and convert.";
 
+// Maps the engine id stamped on each analysis to a human label so the UI is
+// honest about which brain actually produced a result — the hosted neural model
+// when it's reachable, the deterministic built-in model when it isn't.
+function friendlyProvider(provider: string | null | undefined): string {
+  switch (provider) {
+    case "tribe-remote":
+      return "TRIBE v2";
+    case "web-heuristic-brain":
+      return "Stimli built-in";
+    case null:
+    case undefined:
+    case "":
+      return "TRIBE v2";
+    default:
+      return provider;
+  }
+}
+
 type Toast = { kind: "info" | "success" | "error"; message: string } | null;
 
 type WorkbenchProps = {
@@ -648,7 +666,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
             </span>
             <span className="pill">
               <span className="dot" style={{ background: "var(--butter)" }} />
-              Brain: {remoteProvider ?? "TRIBE v2"}
+              Brain: {comparison?.variants?.[0]?.analysis?.provider ? friendlyProvider(comparison.variants[0].analysis.provider) : (remoteProvider ?? "TRIBE v2")}
             </span>
             {defaultBrandName ? (
               <span className="pill" title="Default brand set in the Brands view">
@@ -1812,7 +1830,7 @@ function Result({
           <div className="neural-timeline-wrap">
             <div className="panel-head neural-timeline-head">
               <h4>Predicted response · per second</h4>
-              <span className="kicker">{activeVariant.analysis.provider}</span>
+              <span className="kicker">{friendlyProvider(activeVariant.analysis.provider)}</span>
             </div>
             <NeuralTimeline
               activeVariantId={activeVariant.asset.id}
