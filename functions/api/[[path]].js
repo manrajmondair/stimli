@@ -23,6 +23,7 @@ import {
   generateChallenger,
   getBrainJob,
   newId,
+  noteRemoteBrainFailure,
   nowIso,
   providerHealth,
   shouldCreateAsyncComparison,
@@ -1181,8 +1182,19 @@ async function createAsyncComparison(comparisonId, objective, assets, createdAt,
   // land on the same TRIBE_CONTROL_URL / TRIBE_API_KEY even if a concurrent
   // request overwrites globalThis.__stimliEnv mid-await.
   const requestEnv = globalThis.__stimliEnv || {};
-  const jobs = await Promise.all(assets.map((asset) => startBrainJob(asset, requestEnv)));
-  return createPendingComparison(comparisonId, objective, assets, createdAt, brief, jobs);
+  try {
+    const jobs = await Promise.all(assets.map((asset) => startBrainJob(asset, requestEnv)));
+    return createPendingComparison(comparisonId, objective, assets, createdAt, brief, jobs);
+  } catch (error) {
+    // The hosted Modal control plane couldn't accept the jobs (cold start,
+    // scaled to zero, auth, or network failure). Rather than 500 the whole
+    // request, fall back to a synchronous in-process comparison so the user
+    // still gets a result. compareAssets → predictBrain will itself try the
+    // inference endpoint and degrade to the heuristic if that's down too.
+    noteRemoteBrainFailure(error?.message || "control-plane enqueue failed");
+    try { console.warn(`[comparisons] async enqueue failed, running inline: ${error?.message || error}`); } catch {}
+    return compareAssets(comparisonId, objective, assets, createdAt, brief);
+  }
 }
 
 async function refreshComparison(comparison, workspaceId) {

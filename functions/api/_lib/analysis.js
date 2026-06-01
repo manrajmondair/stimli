@@ -27,6 +27,43 @@ const proofWords = new Set(["proven", "tested", "reviews", "trusted", "clinical"
 const brandWords = new Set(["brand", "logo", "name", "signature", "formula", "routine", "system", "kit"]);
 const jargonWords = new Set(["synergy", "leverage", "paradigm", "holistic", "revolutionary", "seamless", "ecosystem"]);
 
+// Cross-request ring buffer of recent remote-inference failures. Lets
+// providerHealth() report when the hosted TRIBE endpoint is actually degraded
+// instead of claiming it's healthy just because a URL is configured. Stores
+// system-level codes only (HTTP status / transport class), never response
+// bodies, so nothing tenant-specific crosses requests inside a shared isolate.
+const BRAIN_ERROR_WINDOW_MS = 5 * 60 * 1000;
+const BRAIN_ERROR_LIMIT = 50;
+const _recentBrainErrors = [];
+
+// Records a remote-inference failure for health reporting. `code` MUST be a
+// short, system-level identifier (e.g. "http 503", "inference timeout"), never
+// an upstream response body.
+export function noteRemoteBrainFailure(code) {
+  const now = Date.now();
+  _recentBrainErrors.push({ at: now, code: String(code || "").slice(0, 80) });
+  while (_recentBrainErrors.length && now - _recentBrainErrors[0].at > BRAIN_ERROR_WINDOW_MS) {
+    _recentBrainErrors.shift();
+  }
+  while (_recentBrainErrors.length > BRAIN_ERROR_LIMIT) {
+    _recentBrainErrors.shift();
+  }
+}
+
+function recentBrainErrors() {
+  const now = Date.now();
+  let count60 = 0;
+  for (const entry of _recentBrainErrors) {
+    if (now - entry.at <= 60 * 1000) count60 += 1;
+  }
+  const last = _recentBrainErrors.length ? _recentBrainErrors[_recentBrainErrors.length - 1] : null;
+  return {
+    count_last_60s: count60,
+    last_code: last ? last.code : null,
+    last_at: last ? last.at : null
+  };
+}
+
 let _env = {};
 
 export function configureAnalysis(env) {
@@ -48,21 +85,33 @@ export function newId(prefix) {
 
 export async function providerHealth() {
   const remoteUrl = getEnv("TRIBE_INFERENCE_URL") || "";
-  const remoteActive = Boolean(remoteUrl);
+  const remoteConfigured = Boolean(remoteUrl);
+  const recent = recentBrainErrors();
+  // Configured AND not in a recent failure burst → genuinely active. Two or
+  // more failures inside 60s flips the indicator so /api/brain/providers and
+  // the admin panel reflect a real Modal outage instead of lying "active" while
+  // every comparison silently falls back to the heuristic.
+  const degraded = remoteConfigured && recent.count_last_60s >= 2;
+  const remoteActive = remoteConfigured && !degraded;
   return [
     {
       provider: "web-heuristic-brain",
       available: true,
+      // The heuristic is the live timeline source whenever the remote isn't
+      // (either unconfigured or degraded), so it truthfully picks up the slack.
       active: !remoteActive,
       detail: "Deterministic serverless provider for Cloudflare deployments."
     },
     {
       provider: "tribe-remote",
-      available: remoteActive,
+      available: remoteConfigured,
       active: remoteActive,
-      detail: remoteActive
-        ? "Remote TRIBE inference endpoint is configured."
-        : "Set TRIBE_INFERENCE_URL to use a hosted TRIBE inference service."
+      detail: !remoteConfigured
+        ? "Set TRIBE_INFERENCE_URL to use a hosted TRIBE inference service."
+        : degraded
+          ? `Remote TRIBE inference degraded — ${recent.count_last_60s} failures in the last 60s; serving heuristic timelines. Last code: ${recent.last_code || "unknown"}.`
+          : "Remote TRIBE inference endpoint is configured.",
+      recent_errors: recent
     },
     copyLlmProviderHealth(_env)
   ];
@@ -217,15 +266,28 @@ async function collectCompliance(variants, brief, env) {
 }
 
 export function shouldCreateAsyncComparison(payload = {}, assets = []) {
+  // Async routing exists for assets that genuinely need the hosted Modal
+  // pipeline (GPU inference + media extraction): audio, video, and large file
+  // uploads. With no control-plane URL there's nowhere to enqueue jobs, so we
+  // always stay synchronous.
   if (!getEnv("TRIBE_CONTROL_URL")) {
     return false;
   }
+  // Explicit opt-out wins over everything — lets a caller (or the
+  // STIMLI_SYNC_REMOTE operability switch) force inline analysis even for media.
+  if (payload.async === false || payload.inference_mode === "sync" || getEnv("STIMLI_SYNC_REMOTE") === "1") {
+    return false;
+  }
+  // Explicit opt-in from the caller.
   if (payload.async === true || payload.inference_mode === "async") {
     return true;
   }
-  if (getEnv("STIMLI_BRAIN_PROVIDER") === "tribe-remote" && getEnv("STIMLI_SYNC_REMOTE") !== "1") {
-    return true;
-  }
+  // Default: route only media/large uploads to the async pipeline. Text scripts
+  // and landing pages are analyzed inline — they don't need the GPU path, and
+  // routing every text comparison (including the demo set) through Modal made
+  // them fail hard with "Request failed" whenever the Modal app was cold or
+  // unavailable. Inline analysis still calls the remote inference endpoint when
+  // configured and degrades to the heuristic if it's unreachable.
   return assets.some((asset) => {
     const size = Number(asset.metadata?.blob_size || asset.metadata?.file_size || 0);
     return asset.type === "audio" || asset.type === "video" || size > Number(getEnv("STIMLI_ASYNC_FILE_BYTES") || 20 * 1024 * 1024);
@@ -458,9 +520,15 @@ async function predictBrain(asset, env) {
       }
       throw new Error("Remote provider returned no timeline.");
     } catch (error) {
-      if (source.STIMLI_BRAIN_PROVIDER === "tribe-remote") {
-        throw error;
-      }
+      // Degrade to the deterministic heuristic rather than failing the whole
+      // comparison. The hosted model is an enhancement, not a hard dependency
+      // (see README) — a cold or unreachable Modal app must never turn a text
+      // comparison into an opaque "Request failed". The provider field on the
+      // returned analysis tells the UI which brain actually produced the
+      // timeline, and noteRemoteBrainFailure surfaces the outage in
+      // /api/brain/providers so the degradation is observable, not silent.
+      noteRemoteBrainFailure(error?.message || "inference error");
+      try { console.warn(`[analysis] remote inference unavailable, using heuristic: ${error?.message || error}`); } catch {}
     }
   }
   return { provider: "web-heuristic-brain", timeline: heuristicTimeline(asset) };

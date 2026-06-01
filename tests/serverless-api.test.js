@@ -622,6 +622,145 @@ test("creates async comparisons and finalizes completed remote jobs", async () =
   }
 });
 
+test("text comparison stays synchronous and completes when the hosted brain is configured but unreachable", async () => {
+  // Reproduces the production "Request failed" bug: with STIMLI_BRAIN_PROVIDER=
+  // tribe-remote and the TRIBE URLs configured, every text comparison (the demo
+  // set) used to be forced through the Modal job queue and 500 when Modal was
+  // cold. Text must now run inline and degrade to the heuristic instead.
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  let inferenceCalls = 0;
+  let controlCalls = 0;
+
+  withEnv({
+    STIMLI_BRAIN_PROVIDER: "tribe-remote",
+    TRIBE_CONTROL_URL: "https://modal.test/control",
+    TRIBE_INFERENCE_URL: "https://modal.test/inference",
+    TRIBE_API_KEY: "test-key"
+  });
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes("/inference")) {
+      inferenceCalls += 1;
+      return new Response("upstream down", { status: 503 });
+    }
+    if (target.includes("/control")) {
+      controlCalls += 1;
+      return new Response("upstream down", { status: 503 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  try {
+    const seeded = await call("POST", "/api/demo/seed", null, headers);
+    assert.equal(seeded.statusCode, 200);
+    const comparison = await call(
+      "POST",
+      "/api/comparisons",
+      {
+        asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id),
+        objective: "Demo run with a dead Modal endpoint."
+      },
+      headers
+    );
+    // The whole point: no 500, no "Request failed".
+    assert.equal(comparison.statusCode, 200);
+    assert.equal(comparison.json.status, "complete");
+    assert.equal(comparison.json.variants.length, 2);
+    assert.ok(comparison.json.recommendation.headline);
+    // Text never touches the async control plane; it tries inference inline and
+    // falls back to the deterministic heuristic when that 503s.
+    assert.equal(controlCalls, 0);
+    assert.ok(inferenceCalls >= 2, "expected inline inference attempts for each variant");
+    for (const variant of comparison.json.variants) {
+      assert.equal(variant.analysis.provider, "web-heuristic-brain");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({
+      STIMLI_BRAIN_PROVIDER: undefined,
+      TRIBE_CONTROL_URL: undefined,
+      TRIBE_INFERENCE_URL: undefined,
+      TRIBE_API_KEY: undefined
+    });
+  }
+});
+
+test("async media enqueue failure falls back to a synchronous comparison instead of 500", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  // Control plane is configured but rejects every enqueue (cold Modal app).
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
+  globalThis.fetch = async () => new Response("scaled to zero", { status: 503 });
+
+  try {
+    const first = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "audio", name: "Audio A", text: "Stop wasting paid media spend. Try the starter kit today." },
+      headers
+    );
+    const second = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "audio", name: "Audio B", text: "Our brand has a modern solution for everyone." },
+      headers
+    );
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Pick the stronger audio ad." },
+      headers
+    );
+    // Falls back to an inline heuristic comparison — a degraded but real result.
+    assert.equal(created.statusCode, 200);
+    assert.equal(created.json.status, "complete");
+    assert.equal(created.json.variants.length, 2);
+    assert.ok(created.json.recommendation.winner_asset_id);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
+test("brain provider health reports degraded after repeated remote inference failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  withEnv({
+    STIMLI_BRAIN_PROVIDER: "tribe-remote",
+    TRIBE_INFERENCE_URL: "https://modal.test/inference",
+    TRIBE_API_KEY: "test-key"
+  });
+  globalThis.fetch = async () => new Response("upstream down", { status: 503 });
+
+  try {
+    const seeded = await call("POST", "/api/demo/seed", null, headers);
+    await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id), objective: "Trigger inference failures." },
+      headers
+    );
+    const providers = await call("GET", "/api/brain/providers");
+    assert.equal(providers.statusCode, 200);
+    const tribe = providers.json.find((p) => p.provider === "tribe-remote");
+    assert.ok(tribe, "tribe-remote provider missing from health");
+    assert.equal(tribe.available, true);
+    assert.equal(tribe.active, false, "tribe-remote should report degraded after failures");
+    assert.ok(tribe.recent_errors.count_last_60s >= 2, "recent inference failures should be tracked");
+    const heuristic = providers.json.find((p) => p.provider === "web-heuristic-brain");
+    assert.equal(heuristic.active, true, "heuristic should be the active brain while remote is degraded");
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ STIMLI_BRAIN_PROVIDER: undefined, TRIBE_INFERENCE_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
 test("cancels processing comparisons and remote jobs", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
