@@ -1010,6 +1010,19 @@ export async function getSubscriptionByCustomerId(stripeCustomerId) {
 
 // Idempotency log for Stripe webhooks. We key by the Stripe event id so a
 // replayed delivery never double-applies a plan change or invoice.
+// Releases an idempotency claim made by recordBillingEvent. Called when webhook
+// processing fails after the claim, so Stripe's retry can reprocess the event
+// instead of being short-circuited as a duplicate.
+export async function deleteBillingEvent(eventId) {
+  const sql = getSql();
+  if (!sql) {
+    return memoryStore.billingEvents.delete(eventId);
+  }
+  await ensureTables(sql);
+  const rows = await sql`delete from stimli_billing_events where id = ${eventId} returning id`;
+  return rows.length > 0;
+}
+
 export async function recordBillingEvent(event) {
   const sql = getSql();
   if (!sql) {

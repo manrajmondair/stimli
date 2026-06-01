@@ -18,6 +18,7 @@
 // stay close to the route handlers that emit usage events.
 
 import {
+  deleteBillingEvent,
   getSubscription,
   getSubscriptionByCustomerId,
   getSubscriptionByStripeId,
@@ -261,15 +262,24 @@ export async function handleBillingWebhook(signature, rawBody) {
     throw httpError(503, "Billing webhook is not configured.");
   }
   const stripe = await stripeClient();
-  const event = await stripe.webhooks.constructEventAsync(
-    rawBody,
-    signature,
-    getEnv("STRIPE_WEBHOOK_SECRET")
-  );
+  let event;
+  try {
+    event = await stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      getEnv("STRIPE_WEBHOOK_SECRET")
+    );
+  } catch (error) {
+    // A signature/parse failure can never succeed on retry, and the top-level
+    // handler would otherwise map this to a 500 and make Stripe retry forever.
+    // Return a deterministic 400 so the (bad) delivery is dropped.
+    throw httpError(400, `Webhook signature verification failed: ${error.message}`);
+  }
 
-  // Idempotency: Stripe retries deliveries; recordBillingEvent returns false
-  // if the event id already exists, so a replay short-circuits before we
-  // mutate any subscription state.
+  // Idempotency: Stripe retries deliveries; recordBillingEvent atomically
+  // claims the event id (insert-if-absent) and returns false if it was already
+  // claimed, so a replay short-circuits before we mutate any subscription
+  // state.
   const fresh = await recordBillingEvent({
     id: event.id,
     type: event.type,
@@ -281,30 +291,39 @@ export async function handleBillingWebhook(signature, rawBody) {
     return { received: true, duplicate: true };
   }
 
-  switch (event.type) {
-    case "checkout.session.completed":
-      await onCheckoutCompleted(event.data.object, stripe);
-      break;
-    case "customer.subscription.created":
-    case "customer.subscription.updated":
-      await onSubscriptionChanged(event.data.object);
-      break;
-    case "customer.subscription.deleted":
-      await onSubscriptionDeleted(event.data.object);
-      break;
-    case "invoice.payment_succeeded":
-      await onInvoicePaid(event.data.object);
-      break;
-    case "invoice.payment_failed":
-      await onInvoiceFailed(event.data.object);
-      break;
-    case "customer.subscription.trial_will_end":
-      await onTrialWillEnd(event.data.object);
-      break;
-    default:
-      // Unhandled events are still recorded so we have a trail; nothing else
-      // to do — Stripe expects a 2xx to stop retrying.
-      break;
+  try {
+    switch (event.type) {
+      case "checkout.session.completed":
+        await onCheckoutCompleted(event.data.object, stripe);
+        break;
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+        await onSubscriptionChanged(event.data.object);
+        break;
+      case "customer.subscription.deleted":
+        await onSubscriptionDeleted(event.data.object);
+        break;
+      case "invoice.payment_succeeded":
+        await onInvoicePaid(event.data.object);
+        break;
+      case "invoice.payment_failed":
+        await onInvoiceFailed(event.data.object);
+        break;
+      case "customer.subscription.trial_will_end":
+        await onTrialWillEnd(event.data.object);
+        break;
+      default:
+        // Unhandled events are still recorded so we have a trail; nothing else
+        // to do — Stripe expects a 2xx to stop retrying.
+        break;
+    }
+  } catch (error) {
+    // The claim was made before processing, but processing failed (transient
+    // Stripe API or store error). Release the claim so Stripe's retry actually
+    // reprocesses the event instead of being short-circuited as a duplicate,
+    // which would silently drop the subscription/plan update.
+    await deleteBillingEvent(event.id).catch(() => {});
+    throw error;
   }
   return { received: true };
 }

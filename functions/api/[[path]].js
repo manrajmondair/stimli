@@ -342,6 +342,18 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
       if (segments[2] === authContext.user.id && role !== "owner") {
         throw httpError(400, "Owners cannot demote their own active session.");
       }
+      // Don't let a demotion strip the team of its last owner — same invariant
+      // the member-removal path enforces, applied to the role change too.
+      if (role !== "owner") {
+        const members = await listTeamMembers(authContext.team.id);
+        const target = members.find((m) => m.user_id === segments[2]);
+        if (target && (target.role || "viewer") === "owner") {
+          const ownerCount = members.filter((m) => (m.role || "viewer") === "owner").length;
+          if (ownerCount <= 1) {
+            throw httpError(409, "Can't demote the team's last owner.");
+          }
+        }
+      }
       const updated = await updateTeamMemberRole(authContext.team.id, segments[2], role);
       if (!updated) {
         throw httpError(404, "Team member not found.");

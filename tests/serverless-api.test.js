@@ -259,6 +259,23 @@ test("billing webhook short-circuits on a replayed Stripe event id", async () =>
   assert.equal(second, false, "replayed event should be ignored");
 });
 
+test("releasing a billing event claim lets the same event be reprocessed", async () => {
+  // When webhook processing fails after the idempotency claim, the handler
+  // deletes the claim so Stripe's retry reprocesses instead of being dropped.
+  const { recordBillingEvent, deleteBillingEvent } = await import("../functions/api/_lib/store.js");
+  const event = {
+    id: `evt_${crypto.randomUUID().slice(0, 12)}`,
+    type: "customer.subscription.updated",
+    team_id: "team_test",
+    payload: { livemode: false },
+    created_at: nowIso()
+  };
+  assert.equal(await recordBillingEvent(event), true, "first claim succeeds");
+  assert.equal(await recordBillingEvent(event), false, "still claimed on retry");
+  assert.equal(await deleteBillingEvent(event.id), true, "claim released after failed processing");
+  assert.equal(await recordBillingEvent(event), true, "retry can reclaim and reprocess");
+});
+
 test("creates free team invite links and switches invited users into the team", async () => {
   const owner = await testAccount("Owner Team", "owner");
   const invited = await testAccount("Invited Default Team", "member");
@@ -321,6 +338,25 @@ test("enforces granular team roles for workspace writes", async () => {
     { cookie: analystCookie }
   );
   assert.equal(allowed.statusCode, 200);
+});
+
+test("blocks demoting the team's last owner via a role change", async () => {
+  const owner = await testAccount("Last Owner Team", "owner");
+  // An admin has members:manage but is not an owner, so they could otherwise
+  // demote the sole owner and leave the team with none.
+  const admin = await testAccount("Admin Default Team", "admin");
+  await saveTeamMember({ team_id: owner.team.id, user_id: admin.user.id, role: "admin", created_at: nowIso() });
+  const adminCookie = await sessionCookie(admin.user.id, owner.team.id);
+
+  const blocked = await call(
+    "PATCH",
+    `/api/teams/members/${owner.user.id}/role`,
+    { role: "viewer" },
+    { cookie: adminCookie }
+  );
+  assert.equal(blocked.statusCode, 409);
+  // The owner keeps their role.
+  assert.equal((await getTeamMember(owner.team.id, owner.user.id)).role, "owner");
 });
 
 test("seeds assets and creates a comparison", async () => {
