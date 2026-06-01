@@ -961,6 +961,16 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "DELETE" && segments.length === 2) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    // If it's still processing, cancel the remote jobs first so deleting the row
+    // doesn't orphan Modal work; then remove the comparison and its cascade.
+    const existing = await getComparison(comparisonId, workspaceId);
+    if (existing && existing.status === "processing") {
+      try {
+        await cancelComparison(comparisonId, workspaceId, "Comparison deleted.");
+      } catch (error) {
+        console.warn("cancel-before-delete failed for", comparisonId, error.message);
+      }
+    }
     const removed = await deleteComparison(comparisonId, workspaceId);
     if (!removed) {
       throw httpError(404, "Comparison not found");

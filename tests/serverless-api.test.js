@@ -593,6 +593,41 @@ test("deletes a comparison and cascades its outcomes and share link", async () =
   assert.equal((await call("DELETE", `/api/comparisons/${cid}`, null, headers)).statusCode, 404);
 });
 
+test("deleting a processing comparison cancels its remote jobs first", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const actions = [];
+  resetRemoteBrainHealth();
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "k" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    actions.push(body.action);
+    if (body.action === "start") {
+      return jsonResponse({ job_id: `job_${actions.length}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" });
+    }
+    if (body.action === "cancel") {
+      return jsonResponse({ job_id: body.job_id, status: "cancelled" });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+  try {
+    const a = await call("POST", "/api/assets", { asset_type: "audio", name: "Aud A", text: "Stop wasting spend." }, headers);
+    const b = await call("POST", "/api/assets", { asset_type: "audio", name: "Aud B", text: "A modern solution." }, headers);
+    const created = await call("POST", "/api/comparisons", { asset_ids: [a.json.asset.id, b.json.asset.id], objective: "to delete while processing" }, headers);
+    assert.equal(created.statusCode, 202);
+    assert.equal(created.json.status, "processing");
+
+    const del = await call("DELETE", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(del.statusCode, 200);
+    assert.ok(actions.includes("cancel"), "remote jobs should be cancelled before delete");
+    assert.equal((await call("GET", `/api/comparisons/${created.json.id}`, null, headers)).statusCode, 404);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
 test("creates public share links for completed reports", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace, host: "stimli.test", "x-forwarded-proto": "https" };
