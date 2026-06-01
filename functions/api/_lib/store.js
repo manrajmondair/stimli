@@ -231,21 +231,6 @@ export async function listOutcomes(comparisonId = null, workspaceId = "public") 
   return rows.map((row) => row.payload);
 }
 
-export async function saveUsageEvent(event) {
-  const sql = getSql();
-  if (!sql) {
-    memoryStore.usageEvents.set(event.id, event);
-    return event;
-  }
-  await ensureTables(sql);
-  await sql`
-    insert into stimli_usage_events (id, workspace_id, bucket_key, kind, payload, created_at)
-    values (${event.id}, ${event.workspace_id}, ${event.bucket_key}, ${event.kind}, ${JSON.stringify(event)}::jsonb, ${event.created_at})
-    on conflict (id) do nothing
-  `;
-  return event;
-}
-
 export async function countUsageEvents({ kind, since, workspaceId = null, bucketKey = null }) {
   const sql = getSql();
   if (!sql) {

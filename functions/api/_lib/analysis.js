@@ -109,7 +109,7 @@ export async function providerHealth() {
   // more failures inside 60s flips the indicator so /api/brain/providers and
   // the admin panel reflect a real Modal outage instead of lying "active" while
   // every comparison silently falls back to the heuristic.
-  const degraded = remoteConfigured && recent.count_last_60s >= 2;
+  const degraded = remoteConfigured && recent.count_last_60s >= BRAIN_CIRCUIT_OPEN_THRESHOLD;
   const remoteActive = remoteConfigured && !degraded;
   return [
     {

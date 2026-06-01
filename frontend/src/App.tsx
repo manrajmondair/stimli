@@ -84,10 +84,13 @@ class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: bo
   }
 }
 
-// Lazy routes get both: the error boundary (load failure) wrapping Suspense
-// (load pending). A successful render clears the one-shot reload guard so a
-// future chunk failure can auto-reload again.
-function LazyRoute({ children }: { children: ReactNode }) {
+// Renders to nothing; its only job is to clear the one-shot reload guard once it
+// actually commits. Because it lives INSIDE Suspense, it commits only after the
+// lazy chunk resolves successfully — so the guard is cleared on success and left
+// intact on failure. Clearing it on LazyRoute mount instead would wipe the guard
+// before the failure is observed, turning a persistently-broken chunk into an
+// infinite reload loop.
+function ClearReloadGuardOnLoad() {
   useEffect(() => {
     try {
       window.sessionStorage.removeItem(RELOAD_GUARD_KEY);
@@ -95,9 +98,19 @@ function LazyRoute({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, []);
+  return null;
+}
+
+// Lazy routes get both: the error boundary (load failure) wrapping Suspense
+// (load pending). A successful child render clears the one-shot reload guard so
+// a future chunk failure can auto-reload again.
+function LazyRoute({ children }: { children: ReactNode }) {
   return (
     <RouteErrorBoundary>
-      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
+      <Suspense fallback={<RouteFallback />}>
+        <ClearReloadGuardOnLoad />
+        {children}
+      </Suspense>
     </RouteErrorBoundary>
   );
 }
