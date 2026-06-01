@@ -218,8 +218,12 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
   // can already take STIMLI_LLM_TIMEOUT_MS, and a transient-5xx retry doubles
   // it — the deadline (one attempt + a small buffer) cuts that retry tail to
   // the templated fallback so polish can't add ~16s to the p99 latency. The
-  // common case (fast LLM) never hits the deadline and is unchanged.
-  const polishDeadlineMs = Number(requestEnv.STIMLI_LLM_TIMEOUT_MS || 8000) + 1500;
+  // common case (fast LLM) never hits the deadline and is unchanged. The cap is
+  // ABSOLUTE (not derived from STIMLI_LLM_TIMEOUT_MS): a high per-call timeout in
+  // prod would otherwise make the "cap" just as high and defeat the point. 9s is
+  // generous for the fast path (Haiku answers in ~2-3s) while bounding the
+  // slow/retry tail; override with STIMLI_LLM_PHASE_DEADLINE_MS.
+  const polishDeadlineMs = Number(requestEnv.STIMLI_LLM_PHASE_DEADLINE_MS || 9000);
   const [polishedSuggestions, recommendation, compliance] = await Promise.all([
     withDeadline(
       polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv).catch((err) => {
