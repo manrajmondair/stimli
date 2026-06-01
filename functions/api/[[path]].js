@@ -922,11 +922,15 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
     if (missingIndex !== -1) {
       throw httpError(404, `Asset not found: ${assetIds[missingIndex]}`);
     }
-    const projectId = await resolveComparisonProjectId(payload.project_id || payload.projectId, assets, workspaceId);
+    // Project resolution and brief resolution are independent Neon lookups —
+    // run them together rather than back-to-back.
+    const [projectId, brief] = await Promise.all([
+      resolveComparisonProjectId(payload.project_id || payload.projectId, assets, workspaceId),
+      resolveComparisonBrief(payload, workspaceId)
+    ]);
 
     const comparisonId = newId("cmp");
     const createdAt = nowIso();
-    const brief = await resolveComparisonBrief(payload, workspaceId);
     const rawComparison = shouldCreateAsyncComparison(payload, assets)
       ? await createAsyncComparison(comparisonId, payload.objective, assets, createdAt, brief)
       : await compareAssets(comparisonId, payload.objective, assets, createdAt, brief);
