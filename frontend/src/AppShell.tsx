@@ -3231,8 +3231,11 @@ function SharedComplianceBlock({ report }: { report: Report }) {
   );
 }
 
-function exportOutcomesCsv(outcomes: WorkspaceOutcome[]): void {
-  if (!outcomes.length) return;
+// Pure CSV builder (exported for tests). Emits RFC 4180 output: CRLF line
+// endings, and cells containing a quote, comma, or newline are wrapped in
+// quotes with embedded quotes doubled. CTR/CVR are derived with div-by-zero
+// guards.
+export function buildOutcomesCsv(outcomes: WorkspaceOutcome[]): string {
   const headers = [
     "created_at",
     "comparison_id",
@@ -3271,13 +3274,11 @@ function exportOutcomesCsv(outcomes: WorkspaceOutcome[]): void {
       row.notes || ""
     ];
   });
-  const csv = [headers, ...rows]
+  return [headers, ...rows]
     .map((cells) =>
       cells
         .map((cell) => {
           const value = cell == null ? "" : String(cell);
-          // Quote and escape per RFC 4180 — only when needed, so the file
-          // stays readable when opened in a text editor.
           if (/[",\n\r]/.test(value)) {
             return `"${value.split('"').join('""')}"`;
           }
@@ -3286,6 +3287,11 @@ function exportOutcomesCsv(outcomes: WorkspaceOutcome[]): void {
         .join(",")
     )
     .join("\r\n");
+}
+
+function exportOutcomesCsv(outcomes: WorkspaceOutcome[]): void {
+  if (!outcomes.length) return;
+  const csv = buildOutcomesCsv(outcomes);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
