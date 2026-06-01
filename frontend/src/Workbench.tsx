@@ -6,6 +6,7 @@ import {
   createOutcome,
   createShareLink,
   createTextAsset,
+  deleteComparison,
   getComparison,
   getReportMarkdown,
   listAssets,
@@ -636,6 +637,19 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     }
   }
 
+  async function handleDeleteRecent(comparisonId: string) {
+    if (!window.confirm("Delete this decision? This can't be undone.")) return;
+    try {
+      await deleteComparison(comparisonId);
+      setRecentComparisons((current) => current.filter((c) => c.id !== comparisonId));
+      // If we're currently viewing the deleted comparison, clear back to inventory.
+      if (comparison?.id === comparisonId) reCompare();
+      flash({ kind: "success", message: "Decision deleted." });
+    } catch (err) {
+      flash({ kind: "error", message: err instanceof Error ? err.message : "Could not delete decision." });
+    }
+  }
+
   const selectedAssets = useMemo(
     () => assets.filter((asset) => selected.includes(asset.id)),
     [assets, selected]
@@ -760,6 +774,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
           onSeed={handleSeed}
           recents={recentComparisons}
           onOpenRecent={openRecent}
+          onDeleteRecent={handleDeleteRecent}
         />
         <ResultsColumn
           step={step}
@@ -1219,7 +1234,8 @@ function InventoryPanel({
   toggleSelect,
   onSeed,
   recents,
-  onOpenRecent
+  onOpenRecent,
+  onDeleteRecent
 }: {
   assets: Asset[];
   selected: string[];
@@ -1227,6 +1243,7 @@ function InventoryPanel({
   onSeed: () => void;
   recents: Comparison[];
   onOpenRecent: (comparisonId: string) => void;
+  onDeleteRecent: (comparisonId: string) => void;
 }) {
   const [recentQuery, setRecentQuery] = useState("");
   const query = recentQuery.trim().toLowerCase();
@@ -1360,31 +1377,52 @@ function InventoryPanel({
               ? `${verb} ${winnerLabel}.`
               : `${verb} the leading variant.`;
             return (
-              <button
+              <div
                 key={recent.id}
-                className="recent-row"
-                onClick={() => onOpenRecent(recent.id)}
-                disabled={!isOpen}
-                style={{
-                  borderLeftColor: accent,
-                  cursor: isOpen ? "pointer" : "default",
-                  background: "var(--paper-warm)",
-                  border: 0,
-                  borderLeft: `4px solid ${accent}`,
-                  textAlign: "left",
-                  font: "inherit",
-                  color: "inherit",
-                  width: "100%"
-                }}
+                className="recent-row-wrap"
+                style={{ display: "flex", alignItems: "stretch", gap: 4, background: "var(--paper-warm)", borderLeft: `4px solid ${accent}` }}
               >
-                <strong>{headline}</strong>
-                <span>
-                  {recent.status === "complete"
-                    ? `${Math.round((recent.recommendation.confidence ?? 0) * 100)}%`
-                    : recent.status}{" "}
-                  · {formatRelative(recent.created_at)}
-                </span>
-              </button>
+                <button
+                  className="recent-row"
+                  onClick={() => onOpenRecent(recent.id)}
+                  disabled={!isOpen}
+                  style={{
+                    cursor: isOpen ? "pointer" : "default",
+                    background: "transparent",
+                    border: 0,
+                    textAlign: "left",
+                    font: "inherit",
+                    color: "inherit",
+                    flex: 1,
+                    minWidth: 0
+                  }}
+                >
+                  <strong>{headline}</strong>
+                  <span>
+                    {recent.status === "complete"
+                      ? `${Math.round((recent.recommendation.confidence ?? 0) * 100)}%`
+                      : recent.status}{" "}
+                    · {formatRelative(recent.created_at)}
+                  </span>
+                </button>
+                <button
+                  className="recent-delete"
+                  onClick={() => onDeleteRecent(recent.id)}
+                  title="Delete this decision"
+                  aria-label={`Delete decision: ${headline}`}
+                  style={{
+                    border: 0,
+                    background: "transparent",
+                    color: "var(--ink-soft)",
+                    cursor: "pointer",
+                    padding: "0 10px",
+                    fontSize: 16,
+                    lineHeight: 1
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             );
           })
         )}

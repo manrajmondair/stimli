@@ -42,6 +42,7 @@ import {
   configureStore,
   deleteAsset,
   deleteBrandProfile,
+  deleteComparison,
   deleteTeamInvite,
   deleteTeamMember,
   getAsset,
@@ -956,6 +957,16 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "GET" && segments.length === 2) {
     return sendJson(200, await requireComparison(comparisonId, workspaceId), headers, cookies);
+  }
+
+  if (request.method === "DELETE" && segments.length === 2) {
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const removed = await deleteComparison(comparisonId, workspaceId);
+    if (!removed) {
+      throw httpError(404, "Comparison not found");
+    }
+    await audit(workspaceId, authContext.user, "comparison.deleted", "comparison", comparisonId, {});
+    return sendJson(200, { deleted: comparisonId }, headers, cookies);
   }
 
   if (request.method === "POST" && segments[2] === "cancel") {

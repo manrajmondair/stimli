@@ -183,6 +183,17 @@ export async function cancelComparison(comparisonId: string): Promise<Comparison
   return parseResponse(response);
 }
 
+export async function deleteComparison(comparisonId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}`, {
+    method: "DELETE",
+    headers: await workspaceHeaders()
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
+  }
+}
+
 export async function getReport(comparisonId: string): Promise<Report> {
   const response = await fetch(`${API_BASE}/reports/${comparisonId}`, { headers: await workspaceHeaders() });
   return parseResponse(response);

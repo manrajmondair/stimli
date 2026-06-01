@@ -559,6 +559,40 @@ test("calibrates predicted winners against logged outcomes", async () => {
   assert.equal(summary.json.calibration.alignment_rate, 1);
 });
 
+test("deletes a comparison and cascades its outcomes and share link", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((a) => a.id), objective: "to be deleted" },
+    headers
+  );
+  const cid = comparison.json.id;
+  const winner = comparison.json.recommendation.winner_asset_id;
+  await call("POST", `/api/comparisons/${cid}/outcomes`, { asset_id: winner, spend: 10, impressions: 100, clicks: 5, conversions: 1, revenue: 50, notes: "" }, headers);
+  const share = await call("POST", `/api/reports/${cid}/share`, null, headers);
+  assert.equal(share.statusCode, 200);
+
+  const del = await call("DELETE", `/api/comparisons/${cid}`, null, headers);
+  assert.equal(del.statusCode, 200);
+  assert.equal(del.json.deleted, cid);
+
+  // Comparison is gone.
+  assert.equal((await call("GET", `/api/comparisons/${cid}`, null, headers)).statusCode, 404);
+  // It no longer appears in the workspace list.
+  const list = await call("GET", "/api/comparisons", null, headers);
+  assert.equal(list.json.some((c) => c.id === cid), false);
+  // Cascade: the share link no longer resolves and the outcome is gone.
+  assert.equal((await call("GET", `/api/share/${share.json.token}`)).statusCode, 404);
+  const outcomes = await call("GET", "/api/outcomes", null, headers);
+  assert.equal(outcomes.json.some((o) => o.comparison_id === cid), false);
+
+  // Deleting again is a clean 404, and another workspace can't delete it.
+  assert.equal((await call("DELETE", `/api/comparisons/${cid}`, null, headers)).statusCode, 404);
+});
+
 test("creates public share links for completed reports", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace, host: "stimli.test", "x-forwarded-proto": "https" };

@@ -194,6 +194,29 @@ export async function getComparison(comparisonId, workspaceId = "public") {
   return rows[0]?.payload || null;
 }
 
+export async function deleteComparison(comparisonId, workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    const comparison = memoryStore.comparisons.get(comparisonId) || null;
+    if (!comparison || workspaceForPayload(comparison) !== workspaceId) return false;
+    memoryStore.comparisons.delete(comparisonId);
+    // Cascade: drop the comparison's outcomes and share links so nothing dangles.
+    for (const [id, outcome] of memoryStore.outcomes.entries()) {
+      if (outcome.comparison_id === comparisonId) memoryStore.outcomes.delete(id);
+    }
+    for (const [token, link] of memoryStore.shareLinks.entries()) {
+      if (link.comparison_id === comparisonId) memoryStore.shareLinks.delete(token);
+    }
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`delete from stimli_comparisons where id = ${comparisonId} and workspace_id = ${workspaceId} returning id`;
+  if (rows.length === 0) return false;
+  await sql`delete from stimli_outcomes where comparison_id = ${comparisonId} and workspace_id = ${workspaceId}`;
+  await sql`delete from stimli_share_links where comparison_id = ${comparisonId} and workspace_id = ${workspaceId}`;
+  return true;
+}
+
 export async function saveOutcome(outcome) {
   const sql = getSql();
   const workspaceId = workspaceForPayload(outcome);
