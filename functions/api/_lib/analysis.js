@@ -548,7 +548,7 @@ async function predictBrain(asset, env) {
         // actually runs. Genuinely slow GPU jobs belong on the async Modal
         // pipeline, not inline. Override via TRIBE_INFERENCE_TIMEOUT_MS only if
         // the inference endpoint is known-fast.
-        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 6000))
+        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 4000))
       });
       if (!response.ok) {
         throw new Error(`Remote provider returned ${response.status}`);

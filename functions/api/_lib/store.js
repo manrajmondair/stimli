@@ -1056,50 +1056,66 @@ export async function listBillingEvents(teamId, limit = 50) {
 
 async function ensureTables(sql) {
   if (_initPromise) return _initPromise;
-  _initPromise = (async () => {
-    await sql`create table if not exists stimli_assets (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_projects (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_comparisons (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_outcomes (id text primary key, workspace_id text not null default 'public', comparison_id text not null, asset_id text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_usage_events (id text primary key, workspace_id text not null default 'public', bucket_key text not null, kind text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_users (id text primary key, email text not null unique, name text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_teams (id text primary key, name text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_team_members (team_id text not null, user_id text not null, role text not null, payload jsonb not null, created_at text not null, primary key (team_id, user_id))`;
-    await sql`create table if not exists stimli_team_invites (token_hash text primary key, team_id text not null, email text not null, role text not null, payload jsonb not null, expires_at text not null, created_at text not null)`;
-    await sql`create table if not exists stimli_authenticators (credential_id text primary key, user_id text not null, payload jsonb not null, counter integer not null default 0, created_at text not null)`;
-    await sql`create table if not exists stimli_auth_challenges (id text primary key, email text not null, type text not null, payload jsonb not null, expires_at text not null, created_at text not null)`;
-    await sql`create table if not exists stimli_sessions (token_hash text primary key, user_id text not null, team_id text not null, payload jsonb not null, expires_at text not null, created_at text not null)`;
-    await sql`create table if not exists stimli_share_links (token text primary key, workspace_id text not null, comparison_id text not null, payload jsonb not null, expires_at text not null, created_at text not null)`;
-    await sql`create table if not exists stimli_audit_events (id text primary key, workspace_id text not null, actor_id text not null default '', action text not null, target_type text not null default '', target_id text not null default '', payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_brand_profiles (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_governance_requests (id text primary key, workspace_id text not null default 'public', request_type text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_benchmark_runs (id text primary key, workspace_id text not null default 'public', benchmark_id text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_integration_jobs (id text primary key, workspace_id text not null default 'public', platform text not null, payload jsonb not null, created_at text not null)`;
-    await sql`create table if not exists stimli_subscriptions (team_id text primary key, stripe_subscription_id text not null default '', stripe_customer_id text not null default '', plan text not null, status text not null, current_period_start text, current_period_end text, cancel_at_period_end smallint not null default 0, trial_end text, payload jsonb not null, created_at text not null, updated_at text not null)`;
-    await sql`create table if not exists stimli_billing_events (id text primary key, type text not null, team_id text not null default '', payload jsonb not null, created_at text not null)`;
-    await sql`create index if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_projects_workspace_idx on stimli_projects (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_outcomes_workspace_idx on stimli_outcomes (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`;
-    await sql`create index if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`;
-    await sql`create index if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`;
-    await sql`create index if not exists stimli_team_members_user_idx on stimli_team_members (user_id, created_at asc)`;
-    await sql`create index if not exists stimli_team_invites_team_idx on stimli_team_invites (team_id, created_at desc)`;
-    await sql`create index if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`;
-    await sql`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`;
-    await sql`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`;
-    await sql`create index if not exists stimli_share_links_comparison_idx on stimli_share_links (comparison_id, created_at desc)`;
-    await sql`create index if not exists stimli_audit_events_workspace_idx on stimli_audit_events (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_brand_profiles_workspace_idx on stimli_brand_profiles (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_governance_requests_workspace_idx on stimli_governance_requests (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_benchmark_runs_workspace_idx on stimli_benchmark_runs (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_integration_jobs_workspace_idx on stimli_integration_jobs (workspace_id, created_at desc)`;
-    await sql`create index if not exists stimli_subscriptions_stripe_idx on stimli_subscriptions (stripe_subscription_id)`;
-    await sql`create index if not exists stimli_subscriptions_customer_idx on stimli_subscriptions (stripe_customer_id)`;
-    await sql`create index if not exists stimli_billing_events_team_idx on stimli_billing_events (team_id, created_at desc)`;
-  })();
-  return _initPromise;
+  // Neon's HTTP transport does ONE network round-trip per query, so issuing
+  // ~40 sequential CREATE statements on a cold isolate added 6-10s of latency
+  // to the first request that touched the store — enough, stacked with the
+  // analysis work, to blow past the Cloudflare Pages Functions request budget
+  // and surface as a generic 500. sql.transaction([...]) batches every
+  // statement into a single round-trip. DDL is transactional in Postgres and
+  // each statement is IF NOT EXISTS, so this stays idempotent and atomic.
+  _initPromise = sql.transaction([
+    sql`create table if not exists stimli_assets (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_projects (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_comparisons (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_outcomes (id text primary key, workspace_id text not null default 'public', comparison_id text not null, asset_id text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_usage_events (id text primary key, workspace_id text not null default 'public', bucket_key text not null, kind text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_users (id text primary key, email text not null unique, name text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_teams (id text primary key, name text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_team_members (team_id text not null, user_id text not null, role text not null, payload jsonb not null, created_at text not null, primary key (team_id, user_id))`,
+    sql`create table if not exists stimli_team_invites (token_hash text primary key, team_id text not null, email text not null, role text not null, payload jsonb not null, expires_at text not null, created_at text not null)`,
+    sql`create table if not exists stimli_authenticators (credential_id text primary key, user_id text not null, payload jsonb not null, counter integer not null default 0, created_at text not null)`,
+    sql`create table if not exists stimli_auth_challenges (id text primary key, email text not null, type text not null, payload jsonb not null, expires_at text not null, created_at text not null)`,
+    sql`create table if not exists stimli_sessions (token_hash text primary key, user_id text not null, team_id text not null, payload jsonb not null, expires_at text not null, created_at text not null)`,
+    sql`create table if not exists stimli_share_links (token text primary key, workspace_id text not null, comparison_id text not null, payload jsonb not null, expires_at text not null, created_at text not null)`,
+    sql`create table if not exists stimli_audit_events (id text primary key, workspace_id text not null, actor_id text not null default '', action text not null, target_type text not null default '', target_id text not null default '', payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_brand_profiles (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_governance_requests (id text primary key, workspace_id text not null default 'public', request_type text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_benchmark_runs (id text primary key, workspace_id text not null default 'public', benchmark_id text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_integration_jobs (id text primary key, workspace_id text not null default 'public', platform text not null, payload jsonb not null, created_at text not null)`,
+    sql`create table if not exists stimli_subscriptions (team_id text primary key, stripe_subscription_id text not null default '', stripe_customer_id text not null default '', plan text not null, status text not null, current_period_start text, current_period_end text, cancel_at_period_end smallint not null default 0, trial_end text, payload jsonb not null, created_at text not null, updated_at text not null)`,
+    sql`create table if not exists stimli_billing_events (id text primary key, type text not null, team_id text not null default '', payload jsonb not null, created_at text not null)`,
+    sql`create index if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_projects_workspace_idx on stimli_projects (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_outcomes_workspace_idx on stimli_outcomes (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`,
+    sql`create index if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`,
+    sql`create index if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`,
+    sql`create index if not exists stimli_team_members_user_idx on stimli_team_members (user_id, created_at asc)`,
+    sql`create index if not exists stimli_team_invites_team_idx on stimli_team_invites (team_id, created_at desc)`,
+    sql`create index if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`,
+    sql`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`,
+    sql`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`,
+    sql`create index if not exists stimli_share_links_comparison_idx on stimli_share_links (comparison_id, created_at desc)`,
+    sql`create index if not exists stimli_audit_events_workspace_idx on stimli_audit_events (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_brand_profiles_workspace_idx on stimli_brand_profiles (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_governance_requests_workspace_idx on stimli_governance_requests (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_benchmark_runs_workspace_idx on stimli_benchmark_runs (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_integration_jobs_workspace_idx on stimli_integration_jobs (workspace_id, created_at desc)`,
+    sql`create index if not exists stimli_subscriptions_stripe_idx on stimli_subscriptions (stripe_subscription_id)`,
+    sql`create index if not exists stimli_subscriptions_customer_idx on stimli_subscriptions (stripe_customer_id)`,
+    sql`create index if not exists stimli_billing_events_team_idx on stimli_billing_events (team_id, created_at desc)`
+  ]);
+  try {
+    return await _initPromise;
+  } catch (error) {
+    // Never cache a rejected init promise. A single transient Neon error during
+    // the first call would otherwise poison every subsequent store operation in
+    // this isolate (they'd all await the same rejected promise). Reset so the
+    // next request retries the initialization from scratch.
+    _initPromise = null;
+    throw error;
+  }
 }
 
 function workspaceForPayload(payload) {
