@@ -686,6 +686,38 @@ test("deleting a processing comparison cancels its remote jobs first", async () 
   }
 });
 
+test("public share link to a non-complete comparison returns 404, not a 409 state leak", async () => {
+  // A share token is normally only minted for a complete comparison, but the
+  // public endpoint must never reveal internal state. Plant a link to a
+  // processing comparison directly and confirm the anonymous fetch is a uniform
+  // 404 rather than a 409 "still processing".
+  const { saveComparison, saveShareLink } = await import("../functions/api/_lib/store.js");
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const cid = `cmp_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  await saveComparison({
+    id: cid,
+    workspace_id: workspace,
+    status: "processing",
+    objective: "pending",
+    brief: {},
+    variants: [],
+    recommendation: { winner_asset_id: null, verdict: "revise", confidence: 0, headline: "Analyzing", reasons: [] },
+    suggestions: [],
+    created_at: nowIso()
+  });
+  const token = `shr_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  await saveShareLink({
+    token,
+    workspace_id: workspace,
+    comparison_id: cid,
+    expires_at: new Date(Date.now() + 86400000).toISOString(),
+    created_at: nowIso()
+  });
+  const res = await call("GET", `/api/share/${token}`);
+  assert.equal(res.statusCode, 404);
+  assert.match(res.json.detail, /not found/i);
+});
+
 test("creates public share links for completed reports", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace, host: "stimli.test", "x-forwarded-proto": "https" };

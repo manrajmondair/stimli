@@ -1107,7 +1107,19 @@ async function handleSharedReport(request, segments, headers, cookies) {
   if (!link) {
     throw httpError(404, "Shared report not found");
   }
-  return sendJson(200, await buildReport(link.comparison_id, link.workspace_id), headers, cookies);
+  try {
+    return sendJson(200, await buildReport(link.comparison_id, link.workspace_id), headers, cookies);
+  } catch (error) {
+    // A public share link must not leak the comparison's internal state. If the
+    // underlying comparison isn't complete (409) or has gone missing (404),
+    // collapse both to a uniform 404 so an anonymous holder of the token can't
+    // distinguish "processing" from "deleted" from "never existed".
+    const status = Number(error?.statusCode || error?.status);
+    if (status === 409 || status === 404) {
+      throw httpError(404, "Shared report not found");
+    }
+    throw error;
+  }
 }
 
 async function createShareLink(request, comparisonId, workspaceId) {
