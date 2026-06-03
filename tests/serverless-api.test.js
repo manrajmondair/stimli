@@ -289,6 +289,21 @@ test("conditional usage insert blocks at the limit (atomic quota gate)", async (
   assert.equal(await saveUsageEventConditional(ev(), h), false, "2nd blocked by hourly bucket");
 });
 
+test("subscription period reads the item level with a root fallback", async () => {
+  const { subscriptionPeriodSeconds } = await import("../functions/api/_lib/billing.js");
+  // Newer Stripe API: period is on the subscription item.
+  const itemLevel = subscriptionPeriodSeconds({
+    current_period_start: undefined,
+    items: { data: [{ current_period_start: 1000, current_period_end: 2000 }] }
+  });
+  assert.deepEqual(itemLevel, { start: 1000, end: 2000 });
+  // Older Stripe API: period on the root.
+  const rootLevel = subscriptionPeriodSeconds({ current_period_start: 50, current_period_end: 99, items: { data: [{}] } });
+  assert.deepEqual(rootLevel, { start: 50, end: 99 });
+  // Neither present → null so currentPeriod() degrades to the calendar month.
+  assert.deepEqual(subscriptionPeriodSeconds({}), { start: null, end: null });
+});
+
 test("releasing a billing event claim lets the same event be reprocessed", async () => {
   // When webhook processing fails after the idempotency claim, the handler
   // deletes the claim so Stripe's retry reprocesses instead of being dropped.

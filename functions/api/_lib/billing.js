@@ -359,6 +359,19 @@ async function onCheckoutCompleted(session, stripe) {
   }
 }
 
+// Stripe moved current_period_start/end from the subscription root onto the
+// subscription item in recent API versions. Read the item first and fall back
+// to the root so the billing-cycle window resolves on both old and new
+// versions; returns unix seconds or null.
+export function subscriptionPeriodSeconds(subscription) {
+  const item = subscription?.items?.data?.[0];
+  const num = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  return {
+    start: num(item?.current_period_start) ?? num(subscription?.current_period_start),
+    end: num(item?.current_period_end) ?? num(subscription?.current_period_end)
+  };
+}
+
 async function onSubscriptionChanged(subscription) {
   const teamId =
     subscription.metadata?.team_id ||
@@ -367,18 +380,15 @@ async function onSubscriptionChanged(subscription) {
   if (!teamId) return;
 
   const planId = planIdForSubscription(subscription);
+  const period = subscriptionPeriodSeconds(subscription);
   const record = {
     team_id: teamId,
     stripe_subscription_id: subscription.id,
     stripe_customer_id: stringValue(subscription.customer),
     plan: planId,
     status: subscription.status,
-    current_period_start: subscription.current_period_start
-      ? new Date(subscription.current_period_start * 1000).toISOString()
-      : null,
-    current_period_end: subscription.current_period_end
-      ? new Date(subscription.current_period_end * 1000).toISOString()
-      : null,
+    current_period_start: period.start ? new Date(period.start * 1000).toISOString() : null,
+    current_period_end: period.end ? new Date(period.end * 1000).toISOString() : null,
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
     trial_end: subscription.trial_end
       ? new Date(subscription.trial_end * 1000).toISOString()
