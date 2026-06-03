@@ -24,6 +24,8 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 - [Contributing](#contributing)
 - [Security](#security)
 - [License & trust](#license--trust)
+- [Acknowledgements & external resources](#acknowledgements--external-resources)
+- [AI disclosure](#ai-disclosure)
 
 ## What it does
 
@@ -230,8 +232,8 @@ npm test
 
 Runs in order:
 
-1. **`npm run test:api`** — Node-native test suite (`node --test tests/serverless-api.test.js`) that drives `functions/api/[[path]].js` with Web Requests + a stub env. 17 tests covering health, CORS, passkeys, billing status, team invites, role enforcement, demo seed, calibration, share links, project scoping, workspace isolation, async TRIBE comparisons, cancellation, rate limits, hosted extraction, enterprise controls, and job retries.
-2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`. 14 tests covering error-message parsing, Landing page rendering, and App router behavior.
+1. **`npm run test:api`** — Node-native test suite (`node --test tests/serverless-api.test.js`) that drives `functions/api/[[path]].js` with Web Requests + a stub env. 75 tests covering health, CORS, Clerk auth + multi-team scoping, billing status/webhooks (signature rejection, idempotency), atomic quota + rate limits, demo seed, calibration, share links (including public state-leak protection), comparison delete + cascade, brain-inference resilience (degradation, circuit breaker, single-engine fairness), enterprise controls, and a full end-to-end journey.
+2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`. 24 tests covering error-message parsing, the Landing page, App routing + the lazy-route error boundary, the Workbench compare flow + searchable/deletable decision history, the team switcher, and the outcomes CSV builder.
 3. **`npm run build`** — TypeScript build + production Vite bundle as a final correctness check.
 
 ## Contributing
@@ -246,4 +248,36 @@ Report vulnerabilities through a [private GitHub security advisory](https://gith
 
 Stimli is released under [CC BY-NC 4.0](LICENSE) for non-commercial use. Built for CS 153 at Stanford. See [`/legal`](https://stimli.pages.dev/legal) on the live site for full terms.
 
-<sub>Assisted by Claude Code and Codex.</sub>
+## Acknowledgements & external resources
+
+Stimli is built on top of these tools, services, and models:
+
+- **[Cloudflare Pages](https://pages.cloudflare.com), [Workers](https://workers.cloudflare.com) & [R2](https://www.cloudflare.com/products/r2/)** — hosting, the serverless API runtime, and private asset storage (via [Wrangler](https://developers.cloudflare.com/workers/wrangler/)).
+- **[Neon](https://neon.tech)** — serverless Postgres through the [`@neondatabase/serverless`](https://github.com/neondatabase/serverless) HTTP driver.
+- **[Clerk](https://clerk.com)** — authentication ([`@clerk/backend`](https://www.npmjs.com/package/@clerk/backend)).
+- **[Stripe](https://stripe.com)** — subscription billing.
+- **[Modal](https://modal.com)** — on-demand GPU for the hosted inference + extraction service.
+- **[OpenRouter](https://openrouter.ai)** + **[Anthropic Claude](https://www.anthropic.com/claude)** — the runtime LLM copy-polish path (default `anthropic/claude-haiku-4.5`).
+- **TRIBE** (Facebook AI Research's brain-response model family) — the inference target the Modal adapter is built around, with [OpenAI Whisper](https://github.com/openai/whisper) and [Tesseract](https://github.com/tesseract-ocr/tesseract) for audio/image extraction.
+- **[React](https://react.dev)** + **[Vite](https://vitejs.dev)** and **[Vitest](https://vitest.dev)** — frontend and tests.
+
+Built for **CS 153 (Generative AI)** at **Stanford University**.
+
+## AI disclosure
+
+I built Stimli with heavy use of AI coding tools, and I want to be explicit about how and where they were used.
+
+**Primary tool: [Claude Code](https://claude.com/claude-code)** — Anthropic's agentic command-line coding assistant. I used it as my main development environment for essentially the entire project. An earlier round of scaffolding also used OpenAI's Codex CLI, but the current codebase was written and finished primarily with Claude Code.
+
+**How I worked.** I owned the product direction, the architecture, the data model, the resilience and security requirements, and the definition of "done" — what to build and why. Claude Code did most of the implementation under that direction: writing the code, generating the test suites, running multi-agent code reviews and bug-hunts across the repository, fixing the bugs those reviews surfaced, optimizing the hot paths, and verifying changes against the live deployment. I reviewed, corrected, and accepted or rejected its work throughout; I'm responsible for everything in this repository.
+
+**Where it was used** — effectively across the whole codebase:
+
+- **API** (`functions/api/`) — the Cloudflare Pages Function router, the analysis/scoring engine, the brain-inference adapter with graceful degradation + circuit breaker, Clerk auth and multi-team resolution, atomic quota enforcement, Stripe billing, and the Neon/in-memory store.
+- **Frontend** (`frontend/src/`) — the React workbench (compare flow, searchable decision history, team switcher), the neural-timeline visualization, and the typed API client.
+- **Inference** (`inference/tribe_modal.py`) — the Modal GPU service for TRIBE-style inference and extraction.
+- **Tests, CI & ops** — the Node + Vitest suites, the GitHub Actions CI/deploy workflows, and `wrangler` config; plus debugging production incidents (e.g. tracing a "Compare → request failed" 500 to a cold-start database-initialization latency issue) through repeated audit / fix / verify loops against `stimli.pages.dev`.
+
+**AI inside the product (runtime), disclosed for completeness.** Stimli itself also uses AI at request time: an optional LLM copy-polish path (default **Claude Haiku 4.5** via OpenRouter) rewrites edit cards, recommendation reasons, and challenger drafts and runs a semantic compliance check; and a **TRIBE**-style neural model on Modal predicts the per-second attention / memory / cognitive-load timeline, with a deterministic in-process heuristic fallback when it's unavailable. See [Optional integrations](#optional-integrations) and [Modal GPU inference](#modal-gpu-inference).
+
+All architecture, product, and final-correctness decisions are my own.
