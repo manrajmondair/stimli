@@ -450,37 +450,41 @@ async function onSubscriptionDeleted(subscription, eventCreated = null) {
   }
 }
 
-async function onInvoicePaid(invoice, eventCreated = null) {
+export async function onInvoicePaid(invoice, eventCreated = null) {
   const teamId = await teamIdForCustomer(stringValue(invoice.customer));
   if (!teamId) return;
   const existing = await getSubscription(teamId);
   if (!existing) return;
+  if (!invoiceMatchesCurrentSubscription(invoice, existing)) return;
+  const nextStatus = invoiceCanUpdateSubscriptionStatus(invoice, existing) ? "active" : existing.status;
   const saved = await saveSubscription({
     ...existing,
-    status: "active",
+    status: nextStatus,
     last_invoice_paid_at: nowIso(),
     last_invoice_amount_paid: invoice.amount_paid || 0,
     last_stripe_event_created: normalizedEventCreated(eventCreated),
     updated_at: nowIso()
   });
-  if (subscriptionWriteApplied(saved, eventCreated)) {
+  if (nextStatus !== existing.status && subscriptionWriteApplied(saved, eventCreated)) {
     await syncTeamPlan(teamId, existing.plan, "active");
   }
 }
 
-async function onInvoiceFailed(invoice, eventCreated = null) {
+export async function onInvoiceFailed(invoice, eventCreated = null) {
   const teamId = await teamIdForCustomer(stringValue(invoice.customer));
   if (!teamId) return;
   const existing = await getSubscription(teamId);
   if (!existing) return;
+  if (!invoiceMatchesCurrentSubscription(invoice, existing)) return;
+  const nextStatus = invoiceCanUpdateSubscriptionStatus(invoice, existing) ? "past_due" : existing.status;
   const saved = await saveSubscription({
     ...existing,
-    status: "past_due",
+    status: nextStatus,
     last_invoice_failed_at: nowIso(),
     last_stripe_event_created: normalizedEventCreated(eventCreated),
     updated_at: nowIso()
   });
-  if (subscriptionWriteApplied(saved, eventCreated)) {
+  if (nextStatus !== existing.status && subscriptionWriteApplied(saved, eventCreated)) {
     await syncTeamPlan(teamId, existing.plan, "past_due");
   }
 }
@@ -510,6 +514,16 @@ function subscriptionWriteApplied(saved, eventCreated) {
   const created = normalizedEventCreated(eventCreated);
   if (!created) return true;
   return Number(saved?.last_stripe_event_created) === created;
+}
+
+function invoiceMatchesCurrentSubscription(invoice, subscription) {
+  const invoiceSubscriptionId = stringValue(invoice.subscription);
+  return !invoiceSubscriptionId || !subscription.stripe_subscription_id || invoiceSubscriptionId === subscription.stripe_subscription_id;
+}
+
+function invoiceCanUpdateSubscriptionStatus(invoice, subscription) {
+  if (!invoiceMatchesCurrentSubscription(invoice, subscription)) return false;
+  return !["cancelled", "canceled", "incomplete_expired"].includes(String(subscription.status || "").toLowerCase());
 }
 
 async function syncTeamPlan(teamId, planId, billingStatusValue) {

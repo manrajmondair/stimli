@@ -16,6 +16,7 @@ import test from "node:test";
 
 import { onRequest } from "../functions/api/[[path]].js";
 import { nowIso, resetRemoteBrainHealth } from "../functions/api/_lib/analysis.js";
+import { onInvoiceFailed, onInvoicePaid } from "../functions/api/_lib/billing.js";
 import {
   configureStore,
   countUsageEvents,
@@ -811,6 +812,45 @@ test("same-second Stripe subscription events cannot overwrite existing billing s
   assert.equal(stored.status, "active");
   assert.equal(stored.plan, "growth");
   assert.equal(stored.last_stripe_event_created, 300);
+});
+
+test("invoice webhooks cannot revive a terminal subscription", async () => {
+  const teamId = `team_invoice_terminal_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_terminal_ordering",
+    stripe_customer_id: "cus_terminal_ordering",
+    plan: "research",
+    status: "cancelled",
+    current_period_start: null,
+    current_period_end: null,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 200,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+
+  await onInvoicePaid({ customer: "cus_terminal_ordering", subscription: "sub_terminal_ordering", amount_paid: 4900 }, 201);
+  let stored = await getSubscription(teamId);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.plan, "research");
+  assert.equal(stored.last_invoice_amount_paid, 4900);
+  assert.equal(stored.last_stripe_event_created, 201);
+
+  await onInvoiceFailed({ customer: "cus_terminal_ordering", subscription: "sub_terminal_ordering" }, 202);
+  stored = await getSubscription(teamId);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.plan, "research");
+  assert.ok(stored.last_invoice_failed_at);
+  assert.equal(stored.last_stripe_event_created, 202);
+
+  await onInvoicePaid({ customer: "cus_terminal_ordering", subscription: "sub_old_subscription", amount_paid: 9900 }, 203);
+  stored = await getSubscription(teamId);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.last_invoice_amount_paid, 4900);
+  assert.equal(stored.last_stripe_event_created, 202);
 });
 
 test("creates free team invite links and switches invited users into the team", async () => {
