@@ -16,7 +16,7 @@ import test from "node:test";
 
 import { onRequest } from "../functions/api/[[path]].js";
 import { nowIso, resetRemoteBrainHealth } from "../functions/api/_lib/analysis.js";
-import { onInvoiceFailed, onInvoicePaid } from "../functions/api/_lib/billing.js";
+import { onInvoiceFailed, onInvoicePaid, stripeIdempotencyKey } from "../functions/api/_lib/billing.js";
 import {
   configureStore,
   countUsageEvents,
@@ -728,6 +728,14 @@ test("subscription period reads the item level with a root fallback", async () =
   assert.deepEqual(rootLevel, { start: 50, end: 99 });
   // Neither present → null so currentPeriod() degrades to the calendar month.
   assert.deepEqual(subscriptionPeriodSeconds({}), { start: null, end: null });
+});
+
+test("checkout uses team-scoped Stripe idempotency keys", () => {
+  const source = readFileSync(new URL("../functions/api/_lib/billing.js", import.meta.url), "utf8");
+
+  assert.equal(stripeIdempotencyKey("checkout", "team id", "growth", "cus 123"), "stimli:checkout:team-id:growth:cus-123");
+  assert.match(source, /stripe\.customers\.create\([\s\S]+idempotencyKey: stripeIdempotencyKey\("customer", team\.id\)/);
+  assert.match(source, /stripe\.checkout\.sessions\.create\([\s\S]+idempotencyKey: stripeIdempotencyKey\("checkout", team\.id, plan\.id, customerId\)/);
 });
 
 test("releasing a billing event claim lets the same event be reprocessed", async () => {

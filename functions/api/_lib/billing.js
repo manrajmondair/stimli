@@ -245,6 +245,8 @@ export async function createCheckoutSession(request, team, requestedPlan) {
     const customer = await stripe.customers.create({
       name: team.name,
       metadata: { team_id: team.id }
+    }, {
+      idempotencyKey: stripeIdempotencyKey("customer", team.id)
     });
     customerId = customer.id;
     await saveTeam({ ...team, stripe_customer_id: customerId, updated_at: nowIso() });
@@ -262,6 +264,8 @@ export async function createCheckoutSession(request, team, requestedPlan) {
     subscription_data: {
       metadata: { team_id: team.id, plan: plan.id }
     }
+  }, {
+    idempotencyKey: stripeIdempotencyKey("checkout", team.id, plan.id, customerId)
   });
   return { url: session.url, id: session.id };
 }
@@ -676,6 +680,17 @@ function pagesPreviewOrigin(request, configuredOrigin) {
 
 function stringValue(value) {
   return value && typeof value === "object" ? value.id : String(value || "");
+}
+
+export function stripeIdempotencyKey(...parts) {
+  return ["stimli", ...parts.map(idempotencyKeyPart)].join(":").slice(0, 255);
+}
+
+function idempotencyKeyPart(value) {
+  return String(value || "")
+    .replace(/[^A-Za-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "none";
 }
 
 function nowIso() {
