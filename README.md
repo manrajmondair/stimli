@@ -82,8 +82,8 @@ npm run deploy:pages
   - `POSTGRES_URL` — Neon connection string.
   - `CLERK_SECRET_KEY` — Clerk API secret (sk_test_… / sk_live_…).
   - `CLERK_PUBLISHABLE_KEY` — Clerk publishable key (pk_test_… / pk_live_…).
-  - `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL` — Modal endpoint URLs.
-  - `TRIBE_API_KEY` — bearer token shared with the Modal worker.
+  - `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL` (optional) — Modal endpoint URLs for hosted inference and extraction.
+  - `TRIBE_API_KEY` (optional) — bearer token shared with the Modal worker.
   - `OPENROUTER_API_KEY` (optional) — turns on LLM copy polish for edit cards, reasons, challengers, and semantic compliance checks. See [Optional integrations](#optional-integrations).
 - **GitHub Actions secrets** (set via `gh secret set` or repo settings → Actions):
   - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` — used by `wrangler-action`.

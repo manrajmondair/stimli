@@ -54,9 +54,10 @@ test("Cloudflare deploy workflow verifies API health and SPA deep links", () => 
   assert.match(workflow, /Verify production health/);
   assert.match(workflow, /https:\/\/stimli\.pages\.dev\/api\/health/);
   assert.match(workflow, /Verify production app shell/);
-  for (const secret of ["POSTGRES_URL", "CLERK_SECRET_KEY", "TRIBE_INFERENCE_URL", "TRIBE_CONTROL_URL", "STIMLI_EXTRACT_URL", "TRIBE_API_KEY"]) {
+  for (const secret of ["POSTGRES_URL", "CLERK_SECRET_KEY", "CLERK_PUBLISHABLE_KEY"]) {
     assert.ok(workflow.includes(secret), `missing required runtime secret check: ${secret}`);
   }
+  assert.doesNotMatch(workflow, /required=\([^)]*TRIBE_INFERENCE_URL/);
   for (const path of ["/app/team", "/share/deploy-smoke", "/invite/deploy-smoke"]) {
     assert.ok(workflow.includes(path), `missing app shell smoke path: ${path}`);
   }
