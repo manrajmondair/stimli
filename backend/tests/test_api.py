@@ -358,7 +358,19 @@ def test_brief_history_outcome_and_learning_summary():
 
     learning = client.get("/learning/summary")
     assert learning.status_code == 200
-    assert learning.json()["outcome_count"] >= 1
+    learning_payload = learning.json()
+    assert learning_payload["outcome_count"] >= 1
+    evaluation = next(row for row in learning_payload["calibration"]["recent"] if row["comparison_id"] == comparison["id"])
+    assert evaluation["predicted_asset_id"] == winner_id
+    assert evaluation["actual_best_asset_id"] == winner_id
+    assert evaluation["aligned"] is True
+    assert evaluation["predicted_profit"] == 750
+
+    report = client.get(f"/reports/{comparison['id']}")
+    assert report.status_code == 200
+    report_calibration = report.json()["learning_summary"]["calibration"]
+    assert report_calibration["evaluated_comparisons"] == 1
+    assert report_calibration["aligned_predictions"] == 1
 
 
 def test_outcome_metrics_must_be_non_negative():

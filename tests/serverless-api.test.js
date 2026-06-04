@@ -1082,6 +1082,7 @@ test("full journey: seed, compare, report, share, outcome, calibrate, challenger
   const learning = await call("GET", "/api/learning/summary", null, headers);
   assert.equal(learning.statusCode, 200);
   assert.equal(learning.json.calibration.evaluated_comparisons, 1);
+  assert.equal(learning.json.calibration.recent[0].comparison_id, cid);
 
   // Draft a challenger (creates a new asset), then prune the comparison.
   const challenger = await call("POST", `/api/comparisons/${cid}/challengers`, { source_asset_id: winner, focus: "hook" }, headers);

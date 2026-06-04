@@ -161,6 +161,22 @@ class Outcome(BaseModel):
     created_at: str
 
 
+class CalibrationEvaluation(BaseModel):
+    comparison_id: str
+    predicted_asset_id: str
+    actual_best_asset_id: str
+    aligned: bool
+    actual_profit: float
+    predicted_profit: float | None = None
+
+
+class CalibrationSummary(BaseModel):
+    evaluated_comparisons: int = 0
+    aligned_predictions: int = 0
+    alignment_rate: float = 0
+    recent: list[CalibrationEvaluation] = Field(default_factory=list)
+
+
 class LearningSummary(BaseModel):
     outcome_count: int
     total_spend: float
@@ -168,6 +184,7 @@ class LearningSummary(BaseModel):
     average_ctr: float
     average_cvr: float
     best_asset_id: str | None
+    calibration: CalibrationSummary = Field(default_factory=CalibrationSummary)
     insight: str
 
 

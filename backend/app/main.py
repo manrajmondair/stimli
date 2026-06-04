@@ -16,6 +16,8 @@ from app.models import (
     AssetType,
     AssetUploadResponse,
     BrainProviderHealth,
+    CalibrationEvaluation,
+    CalibrationSummary,
     ChallengerCreate,
     ChallengerResponse,
     Comparison,
@@ -170,7 +172,7 @@ def get_comparison(comparison_id: str) -> Comparison:
 @app.get("/reports/{comparison_id}", response_model=Report)
 def get_report(comparison_id: str) -> Report:
     comparison = get_comparison(comparison_id)
-    learning = _learning_summary(store.list_outcomes(comparison_id))
+    learning = _learning_summary(store.list_outcomes(comparison_id), [comparison])
     winner = next((variant for variant in comparison.variants if variant.asset.id == comparison.recommendation.winner_asset_id), None)
     summary = (
         f"{comparison.recommendation.headline}. "
@@ -303,7 +305,7 @@ def list_comparison_outcomes(comparison_id: str) -> list[Outcome]:
 
 @app.get("/learning/summary", response_model=LearningSummary)
 def learning_summary() -> LearningSummary:
-    return _learning_summary(store.list_outcomes())
+    return _learning_summary(store.list_outcomes(), store.list_comparisons())
 
 
 @app.post("/demo/seed", response_model=list[PublicAsset])
@@ -476,7 +478,7 @@ def _non_negative_int(value: int, label: str) -> int:
     return int(parsed)
 
 
-def _learning_summary(outcomes: list[Outcome]) -> LearningSummary:
+def _learning_summary(outcomes: list[Outcome], comparisons: list[Comparison] | None = None) -> LearningSummary:
     total_spend = round(sum(outcome.spend for outcome in outcomes), 2)
     total_revenue = round(sum(outcome.revenue for outcome in outcomes), 2)
     total_impressions = sum(outcome.impressions for outcome in outcomes)
@@ -488,8 +490,11 @@ def _learning_summary(outcomes: list[Outcome]) -> LearningSummary:
     if outcomes:
         best = max(outcomes, key=lambda outcome: (outcome.revenue - outcome.spend, outcome.conversions, outcome.clicks))
         best_asset_id = best.asset_id
+    calibration = _calibration_summary(outcomes, comparisons or [])
     insight = (
-        "Outcome data is ready to compare pre-spend predictions with launch performance."
+        f"{calibration.aligned_predictions}/{calibration.evaluated_comparisons} predictions matched the strongest logged outcome."
+        if calibration.evaluated_comparisons
+        else "Outcome data is ready to compare pre-spend predictions with launch performance."
         if outcomes
         else "No launch outcomes logged yet. Add post-flight results after a test campaign."
     )
@@ -500,5 +505,45 @@ def _learning_summary(outcomes: list[Outcome]) -> LearningSummary:
         average_ctr=average_ctr,
         average_cvr=average_cvr,
         best_asset_id=best_asset_id,
+        calibration=calibration,
         insight=insight,
     )
+
+
+def _calibration_summary(outcomes: list[Outcome], comparisons: list[Comparison]) -> CalibrationSummary:
+    outcomes_by_comparison: dict[str, list[Outcome]] = {}
+    for outcome in outcomes:
+        outcomes_by_comparison.setdefault(outcome.comparison_id, []).append(outcome)
+
+    evaluations: list[CalibrationEvaluation] = []
+    for comparison in comparisons:
+        predicted = comparison.recommendation.winner_asset_id
+        if not predicted:
+            continue
+        comparison_outcomes = outcomes_by_comparison.get(comparison.id, [])
+        if not comparison_outcomes:
+            continue
+        actual = max(comparison_outcomes, key=_outcome_rank_key)
+        predicted_outcome = next((outcome for outcome in comparison_outcomes if outcome.asset_id == predicted), None)
+        evaluations.append(
+            CalibrationEvaluation(
+                comparison_id=comparison.id,
+                predicted_asset_id=predicted,
+                actual_best_asset_id=actual.asset_id,
+                aligned=actual.asset_id == predicted,
+                actual_profit=round(actual.revenue - actual.spend, 2),
+                predicted_profit=round(predicted_outcome.revenue - predicted_outcome.spend, 2) if predicted_outcome else None,
+            )
+        )
+
+    aligned = sum(1 for evaluation in evaluations if evaluation.aligned)
+    return CalibrationSummary(
+        evaluated_comparisons=len(evaluations),
+        aligned_predictions=aligned,
+        alignment_rate=round(aligned / len(evaluations), 3) if evaluations else 0,
+        recent=evaluations[:5],
+    )
+
+
+def _outcome_rank_key(outcome: Outcome) -> tuple[float, int, int]:
+    return (outcome.revenue - outcome.spend, outcome.conversions, outcome.clicks)

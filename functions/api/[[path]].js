@@ -1578,7 +1578,7 @@ function calibrationSummary(outcomes, comparisons) {
     evaluated_comparisons: evaluations.length,
     aligned_predictions: aligned,
     alignment_rate: evaluations.length ? round(aligned / evaluations.length, 3) : 0,
-    recent: evaluations.slice(-5)
+    recent: evaluations.slice(0, 5)
   };
 }
 
