@@ -1434,9 +1434,40 @@ test("landing page extraction blocks private URLs without fetching them", async 
   }
 });
 
+test("landing page extraction requires an explicit direct-fetch allowlist", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    return jsonResponse({ should_not: "be called" });
+  };
+
+  try {
+    const created = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "landing_page",
+        name: "Public offer",
+        url: "https://example.com/offer"
+      },
+      { "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}` }
+    );
+
+    assert.equal(created.statusCode, 200);
+    assert.equal(fetchCalled, false);
+    assert.equal(created.json.asset.source_url, "https://example.com/offer");
+    assert.equal(created.json.asset.metadata.extraction_status, "blocked");
+    assert.equal(created.json.asset.metadata.extraction_error, "direct_fetch_not_allowed");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("landing page extraction validates redirects before following them", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
+  withEnv({ STIMLI_LANDING_PAGE_FETCH_ALLOWLIST: "example.com" });
   globalThis.fetch = async (url, options = {}) => {
     calls.push(String(url));
     assert.equal(options.redirect, "manual");
@@ -1464,6 +1495,7 @@ test("landing page extraction validates redirects before following them", async 
     assert.match(created.json.asset.metadata.extraction_error, /redirect_private_or_local_host/);
   } finally {
     globalThis.fetch = originalFetch;
+    withEnv({ STIMLI_LANDING_PAGE_FETCH_ALLOWLIST: undefined });
   }
 });
 

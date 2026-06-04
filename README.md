@@ -88,7 +88,7 @@ npm run deploy:pages
 - **GitHub Actions secrets** (set via `gh secret set` or repo settings → Actions):
   - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` — used by `wrangler-action`.
   - `VITE_CLERK_PUBLISHABLE_KEY` — Vite reads this at build time and inlines it into the bundle. Same value as the Clerk publishable key.
-- **Public env vars** (in `wrangler.toml [vars]`): `STIMLI_ORIGIN`, `STIMLI_APP_URL`, `CLERK_AUTHORIZED_PARTIES`, rate limits, retention defaults.
+- **Public env vars** (in `wrangler.toml [vars]`): `STIMLI_ORIGIN`, `STIMLI_APP_URL`, `CLERK_AUTHORIZED_PARTIES`, rate limits, retention defaults, and optional landing-page fetch allowlists.
 
 ## Authentication (Clerk)
 
@@ -101,6 +101,7 @@ Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
 ### Optional integrations
 
 - `STIMLI_TRIBE_COMMERCIAL_LICENSE=1` flips the license badge to `commercial-ready` for surfaces that gate commerce on the brain provider's license terms.
+- `STIMLI_LANDING_PAGE_FETCH_ALLOWLIST=example.com,brand.com` allows direct serverless fetches for trusted landing-page hosts. Leave it empty to use safe fallback text instead of fetching URLs whose DNS cannot be pinned by the Worker runtime.
 - `OPENROUTER_API_KEY=sk-or-v1-…` turns on the LLM copy-polish path in `functions/api/_lib/copy_llm.js`. When set, templated edit cards, recommendation reasons, and challenger drafts are rewritten by an LLM grounded in the actual variant text + brief, and a semantic compliance check populates `comparison.compliance` with required-claim and forbidden-term hits. When unset, every path stays templated and deterministic. Default model is `anthropic/claude-haiku-4.5` (about $0.00004 per round-trip via OpenRouter); override with `STIMLI_LLM_MODEL` (any OpenRouter model id) and `STIMLI_LLM_TIMEOUT_MS` (default 8000).
 
 ### Subscription billing (Stripe)

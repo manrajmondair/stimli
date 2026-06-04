@@ -1604,6 +1604,12 @@ async function extractLandingPageText(rawUrl, env = {}) {
   let url = resolved.url;
   const maxBytes = positiveNumber(env.STIMLI_LANDING_PAGE_MAX_BYTES, 1_000_000);
   const maxRedirects = positiveNumber(env.STIMLI_LANDING_PAGE_MAX_REDIRECTS, 5);
+  if (!directLandingPageFetchAllowed(url, env)) {
+    return {
+      text: landingPageFallbackText(url),
+      metadata: { extraction_status: "blocked", extraction_error: "direct_fetch_not_allowed" }
+    };
+  }
   try {
     for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
       const response = await fetch(url, {
@@ -1685,6 +1691,21 @@ function requirePublicSourceUrl(rawUrl) {
     throw httpError(400, `url must be a public http(s) URL (${normalized.reason}).`);
   }
   return normalized.url;
+}
+
+function directLandingPageFetchAllowed(rawUrl, env = {}) {
+  if (env.STIMLI_ALLOW_DIRECT_LANDING_FETCH === "1") return true;
+  const allowedHosts = String(env.STIMLI_LANDING_PAGE_FETCH_ALLOWLIST || "")
+    .split(",")
+    .map((host) => host.trim().replace(/^\*\./, "").toLowerCase())
+    .filter(Boolean);
+  if (!allowedHosts.length) return false;
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    return allowedHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+  } catch {
+    return false;
+  }
 }
 
 function safeImportFailureItem(item = {}) {
