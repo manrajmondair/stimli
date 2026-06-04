@@ -151,6 +151,20 @@ test("postgres invite acceptance only consumes an invite after seat resolution",
   assert.equal(source.includes("with claimed as (\n      update stimli_team_invites"), false);
 });
 
+test("postgres comparison delete cascades in one statement", () => {
+  const source = readFileSync(new URL("../functions/api/_lib/store.js", import.meta.url), "utf8");
+  const start = source.indexOf("export async function deleteComparison");
+  const end = source.indexOf("export async function saveOutcome", start);
+  const block = source.slice(start, end);
+
+  assert.match(block, /with deleted as \(/);
+  assert.match(block, /delete from stimli_comparisons/);
+  assert.match(block, /delete from stimli_outcomes[\s\S]+comparison_id in \(select id from deleted\)/);
+  assert.match(block, /delete from stimli_share_links[\s\S]+comparison_id in \(select id from deleted\)/);
+  assert.match(block, /select exists\(select 1 from deleted\) as deleted/);
+  assert.equal((block.match(/await sql`/g) || []).length, 1);
+});
+
 test("allows credentialed local CORS without opening arbitrary origins", async () => {
   const local = await call("OPTIONS", "/api/health", null, { origin: "http://localhost:5173" });
   assert.equal(local.statusCode, 204);

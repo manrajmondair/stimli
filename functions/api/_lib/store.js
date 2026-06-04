@@ -212,11 +212,25 @@ export async function deleteComparison(comparisonId, workspaceId = "public") {
     return true;
   }
   await ensureTables(sql);
-  const rows = await sql`delete from stimli_comparisons where id = ${comparisonId} and workspace_id = ${workspaceId} returning id`;
-  if (rows.length === 0) return false;
-  await sql`delete from stimli_outcomes where comparison_id = ${comparisonId} and workspace_id = ${workspaceId}`;
-  await sql`delete from stimli_share_links where comparison_id = ${comparisonId} and workspace_id = ${workspaceId}`;
-  return true;
+  const rows = await sql`
+    with deleted as (
+      delete from stimli_comparisons
+      where id = ${comparisonId} and workspace_id = ${workspaceId}
+      returning id
+    ),
+    deleted_outcomes as (
+      delete from stimli_outcomes
+      where comparison_id in (select id from deleted) and workspace_id = ${workspaceId}
+      returning id
+    ),
+    deleted_share_links as (
+      delete from stimli_share_links
+      where comparison_id in (select id from deleted) and workspace_id = ${workspaceId}
+      returning token
+    )
+    select exists(select 1 from deleted) as deleted
+  `;
+  return Boolean(rows[0]?.deleted);
 }
 
 export async function saveOutcome(outcome) {
