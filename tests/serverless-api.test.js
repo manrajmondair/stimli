@@ -1560,6 +1560,50 @@ test("oversized multipart text fields are rejected before persistence", async ()
   }
 });
 
+test("oversized script file text is rejected before persistence or quota consumption", async () => {
+  withEnv({
+    STIMLI_MAX_DIRECT_UPLOAD_BYTES: "64",
+    STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES: "4",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  try {
+    const form = new FormData();
+    form.append("asset_type", "script");
+    form.append("name", "Too much script text");
+    form.append("file", new Blob(["hello"], { type: "text/plain" }), "script.txt");
+    const request = new Request("http://stimli.test/api/assets", {
+      method: "POST",
+      headers: { "x-stimli-workspace": workspace, "user-agent": "stimli-script-limit-test" },
+      body: form
+    });
+
+    const response = await onRequest({ request, env: testEnv, params: {} });
+    assert.equal(response.status, 413);
+    const payload = await response.json();
+    assert.match(payload.detail, /Script upload exceeds/);
+
+    const listed = await call("GET", "/api/assets", null, { "x-stimli-workspace": workspace });
+    assert.equal(listed.json.length, 0);
+
+    const valid = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Still allowed", text: "Stop weak hooks. Try the kit today." },
+      { "x-stimli-workspace": workspace, "user-agent": "stimli-script-limit-test" }
+    );
+    assert.equal(valid.statusCode, 200);
+  } finally {
+    withEnv({
+      STIMLI_MAX_DIRECT_UPLOAD_BYTES: undefined,
+      STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
 test("organizes assets and comparisons by project", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

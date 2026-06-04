@@ -800,14 +800,19 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
     const finalName = stringField(fields.name).trim().slice(0, 180) || sourceUrl || stringField(file?.filename).trim().slice(0, 180) || "Untitled asset";
     const projectId = await resolveProjectId(stringField(fields.project_id ?? fields.projectId), workspaceId);
     const durationSeconds = optionalNonNegativeNumber(fields.duration_seconds, "duration_seconds", { max: 24 * 60 * 60 });
-    const quota = await getQuotaForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
     let extractedText = stringField(fields.text);
     let extractionMetadata = {};
 
     if (file && assetType === "script" && !extractedText) {
+      const maxScriptTextBytes = positiveNumber(env.STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES, 1_000_000);
+      if (file.bytes.length > maxScriptTextBytes) {
+        throw httpError(413, `Script upload exceeds the ${maxScriptTextBytes} byte text limit.`);
+      }
       extractedText = new TextDecoder().decode(file.bytes);
     }
+
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
 
     if (assetType === "landing_page" && url && !extractedText) {
       const extracted = await extractLandingPageText(sourceUrl || url, env);
