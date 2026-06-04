@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useClerk, UserButton, useUser } from "@clerk/clerk-react";
 import {
@@ -53,6 +53,36 @@ import { Workbench } from "./Workbench";
 
 const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
 
+function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
+  return workspaceKey && workspaceKey !== "anonymous"
+    ? `${DEFAULT_BRAND_KEY}:${workspaceKey}`
+    : DEFAULT_BRAND_KEY;
+}
+
+function readLocalStorage(key: string): string | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* storage can be unavailable in locked-down browsers */
+  }
+}
+
+function removeLocalStorage(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* storage can be unavailable in locked-down browsers */
+  }
+}
+
 const ASSET_TYPE_LABEL: Record<AssetType, string> = {
   script: "Script",
   landing_page: "Landing page",
@@ -99,6 +129,7 @@ function ConfirmDialog({
   message,
   confirmLabel = "Confirm",
   confirmKind = "danger",
+  busy = false,
   onConfirm,
   onCancel
 }: {
@@ -107,49 +138,108 @@ function ConfirmDialog({
   message: ReactNode;
   confirmLabel?: string;
   confirmKind?: "danger" | "primary";
+  busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const titleId = useId();
+  const messageId = useId();
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const confirmingRef = useRef(false);
+
+  const confirmOnce = useCallback(() => {
+    if (busy || confirmingRef.current) return;
+    confirmingRef.current = true;
+    onConfirm();
+  }, [busy, onConfirm]);
+
+  useEffect(() => {
+    if (!busy) confirmingRef.current = false;
+  }, [busy]);
+
+  useEffect(() => {
+    if (!open) return;
+    confirmingRef.current = false;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    requestAnimationFrame(() => {
+      cancelRef.current?.focus();
+    });
+    return () => {
+      previousFocusRef.current?.focus();
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
+      if (busy) {
+        if (e.key === "Escape" || e.key === "Enter") e.preventDefault();
+        return;
+      }
       if (e.key === "Escape") {
         onCancel();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusables = collectFocusable(modalRef.current);
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey && (active === first || !modalRef.current?.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
         return;
       }
       // Only confirm on a deliberate Enter. Ignore IME composition commits and
       // auto-repeat so a destructive action can't fire from a held key or while
       // the user is finishing a character in another field.
       if (e.key === "Enter" && !e.isComposing && !e.repeat) {
-        const target = e.target as HTMLElement | null;
-        const tag = target?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-        onConfirm();
+        if (isInteractiveTarget(e.target)) return;
+        e.preventDefault();
+        confirmOnce();
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onCancel, onConfirm]);
+  }, [busy, confirmOnce, open, onCancel]);
 
   if (!open) return null;
   return (
-    <div className="auth-overlay" onClick={onCancel} role="presentation">
+    <div className="auth-overlay" onClick={busy ? undefined : onCancel} role="presentation">
       <div
+        ref={modalRef}
         className="auth-modal confirm-modal"
         onClick={(e) => e.stopPropagation()}
         role="alertdialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
       >
-        <h2 style={{ marginTop: 0 }}>{title}</h2>
-        <div className="lead">{message}</div>
+        <h2 id={titleId} style={{ marginTop: 0 }}>
+          {title}
+        </h2>
+        <div id={messageId} className="lead">
+          {message}
+        </div>
         <div className="form-actions" style={{ justifyContent: "flex-end", marginTop: 16 }}>
-          <button className="btn ghost" onClick={onCancel}>
+          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy} ref={cancelRef}>
             Cancel
           </button>
           <button
+            type="button"
             className={confirmKind === "danger" ? "btn primary danger" : "btn primary"}
-            onClick={onConfirm}
-            autoFocus
+            onClick={confirmOnce}
+            disabled={busy}
           >
             {confirmLabel}
           </button>
@@ -159,7 +249,31 @@ function ConfirmDialog({
   );
 }
 
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(
+    target.closest(
+      "button, a, input, select, textarea, [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])"
+    )
+  );
+}
+
+function collectFocusable(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  const selector = [
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled]):not([type='hidden'])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])"
+  ].join(",");
+  return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter((el) => !el.hasAttribute("inert"));
+}
+
 type View = "workbench" | "library" | "brands" | "outcomes" | "team" | "billing";
+type BillingBanner = { kind: "success" | "info" | "warn"; message: string };
 
 const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
   { id: "workbench", label: "Workbench", color: "var(--tomato)" },
@@ -169,14 +283,63 @@ const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
   { id: "team", label: "Team", color: "var(--ink)" },
   { id: "billing", label: "Billing", color: "var(--pistachio)" }
 ];
+const VIEW_IDS = new Set<View>(NAV_ITEMS.map((item) => item.id));
+
+function viewFromPath(pathname: string): View {
+  const segment = pathname.split("/").filter(Boolean)[1];
+  return segment && VIEW_IDS.has(segment as View) ? (segment as View) : "workbench";
+}
+
+function pathForView(view: View): string {
+  return view === "workbench" ? "/app" : `/app/${view}`;
+}
+
+function upgradeNoticeFromEvent(event: Event): BillingBanner {
+  const detail = event instanceof CustomEvent ? event.detail : null;
+  const details = detail && typeof detail === "object" ? (detail as { details?: Record<string, unknown> }).details : null;
+  const kind = typeof details?.kind === "string" ? details.kind : "usage";
+  const plan = typeof details?.plan === "string" ? details.plan : "current";
+  const limit = typeof details?.limit === "number" ? details.limit : null;
+  const used = typeof details?.used === "number" ? details.used : null;
+  const usage = limit ? ` (${used ?? limit}/${limit})` : "";
+  return {
+    kind: "warn",
+    message: `You hit the ${kind} limit on the ${plan} plan${usage}. Pick a plan to keep shipping.`
+  };
+}
 
 export function AppShell() {
   const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
   const clerk = useClerk();
   const [session, setSession] = useState<AuthSession | null>(null);
-  const [view, setView] = useState<View>("workbench");
+  const [view, setView] = useState<View>(() => viewFromPath(typeof window === "undefined" ? "/app" : window.location.pathname));
   const [bootError] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [billingNotice, setBillingNotice] = useState<BillingBanner | null>(null);
+
+  const navigateView = useCallback((target: View, options: { replace?: boolean; preserveSearch?: boolean } = {}) => {
+    setView(target);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.pathname = pathForView(target);
+    if (!options.preserveSearch) {
+      url.search = "";
+      url.hash = "";
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) {
+      window.history[options.replace ? "replaceState" : "pushState"]({}, "", next);
+    }
+  }, []);
+
+  useEffect(() => {
+    function onPopState() {
+      setView(viewFromPath(window.location.pathname));
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -198,6 +361,7 @@ export function AppShell() {
   useEffect(() => {
     if (!clerkLoaded) return;
     if (!isSignedIn) {
+      setActiveTeam(null);
       setSession({ authenticated: false, user: null, team: null, teams: [] });
       setUsage(null);
       return;
@@ -240,16 +404,17 @@ export function AppShell() {
     const url = new URL(window.location.href);
     const billingFlag = url.searchParams.get("billing");
     if (billingFlag === "upgrade" || billingFlag === "success" || billingFlag === "cancelled") {
-      setView("billing");
+      navigateView("billing", { replace: true, preserveSearch: true });
     }
     // Listen for quota-exceeded events fired from api.ts so any 402 anywhere
     // in the app routes the user to the Billing view to upgrade.
-    function onQuota() {
-      setView("billing");
+    function onQuota(event: Event) {
+      setBillingNotice(upgradeNoticeFromEvent(event));
+      navigateView("billing");
     }
     window.addEventListener("stimli:upgrade-required", onQuota);
     return () => window.removeEventListener("stimli:upgrade-required", onQuota);
-  }, []);
+  }, [navigateView]);
 
   async function refreshSession() {
     try {
@@ -273,12 +438,20 @@ export function AppShell() {
     "";
   const displayEmail =
     session?.user?.email || clerkUser?.primaryEmailAddress?.emailAddress || "";
+  const workspaceKey = signedIn ? session?.team?.id || "signed-in-loading" : "anonymous";
+  const workspaceReady = !signedIn || Boolean(session?.team?.id);
+  const workspaceLoading = <div className="banner">Loading workspace…</div>;
+  const requireAuth = () => {
+    if (clerk?.openSignIn) {
+      clerk.openSignIn({ forceRedirectUrl: "/app" });
+    }
+  };
 
   return (
     <div className="wb-root paper-bg">
       <Sidebar
         active={view}
-        onChange={setView}
+        onChange={navigateView}
         signedIn={signedIn}
         displayName={displayName}
         displayEmail={displayEmail}
@@ -287,31 +460,36 @@ export function AppShell() {
 
       <main className="wb-main">
         {bootError ? <div className="banner error">{bootError}</div> : null}
-        {view === "workbench" ? (
+        {view === "workbench" ? workspaceReady ? (
           <Workbench
-            onRequireAuth={() => {
-              /* Sign-in is driven by useClerk().openSignIn() elsewhere */
-            }}
+            key={workspaceKey}
+            workspaceKey={workspaceKey}
+            workspaceReady={workspaceReady}
+            onRequireAuth={requireAuth}
             remoteProvider={null}
             briefDefaults={undefined}
           />
-        ) : null}
-        {view === "library" ? <LibraryView /> : null}
-        {view === "brands" ? <BrandsView /> : null}
-        {view === "outcomes" ? <OutcomesView /> : null}
+        ) : workspaceLoading : null}
+        {view === "library" ? workspaceReady ? <LibraryView key={workspaceKey} /> : workspaceLoading : null}
+        {view === "brands" ? workspaceReady ? <BrandsView key={workspaceKey} workspaceKey={workspaceKey} /> : workspaceLoading : null}
+        {view === "outcomes" ? workspaceReady ? <OutcomesView key={workspaceKey} /> : workspaceLoading : null}
         {view === "team" ? (
           <TeamView session={session} onUpdate={refreshSession} />
         ) : null}
-        {view === "billing" ? (
-          <BillingView usage={usage} onUsageRefresh={() => getBillingUsage().then(setUsage).catch(() => undefined)} />
-        ) : null}
+        {view === "billing" ? workspaceReady ? (
+          <BillingView
+            usage={usage}
+            notice={billingNotice}
+            onUsageRefresh={() => getBillingUsage().then(setUsage).catch(() => undefined)}
+          />
+        ) : workspaceLoading : null}
       </main>
 
       {paletteOpen ? (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
           onNavigate={(target) => {
-            setView(target);
+            navigateView(target);
             setPaletteOpen(false);
           }}
           onSignIn={() => {
@@ -657,14 +835,14 @@ function WhatsNewButton() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const seen = window.localStorage.getItem(CHANGELOG_KEY);
+    const seen = readLocalStorage(CHANGELOG_KEY);
     setHasUnseen(seen !== CHANGELOG_VERSION);
   }, []);
 
   function openModal() {
     setOpen(true);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(CHANGELOG_KEY, CHANGELOG_VERSION);
+      writeLocalStorage(CHANGELOG_KEY, CHANGELOG_VERSION);
     }
     setHasUnseen(false);
   }
@@ -831,7 +1009,15 @@ function UsageMeter({ label, used, limit, ratio }: { label: string; used: number
   );
 }
 
-function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; onUsageRefresh: () => void }) {
+function BillingView({
+  usage,
+  notice,
+  onUsageRefresh
+}: {
+  usage: UsageSnapshot | null;
+  notice: BillingBanner | null;
+  onUsageRefresh: () => void;
+}) {
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -876,6 +1062,10 @@ function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; o
       window.history.replaceState({}, "", url.toString());
     }
   }, []);
+
+  useEffect(() => {
+    if (notice) setBanner(notice);
+  }, [notice]);
 
   async function handleSelectPlan(plan: Plan) {
     if (busyPlan) return;
@@ -1000,10 +1190,10 @@ function BillingView({ usage, onUsageRefresh }: { usage: UsageSnapshot | null; o
 
 function BillingUsageSummary({ usage, onRefresh }: { usage: UsageSnapshot; onRefresh: () => void }) {
   const period = usage.period;
-  const monthlyComp = usage.monthly_usage.comparison;
-  const monthlyAsset = usage.monthly_usage.asset;
-  const compLimit = usage.monthly_limits.comparison;
-  const assetLimit = usage.monthly_limits.asset;
+  const monthlyComp = usage.monthly_usage?.comparison ?? usage.usage?.comparison ?? 0;
+  const monthlyAsset = usage.monthly_usage?.asset ?? usage.usage?.asset ?? 0;
+  const compLimit = usage.monthly_limits?.comparison ?? usage.limits?.comparison ?? 0;
+  const assetLimit = usage.monthly_limits?.asset ?? usage.limits?.asset ?? 0;
   const compRatio = compLimit > 0 ? Math.min(1, monthlyComp / compLimit) : 0;
   const assetRatio = assetLimit > 0 ? Math.min(1, monthlyAsset / assetLimit) : 0;
   const reset = period?.end ? new Date(period.end) : null;
@@ -1157,7 +1347,10 @@ function LibraryView() {
     setLoading(true);
     setError(null);
     listLibraryAssets()
-      .then((res) => setItems(res.assets))
+      .then((res) => {
+        setItems(res.assets);
+        pruneLibraryState(res.assets);
+      })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load library."))
       .finally(() => setLoading(false));
   }
@@ -1168,6 +1361,7 @@ function LibraryView() {
       .then((res) => {
         if (cancelled) return;
         setItems(res.assets);
+        pruneLibraryState(res.assets);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1186,6 +1380,11 @@ function LibraryView() {
     try {
       await deleteAsset(asset.id);
       setItems((current) => current.filter((item) => item.id !== asset.id));
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(asset.id);
+        return next;
+      });
       if (expandedId === asset.id) setExpandedId(null);
       show("success", `Deleted "${asset.name}".`);
     } catch (err) {
@@ -1194,6 +1393,15 @@ function LibraryView() {
       setBusyId(null);
       setConfirmDelete(null);
     }
+  }
+
+  function pruneLibraryState(nextItems: LibraryAsset[]) {
+    const ids = new Set(nextItems.map((item) => item.id));
+    setSelected((current) => {
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
+    setExpandedId((current) => (current && ids.has(current) ? current : null));
   }
 
   const counts = useMemo(() => {
@@ -1236,6 +1444,7 @@ function LibraryView() {
     if (selected.size === 0) return;
     setBulkBusy(true);
     const ids = Array.from(selected);
+    const deletedIds = new Set<string>();
     let success = 0;
     let failure = 0;
     // Sequential — Cloudflare Pages Functions don't love a burst of
@@ -1245,14 +1454,19 @@ function LibraryView() {
     for (const id of ids) {
       try {
         await deleteAsset(id);
+        deletedIds.add(id);
         success += 1;
       } catch (err) {
         console.warn(err);
         failure += 1;
       }
     }
-    setItems((current) => current.filter((asset) => !selected.has(asset.id)));
-    setSelected(new Set());
+    setItems((current) => current.filter((asset) => !deletedIds.has(asset.id)));
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const id of deletedIds) next.delete(id);
+      return next;
+    });
     setBulkBusy(false);
     setConfirmBulkDelete(false);
     if (failure === 0) {
@@ -1462,6 +1676,7 @@ function LibraryView() {
         }
         onCancel={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && performDelete(confirmDelete)}
+        busy={Boolean(confirmDelete && busyId === confirmDelete.id)}
       />
 
       <ConfirmDialog
@@ -1479,6 +1694,7 @@ function LibraryView() {
         }
         onCancel={() => setConfirmBulkDelete(false)}
         onConfirm={performBulkDelete}
+        busy={bulkBusy}
       />
 
       <ToastBar toast={toast} onDismiss={dismiss} />
@@ -1525,18 +1741,21 @@ function csvToList(value: string): string[] {
   return value.split(",").map((part) => part.trim()).filter(Boolean);
 }
 
-function BrandsView() {
+function BrandsView({ workspaceKey }: { workspaceKey: string }) {
   const [profiles, setProfiles] = useState<BrandProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<BrandProfile | null>(null);
-  const [defaultId, setDefaultId] = useState<string | null>(() =>
-    typeof window === "undefined" ? null : window.localStorage.getItem(DEFAULT_BRAND_KEY)
-  );
+  const storageKey = defaultBrandStorageKey(workspaceKey);
+  const [defaultId, setDefaultId] = useState<string | null>(() => readLocalStorage(storageKey));
   const [form, setForm] = useState<BrandFormState>(EMPTY_BRAND_FORM);
   const { toast, show, dismiss } = useLocalToast();
+
+  useEffect(() => {
+    setDefaultId(readLocalStorage(storageKey));
+  }, [storageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1561,9 +1780,9 @@ function BrandsView() {
     setDefaultId(id);
     if (typeof window === "undefined") return;
     if (id) {
-      window.localStorage.setItem(DEFAULT_BRAND_KEY, id);
+      writeLocalStorage(storageKey, id);
     } else {
-      window.localStorage.removeItem(DEFAULT_BRAND_KEY);
+      removeLocalStorage(storageKey);
     }
   }
 
@@ -1685,7 +1904,7 @@ function BrandsView() {
         </div>
       </header>
       {error ? <div className="banner error">{error}</div> : null}
-      <div className="wb-grid" style={{ gridTemplateColumns: "360px 1fr" }}>
+      <div className="wb-grid wb-grid-sidebar">
         <section className="panel-card">
           <div className="panel-head">
             <h3>{editingId ? "Edit profile" : "New brand profile"}</h3>
@@ -1867,6 +2086,7 @@ function BrandsView() {
         }
         onCancel={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && performDelete(confirmDelete)}
+        busy={busy}
       />
 
       <ToastBar toast={toast} onDismiss={dismiss} />
@@ -2061,28 +2281,30 @@ function OutcomesView() {
                 </div>
               </div>
               {summary.calibration.recent.length ? (
-                <table className="simple-table" style={{ marginTop: 18 }}>
-                  <thead>
-                    <tr>
-                      <th>Comparison</th>
-                      <th>Predicted</th>
-                      <th>Actual best</th>
-                      <th>Aligned</th>
-                      <th>Profit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.calibration.recent.map((row) => (
-                      <tr key={row.comparison_id}>
-                        <td>{row.comparison_id.slice(0, 10)}</td>
-                        <td>{row.predicted_asset_id.slice(0, 8)}</td>
-                        <td>{row.actual_best_asset_id.slice(0, 8)}</td>
-                        <td>{row.aligned ? "✓" : "—"}</td>
-                        <td>${formatNumber(row.actual_profit)}</td>
+                <div className="table-scroll" style={{ marginTop: 18 }}>
+                  <table className="simple-table">
+                    <thead>
+                      <tr>
+                        <th>Comparison</th>
+                        <th>Predicted</th>
+                        <th>Actual best</th>
+                        <th>Aligned</th>
+                        <th>Profit</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {summary.calibration.recent.map((row) => (
+                        <tr key={row.comparison_id}>
+                          <td>{row.comparison_id.slice(0, 10)}</td>
+                          <td>{row.predicted_asset_id.slice(0, 8)}</td>
+                          <td>{row.actual_best_asset_id.slice(0, 8)}</td>
+                          <td>{row.aligned ? "✓" : "—"}</td>
+                          <td>${formatNumber(row.actual_profit)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -2176,6 +2398,7 @@ function LogOutcomeModal({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [invalidField, setInvalidField] = useState<string | null>(null);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -2185,32 +2408,31 @@ function LogOutcomeModal({
     return () => window.removeEventListener("keydown", handleKey);
   }, [busy, onClose]);
 
-  function num(value: string): number {
-    const cleaned = value.replace(/[,$\s]/g, "");
-    const parsed = Number(cleaned);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-  }
-
   async function submit() {
     if (!comparisonId || !assetId) {
       setError("Pick a comparison and a variant.");
+      setInvalidField(null);
       return;
     }
     if (!spend.trim() && !revenue.trim() && !impressions.trim() && !clicks.trim() && !conversions.trim()) {
       setError("Add at least one metric.");
+      setInvalidField(null);
+      return;
+    }
+    const metrics = validateOutcomeMetrics({ spend, revenue, impressions, clicks, conversions });
+    if (metrics.error) {
+      setError(metrics.error.message);
+      setInvalidField(metrics.error.field);
       return;
     }
     setBusy(true);
     setError(null);
+    setInvalidField(null);
     try {
       await onSubmit({
         comparison_id: comparisonId,
         asset_id: assetId,
-        spend: num(spend),
-        revenue: num(revenue),
-        impressions: num(impressions),
-        clicks: num(clicks),
-        conversions: num(conversions),
+        ...metrics.values,
         notes: notes.trim() || "Logged from outcomes"
       });
     } catch (err) {
@@ -2274,30 +2496,30 @@ function LogOutcomeModal({
         <div className="outcome-grid">
           <label className="field">
             <span>Spend (USD)</span>
-            <input value={spend} onChange={(e) => setSpend(e.target.value)} inputMode="decimal" placeholder="1500" />
+            <input value={spend} onChange={(e) => setSpend(e.target.value)} inputMode="decimal" placeholder="1500" aria-invalid={invalidField === "spend"} aria-describedby={invalidField === "spend" ? "log-outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Revenue (USD)</span>
-            <input value={revenue} onChange={(e) => setRevenue(e.target.value)} inputMode="decimal" placeholder="2400" />
+            <input value={revenue} onChange={(e) => setRevenue(e.target.value)} inputMode="decimal" placeholder="2400" aria-invalid={invalidField === "revenue"} aria-describedby={invalidField === "revenue" ? "log-outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Impressions</span>
-            <input value={impressions} onChange={(e) => setImpressions(e.target.value)} inputMode="numeric" placeholder="42000" />
+            <input value={impressions} onChange={(e) => setImpressions(e.target.value)} inputMode="numeric" placeholder="42000" aria-invalid={invalidField === "impressions"} aria-describedby={invalidField === "impressions" ? "log-outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Clicks</span>
-            <input value={clicks} onChange={(e) => setClicks(e.target.value)} inputMode="numeric" placeholder="980" />
+            <input value={clicks} onChange={(e) => setClicks(e.target.value)} inputMode="numeric" placeholder="980" aria-invalid={invalidField === "clicks"} aria-describedby={invalidField === "clicks" ? "log-outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Conversions</span>
-            <input value={conversions} onChange={(e) => setConversions(e.target.value)} inputMode="numeric" placeholder="38" />
+            <input value={conversions} onChange={(e) => setConversions(e.target.value)} inputMode="numeric" placeholder="38" aria-invalid={invalidField === "conversions"} aria-describedby={invalidField === "conversions" ? "log-outcome-error" : undefined} />
           </label>
         </div>
         <label className="field">
           <span>Notes (optional)</span>
           <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Channel, audience, dates…" />
         </label>
-        {error ? <div className="auth-error">{error}</div> : null}
+        {error ? <div className="auth-error" id="log-outcome-error">{error}</div> : null}
         <div className="form-actions" style={{ justifyContent: "flex-end" }}>
           <button className="btn ghost" onClick={onClose} disabled={busy}>
             Cancel
@@ -2309,6 +2531,39 @@ function LogOutcomeModal({
       </div>
     </div>
   );
+}
+
+type OutcomeMetricField = "spend" | "revenue" | "impressions" | "clicks" | "conversions";
+
+function validateOutcomeMetrics(input: Record<OutcomeMetricField, string>): {
+  values: Record<OutcomeMetricField, number>;
+  error: { field: OutcomeMetricField; message: string } | null;
+} {
+  const values = {} as Record<OutcomeMetricField, number>;
+  const specs: Array<{ field: OutcomeMetricField; label: string; integer?: boolean }> = [
+    { field: "spend", label: "Spend" },
+    { field: "revenue", label: "Revenue" },
+    { field: "impressions", label: "Impressions", integer: true },
+    { field: "clicks", label: "Clicks", integer: true },
+    { field: "conversions", label: "Conversions", integer: true }
+  ];
+  for (const spec of specs) {
+    const raw = input[spec.field].trim();
+    if (!raw) {
+      values[spec.field] = 0;
+      continue;
+    }
+    const cleaned = raw.replace(/[,$\s]/g, "");
+    const parsed = Number(cleaned);
+    if (!cleaned || !Number.isFinite(parsed) || parsed < 0) {
+      return { values, error: { field: spec.field, message: `${spec.label} must be a non-negative number.` } };
+    }
+    if (spec.integer && !Number.isInteger(parsed)) {
+      return { values, error: { field: spec.field, message: `${spec.label} must be a whole number.` } };
+    }
+    values[spec.field] = parsed;
+  }
+  return { values, error: null };
 }
 
 const ROLE_OPTIONS: TeamRole[] = ["owner", "admin", "analyst", "viewer"];
@@ -2344,11 +2599,12 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   }, [signedIn, session?.team?.id]);
 
   async function refresh() {
+    setError(null);
     try {
       const [membersList, invitesList, events] = await Promise.all([
-        listTeamMembers().catch(() => [] as TeamMember[]),
-        listTeamInvites().catch(() => [] as TeamInvite[]),
-        listAuditEvents().catch(() => [] as AuditEvent[])
+        listTeamMembers(),
+        listTeamInvites(),
+        listAuditEvents()
       ]);
       setMembers(membersList);
       setInvites(invitesList);
@@ -2359,10 +2615,17 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   }
 
   async function invite() {
+    const email = inviteEmail.trim();
+    if (!email) {
+      const message = "Invite email is required.";
+      setError(message);
+      show("error", message);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const result = await createTeamInvite({ email: inviteEmail.trim() || undefined, role: inviteRole });
+      const result = await createTeamInvite({ email, role: inviteRole });
       setLastInviteUrl(result.url ?? null);
       setCopyState("idle");
       setInviteEmail("");
@@ -2534,7 +2797,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
         </div>
       </header>
       {error ? <div className="banner error">{error}</div> : null}
-      <div className="wb-grid" style={{ gridTemplateColumns: "360px 1fr" }}>
+      <div className="wb-grid wb-grid-sidebar">
         <section className="panel-card">
           <div className="panel-head">
             <h3>Invite collaborator</h3>
@@ -2542,12 +2805,13 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
           </div>
           <div className="add-form">
             <label className="field">
-              <span>Email (optional)</span>
+              <span>Email</span>
               <input
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="teammate@brand.com"
                 type="email"
+                required
               />
             </label>
             <label className="field">
@@ -2590,43 +2854,45 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                 <h3>Pending invites</h3>
                 <span className="kicker">{pendingInvites.length}</span>
               </div>
-              <table className="simple-table">
-                <thead>
-                  <tr>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Expires</th>
-                    <th>Sent</th>
-                    <th aria-label="actions" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingInvites.map((invite) => (
-                    <tr key={invite.id}>
-                      <td>{invite.email || <em style={{ color: "var(--ink-soft)" }}>(any email)</em>}</td>
-                      <td>
-                        <span className="claim-pill">{invite.role}</span>
-                      </td>
-                      <td>{new Date(invite.expires_at).toLocaleDateString()}</td>
-                      <td>{new Date(invite.created_at).toLocaleDateString()}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          className="btn cream small"
-                          onClick={() => setConfirmRevoke(invite)}
-                          disabled={busy}
-                          style={{
-                            background: "var(--tomato-soft)",
-                            borderColor: "var(--tomato-ink)",
-                            color: "var(--tomato-ink)"
-                          }}
-                        >
-                          Revoke
-                        </button>
-                      </td>
+              <div className="table-scroll">
+                <table className="simple-table">
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Role</th>
+                      <th>Expires</th>
+                      <th>Sent</th>
+                      <th aria-label="actions" />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {pendingInvites.map((invite) => (
+                      <tr key={invite.id}>
+                        <td>{invite.email || <em style={{ color: "var(--ink-soft)" }}>(any email)</em>}</td>
+                        <td>
+                          <span className="claim-pill">{invite.role}</span>
+                        </td>
+                        <td>{new Date(invite.expires_at).toLocaleDateString()}</td>
+                        <td>{new Date(invite.created_at).toLocaleDateString()}</td>
+                        <td style={{ textAlign: "right" }}>
+                          <button
+                            className="btn cream small"
+                            onClick={() => setConfirmRevoke(invite)}
+                            disabled={busy}
+                            style={{
+                              background: "var(--tomato-soft)",
+                              borderColor: "var(--tomato-ink)",
+                              color: "var(--tomato-ink)"
+                            }}
+                          >
+                            Revoke
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : null}
 
@@ -2635,62 +2901,64 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
               <h3>Members</h3>
               <span className="kicker">{members.length}</span>
             </div>
-            <table className="simple-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Joined</th>
-                  <th aria-label="actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {members.map((member) => {
-                  const isSelf = member.user_id === session.user?.id;
-                  return (
-                    <tr key={member.user_id}>
-                      <td>{member.name || <em style={{ color: "var(--ink-soft)" }}>—</em>}</td>
-                      <td>{member.email}</td>
-                      <td>
-                        <select
-                          className="member-role-select"
-                          value={member.role}
-                          onChange={(e) => changeRole(member, e.target.value as TeamRole)}
-                          disabled={busy || isSelf}
-                          title={isSelf ? "Change your own role from your account settings" : ""}
-                        >
-                          {ROLE_OPTIONS.map((role) => (
-                            <option key={role} value={role}>
-                              {role}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>{new Date(member.created_at).toLocaleDateString()}</td>
-                      <td style={{ textAlign: "right" }}>
-                        {isSelf ? (
-                          <span className="hint" style={{ fontSize: 11 }}>that's you</span>
-                        ) : (
-                          <button
-                            className="btn cream small"
-                            onClick={() => setConfirmRemove(member)}
-                            disabled={busy}
-                            style={{
-                              background: "var(--tomato-soft)",
-                              borderColor: "var(--tomato-ink)",
-                              color: "var(--tomato-ink)"
-                            }}
+            <div className="table-scroll">
+              <table className="simple-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Joined</th>
+                    <th aria-label="actions" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((member) => {
+                    const isSelf = member.user_id === session.user?.id;
+                    return (
+                      <tr key={member.user_id}>
+                        <td>{member.name || <em style={{ color: "var(--ink-soft)" }}>—</em>}</td>
+                        <td>{member.email}</td>
+                        <td>
+                          <select
+                            className="member-role-select"
+                            value={member.role}
+                            onChange={(e) => changeRole(member, e.target.value as TeamRole)}
+                            disabled={busy || isSelf}
+                            title={isSelf ? "Change your own role from your account settings" : ""}
                           >
-                            Remove
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                            {ROLE_OPTIONS.map((role) => (
+                              <option key={role} value={role}>
+                                {role}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>{new Date(member.created_at).toLocaleDateString()}</td>
+                        <td style={{ textAlign: "right" }}>
+                          {isSelf ? (
+                            <span className="hint" style={{ fontSize: 11 }}>that's you</span>
+                          ) : (
+                            <button
+                              className="btn cream small"
+                              onClick={() => setConfirmRemove(member)}
+                              disabled={busy}
+                              style={{
+                                background: "var(--tomato-soft)",
+                                borderColor: "var(--tomato-ink)",
+                                color: "var(--tomato-ink)"
+                              }}
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <AuditLogPanel audit={audit} />
@@ -2710,6 +2978,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
         }
         onCancel={() => setConfirmRemove(null)}
         onConfirm={() => confirmRemove && performRemove(confirmRemove)}
+        busy={busy}
       />
 
       <ConfirmDialog
@@ -2724,6 +2993,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
         }
         onCancel={() => setConfirmRevoke(null)}
         onConfirm={() => confirmRevoke && performRevoke(confirmRevoke)}
+        busy={busy}
       />
 
       <ToastBar toast={toast} onDismiss={dismiss} />
@@ -2813,28 +3083,30 @@ function AuditLogPanel({ audit }: { audit: AuditEvent[] }) {
             </p>
           ) : (
             <>
-              <table className="simple-table">
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Actor</th>
-                    <th>Action</th>
-                    <th>Target</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map((event) => (
-                    <tr key={event.id}>
-                      <td>{new Date(event.created_at).toLocaleString()}</td>
-                      <td>{event.actor_email || "—"}</td>
-                      <td>
-                        <code>{event.action}</code>
-                      </td>
-                      <td>{event.target_type}{event.target_id ? ` · ${event.target_id.slice(0, 10)}` : ""}</td>
+              <div className="table-scroll">
+                <table className="simple-table">
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>Actor</th>
+                      <th>Action</th>
+                      <th>Target</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {visible.map((event) => (
+                      <tr key={event.id}>
+                        <td>{new Date(event.created_at).toLocaleString()}</td>
+                        <td>{event.actor_email || "—"}</td>
+                        <td>
+                          <code>{event.action}</code>
+                        </td>
+                        <td>{event.target_type}{event.target_id ? ` · ${event.target_id.slice(0, 10)}` : ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {filtered.length > 25 ? (
                 <button
                   type="button"
@@ -2880,9 +3152,9 @@ export function LegalPage() {
       <h2>Built for CS 153</h2>
       <p>
         Stimli was built as a one-person frontier-lab project for CS 153 at Stanford. Everything in this product —
-        landing page, workbench, comparison pipeline, hosted GPU inference path — was designed and shipped solo using
-        modern AI coding assistants. See the <a href="https://github.com/manrajmondair/stimli">project repository</a>{" "}
-        for source and reproduction notes.
+        landing page, workbench, comparison pipeline, hosted GPU inference path — was designed, implemented, and shipped
+        as an independent project. See the <a href="https://github.com/manrajmondair/stimli">project repository</a> for
+        source and reproduction notes.
       </p>
       <p style={{ marginTop: 48 }}>
         <a className="btn cream" href="/">
@@ -2894,16 +3166,25 @@ export function LegalPage() {
 }
 
 export function InvitePage({ token }: { token: string }) {
+  const clerk = useClerk();
   const { isLoaded: clerkLoaded, isSignedIn } = useUser();
   const [invite, setInvite] = useState<TeamInvite | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const invitePath = `/invite/${encodeURIComponent(token)}`;
 
   useEffect(() => {
+    setInviteLoading(true);
+    setError(null);
     getInvite(token)
       .then(setInvite)
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load invite."));
+      .catch((err) => {
+        setInvite(null);
+        setError(err instanceof Error ? err.message : "Could not load invite.");
+      })
+      .finally(() => setInviteLoading(false));
   }, [token]);
 
   useEffect(() => {
@@ -2927,6 +3208,15 @@ export function InvitePage({ token }: { token: string }) {
     }
   }
 
+  function signInToAccept() {
+    if (clerk?.openSignIn) {
+      clerk.openSignIn({ forceRedirectUrl: invitePath });
+      return;
+    }
+    window.location.assign(invitePath);
+  }
+  const checkingSignedInSession = Boolean(clerkLoaded && isSignedIn && !session);
+
   return (
     <div className="invite-page paper-bg">
       <a className="brand" href="/" style={{ marginBottom: 24 }}>
@@ -2934,8 +3224,16 @@ export function InvitePage({ token }: { token: string }) {
         <span className="brand-word">stimli</span>
       </a>
       {error ? <div className="banner error">{error}</div> : null}
-      {!invite ? (
+      {inviteLoading ? (
         <p>Loading invite…</p>
+      ) : !invite ? (
+        <div className="panel-card" style={{ padding: 32 }}>
+          <h1 style={{ marginTop: 0 }}>Invite unavailable</h1>
+          <p>This invite may have expired, been revoked, or already been accepted.</p>
+          <a className="btn cream" href="/">
+            Back home
+          </a>
+        </div>
       ) : (
         <div className="panel-card" style={{ padding: 32 }}>
           <span className="kicker">team invite</span>
@@ -2949,15 +3247,19 @@ export function InvitePage({ token }: { token: string }) {
               </>
             ) : null}
           </p>
-          {session?.authenticated ? (
+          {checkingSignedInSession ? (
+            <button className="btn primary" disabled>
+              Checking account…
+            </button>
+          ) : session?.authenticated ? (
             <button className="btn primary" onClick={accept} disabled={busy}>
               Accept invite as {session.user?.email}
             </button>
           ) : (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <a className="btn primary" href={`/app?invite=${encodeURIComponent(token)}`}>
+              <button type="button" className="btn primary" onClick={signInToAccept}>
                 Sign in to accept
-              </a>
+              </button>
               <a className="btn cream" href="/">
                 Cancel
               </a>

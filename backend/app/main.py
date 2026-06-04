@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import shutil
+import math
+import os
 from pathlib import Path
+from typing import Any, cast
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import CreativeAnalyzer, build_challenger_text
 from app.brain import provider_health
-from app.extractor import extract_landing_page_text
+from app.extractor import BlockedLandingPageURL, extract_landing_page_text, normalize_public_url
 from app.models import (
     Asset,
     AssetType,
@@ -21,6 +23,7 @@ from app.models import (
     LearningSummary,
     Outcome,
     OutcomeCreate,
+    PublicAsset,
     Report,
 )
 from app.storage import UPLOAD_DIR, Store, new_id, now_iso
@@ -38,6 +41,10 @@ app.add_middleware(
 store = Store()
 analyzer = CreativeAnalyzer()
 
+DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+DEFAULT_MAX_SCRIPT_TEXT_BYTES = 1 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -50,27 +57,49 @@ def brain_providers() -> list[BrainProviderHealth]:
 
 
 @app.post("/assets", response_model=AssetUploadResponse)
-async def create_asset(
-    asset_type: AssetType = Form(...),
-    name: str | None = Form(None),
-    text: str | None = Form(None),
-    url: str | None = Form(None),
-    duration_seconds: float | None = Form(None),
-    file: UploadFile | None = File(None),
+async def create_asset(request: Request) -> AssetUploadResponse:
+    fields, file = await _parse_asset_request(request)
+    asset_type = _asset_type_from_field(fields.get("asset_type") or fields.get("assetType"))
+    return _create_asset_from_inputs(
+        asset_type=asset_type,
+        name=_string_field(fields.get("name")) or None,
+        text=_string_field(fields.get("text")) or None,
+        url=_string_field(fields.get("url")) or None,
+        duration_seconds=fields.get("duration_seconds") or fields.get("durationSeconds"),
+        file=file,
+    )
+
+
+def _create_asset_from_inputs(
+    *,
+    asset_type: AssetType,
+    name: str | None,
+    text: str | None,
+    url: str | None,
+    duration_seconds: Any,
+    file: UploadFile | None,
 ) -> AssetUploadResponse:
     asset_id = new_id("asset")
     file_path = None
-    extracted_text = text or ""
-    final_name = name or url or (file.filename if file else None) or "Untitled asset"
+    extracted_text = (text or "").strip()
+    source_url = _normalize_source_url(url, asset_type)
+    duration = _optional_non_negative_number(duration_seconds, "duration_seconds")
+    final_name = name or source_url or (file.filename if file else None) or "Untitled asset"
 
     if file:
         safe_name = Path(file.filename or f"{asset_id}.bin").name
         destination = UPLOAD_DIR / f"{asset_id}_{safe_name}"
-        with destination.open("wb") as handle:
-            shutil.copyfileobj(file.file, handle)
-        file_path = str(destination)
-        if asset_type == "script" and not extracted_text:
-            extracted_text = destination.read_text(errors="ignore")
+        try:
+            _write_upload_with_limit(file, destination, _positive_env_int("STIMLI_MAX_DIRECT_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES))
+            file_path = str(destination)
+            if asset_type == "script" and not extracted_text:
+                extracted_text = _read_text_file_with_limit(
+                    destination,
+                    _positive_env_int("STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES", DEFAULT_MAX_SCRIPT_TEXT_BYTES),
+                )
+        except HTTPException:
+            destination.unlink(missing_ok=True)
+            raise
 
     if asset_type == "landing_page" and url and not extracted_text:
         extracted_text, extraction_metadata = extract_landing_page_text(url)
@@ -84,10 +113,10 @@ async def create_asset(
         id=asset_id,
         type=asset_type,
         name=final_name,
-        source_url=url,
+        source_url=source_url,
         file_path=file_path,
         extracted_text=extracted_text.strip(),
-        duration_seconds=duration_seconds,
+        duration_seconds=duration,
         metadata={"original_filename": file.filename if file else None, **extraction_metadata},
         created_at=now_iso(),
     )
@@ -95,15 +124,27 @@ async def create_asset(
     return AssetUploadResponse(asset=asset)
 
 
-@app.get("/assets", response_model=list[Asset])
+@app.get("/assets", response_model=list[PublicAsset])
 def list_assets() -> list[Asset]:
     return store.list_assets()
 
 
+@app.delete("/assets/{asset_id}")
+def delete_asset(asset_id: str) -> dict[str, str]:
+    asset = store.delete_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    _cleanup_uploaded_file(asset.file_path)
+    return {"deleted": asset_id}
+
+
 @app.post("/comparisons", response_model=Comparison)
 def create_comparison(payload: ComparisonCreate) -> Comparison:
+    asset_ids = list(dict.fromkeys(payload.asset_ids))
+    if len(asset_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least two distinct asset_ids are required.")
     assets = []
-    for asset_id in payload.asset_ids:
+    for asset_id in asset_ids:
         asset = store.get_asset(asset_id)
         if asset is None:
             raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
@@ -234,15 +275,20 @@ def create_outcome(comparison_id: str, payload: OutcomeCreate) -> Outcome:
     variant_ids = {variant.asset.id for variant in comparison.variants}
     if payload.asset_id not in variant_ids:
         raise HTTPException(status_code=400, detail="Outcome asset must belong to the comparison.")
+    spend = _non_negative_number(payload.spend, "spend")
+    impressions = _non_negative_int(payload.impressions, "impressions")
+    clicks = _non_negative_int(payload.clicks, "clicks")
+    conversions = _non_negative_int(payload.conversions, "conversions")
+    revenue = _non_negative_number(payload.revenue, "revenue")
     outcome = Outcome(
         id=new_id("outcome"),
         comparison_id=comparison_id,
         asset_id=payload.asset_id,
-        spend=payload.spend,
-        impressions=payload.impressions,
-        clicks=payload.clicks,
-        conversions=payload.conversions,
-        revenue=payload.revenue,
+        spend=spend,
+        impressions=impressions,
+        clicks=clicks,
+        conversions=conversions,
+        revenue=revenue,
         notes=payload.notes,
         created_at=now_iso(),
     )
@@ -260,8 +306,9 @@ def learning_summary() -> LearningSummary:
     return _learning_summary(store.list_outcomes())
 
 
-@app.post("/demo/seed", response_model=list[Asset])
+@app.post("/demo/seed", response_model=list[PublicAsset])
 def seed_demo() -> list[Asset]:
+    store.clear_demo_assets()
     samples = [
         Asset(
             id=new_id("asset"),
@@ -312,6 +359,121 @@ def seed_demo() -> list[Asset]:
 def _text_from_filename(name: str) -> str:
     stem = Path(name).stem.replace("-", " ").replace("_", " ")
     return f"Creative asset named {stem}. Add transcript or visual notes for deeper scoring."
+
+
+async def _parse_asset_request(request: Request) -> tuple[dict[str, Any], UploadFile | None]:
+    content_type = request.headers.get("content-type", "").lower()
+    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        fields: dict[str, Any] = {}
+        file: UploadFile | None = None
+        for name, value in form.items():
+            if name == "file" and hasattr(value, "file") and hasattr(value, "filename"):
+                file = cast(UploadFile, value)
+            else:
+                fields[name] = value
+        return fields, file
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON payload must be an object.")
+    return payload, None
+
+
+def _asset_type_from_field(value: Any) -> AssetType:
+    raw = _string_field(value).strip().lower()
+    if raw not in {"script", "landing_page", "image", "audio", "video"}:
+        raise HTTPException(status_code=400, detail="asset_type must be script, landing_page, image, audio, or video.")
+    return cast(AssetType, raw)
+
+
+def _string_field(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return ""
+
+
+def _normalize_source_url(url: str | None, asset_type: AssetType) -> str | None:
+    if not url:
+        return None
+    try:
+        return normalize_public_url(url)
+    except (BlockedLandingPageURL, ValueError) as exc:
+        if asset_type == "landing_page":
+            return None
+        raise HTTPException(status_code=400, detail=f"url must be a public http(s) URL ({exc}).") from exc
+
+
+def _write_upload_with_limit(file: UploadFile, destination: Path, max_bytes: int) -> None:
+    total = 0
+    try:
+        with destination.open("wb") as handle:
+            while True:
+                chunk = file.file.read(UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=413, detail=f"Upload exceeds the {max_bytes} byte limit.")
+                handle.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def _read_text_file_with_limit(path: Path, max_bytes: int) -> str:
+    with path.open("rb") as handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Script upload exceeds the {max_bytes} byte text limit.")
+    return data.decode("utf-8", errors="ignore")
+
+
+def _cleanup_uploaded_file(file_path: str | None) -> None:
+    if not file_path:
+        return
+    try:
+        path = Path(file_path).resolve()
+        upload_root = UPLOAD_DIR.resolve()
+        if path.is_file() and path.is_relative_to(upload_root):
+            path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _positive_env_int(name: str, fallback: int) -> int:
+    try:
+        value = int(os.getenv(name, ""))
+    except ValueError:
+        return fallback
+    return value if value > 0 else fallback
+
+
+def _optional_non_negative_number(value: Any, label: str) -> float | None:
+    if value is None or value == "":
+        return None
+    return _non_negative_number(value, label)
+
+
+def _non_negative_number(value: Any, label: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise HTTPException(status_code=400, detail=f"{label} must be a non-negative number.")
+    return parsed
+
+
+def _non_negative_int(value: int, label: str) -> int:
+    parsed = _non_negative_number(float(value), label)
+    if not float(parsed).is_integer():
+        raise HTTPException(status_code=400, detail=f"{label} must be a whole number.")
+    return int(parsed)
 
 
 def _learning_summary(outcomes: list[Outcome]) -> LearningSummary:

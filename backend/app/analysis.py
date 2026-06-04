@@ -56,6 +56,8 @@ class CreativeAnalyzer:
         )
 
     def compare(self, comparison_id: str, objective: str, assets: list[Asset], created_at: str, brief: CreativeBrief | None = None) -> Comparison:
+        if len(assets) < 2:
+            raise ValueError("At least two assets are required to create a comparison.")
         brief = brief or CreativeBrief()
         analyses = [self.analyze(asset, brief) for asset in assets]
         ranked = sorted(zip(assets, analyses), key=lambda pair: pair[1].scores.overall, reverse=True)
@@ -207,9 +209,16 @@ def _recommendation(variants: list[VariantResult]) -> Recommendation:
 def _largest_advantage(best: VariantResult, other: VariantResult) -> str:
     best_scores = best.analysis.scores.model_dump()
     other_scores = other.analysis.scores.model_dump()
-    candidates = [(key, best_scores[key] - other_scores[key]) for key in best_scores if key != "overall"]
+    candidates = []
+    for key in best_scores:
+        if key == "overall":
+            continue
+        if key == "cognitive_load":
+            candidates.append((key, other_scores[key] - best_scores[key]))
+        else:
+            candidates.append((key, best_scores[key] - other_scores[key]))
     key, delta = max(candidates, key=lambda item: item[1])
-    label = key.replace("_", " ")
+    label = "lower cognitive load" if key == "cognitive_load" else key.replace("_", " ")
     if delta <= 0:
         return "The leader wins on balance rather than a single dominant signal."
     return f"Biggest edge is {label}, ahead by {round(delta, 1)} points."

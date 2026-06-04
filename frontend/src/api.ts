@@ -38,6 +38,8 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 const WORKSPACE_KEY = "stimli.workspace";
 const TEAM_WORKSPACE_KEY = "stimli.team_workspace";
+let volatileWorkspaceId: string | null = null;
+let volatileTeamWorkspaceId: string | null = null;
 
 // Minimal shape of Clerk's window-attached singleton. We only read .session
 // from it. The full type lives in @clerk/clerk-js, which we don't import here
@@ -56,8 +58,8 @@ async function getClerkToken(): Promise<string | null> {
 }
 
 async function workspaceHeaders(): Promise<HeadersInit> {
-  const headers: Record<string, string> = { "X-Stimli-Workspace": getWorkspaceId() };
   const token = await getClerkToken();
+  const headers: Record<string, string> = { "X-Stimli-Workspace": getWorkspaceId({ allowTeamWorkspace: Boolean(token) }) };
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
@@ -121,7 +123,7 @@ export async function createTextAsset(input: {
   form.append("name", input.name);
   if (input.text) form.append("text", input.text);
   if (input.url) form.append("url", input.url);
-  if (input.durationSeconds) form.append("duration_seconds", String(input.durationSeconds));
+  if (input.durationSeconds !== undefined) form.append("duration_seconds", String(input.durationSeconds));
   if (input.projectId) form.append("project_id", input.projectId);
   if (input.file) form.append("file", input.file);
   const response = await fetch(`${API_BASE}/assets`, {
@@ -587,21 +589,22 @@ function pickErrorString(value: unknown): string {
   return "";
 }
 
-function getWorkspaceId(): string {
+function getWorkspaceId({ allowTeamWorkspace = true }: { allowTeamWorkspace?: boolean } = {}): string {
   if (typeof window === "undefined") {
     return "public";
   }
-  const teamWorkspace = window.localStorage.getItem(TEAM_WORKSPACE_KEY);
+  const teamWorkspace = allowTeamWorkspace ? readLocalStorage(TEAM_WORKSPACE_KEY) || volatileTeamWorkspaceId : null;
   if (teamWorkspace) {
     return teamWorkspace;
   }
-  const existing = window.localStorage.getItem(WORKSPACE_KEY);
+  const existing = readLocalStorage(WORKSPACE_KEY) || volatileWorkspaceId;
   if (existing) {
     return existing;
   }
   const random = globalThis.crypto?.randomUUID?.().replace(/-/g, "") ?? `${Date.now()}${Math.random()}`.replace(/\D/g, "");
   const workspaceId = `ws_${random.slice(0, 32)}`;
-  window.localStorage.setItem(WORKSPACE_KEY, workspaceId);
+  volatileWorkspaceId = workspaceId;
+  writeLocalStorage(WORKSPACE_KEY, workspaceId);
   return workspaceId;
 }
 
@@ -609,10 +612,11 @@ function setAuthenticatedWorkspace(teamId: string | null) {
   if (typeof window === "undefined") {
     return;
   }
+  volatileTeamWorkspaceId = teamId;
   if (teamId) {
-    window.localStorage.setItem(TEAM_WORKSPACE_KEY, teamId);
+    writeLocalStorage(TEAM_WORKSPACE_KEY, teamId);
   } else {
-    window.localStorage.removeItem(TEAM_WORKSPACE_KEY);
+    removeLocalStorage(TEAM_WORKSPACE_KEY);
   }
 }
 
@@ -626,5 +630,29 @@ export function setActiveTeam(teamId: string | null) {
 
 export function activeTeamId(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TEAM_WORKSPACE_KEY);
+  return readLocalStorage(TEAM_WORKSPACE_KEY) || volatileTeamWorkspaceId;
+}
+
+function readLocalStorage(key: string): string | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* keep the in-memory fallback */
+  }
+}
+
+function removeLocalStorage(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* keep the in-memory fallback */
+  }
 }

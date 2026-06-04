@@ -29,6 +29,12 @@ import type {
 } from "./types";
 import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
 
+function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
+  return workspaceKey && workspaceKey !== "anonymous"
+    ? `${DEFAULT_BRAND_KEY}:${workspaceKey}`
+    : DEFAULT_BRAND_KEY;
+}
+
 type Step = "intake" | "inventory" | "analyzing" | "result";
 
 type DraftState = {
@@ -52,6 +58,22 @@ const COLOR_CYCLE = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(
 
 const FALLBACK_OBJECTIVE =
   "Pick the DTC creative most likely to earn attention, build memory, and convert.";
+
+function readLocalStorage(key: string): string | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function removeLocalStorage(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* storage can be unavailable in locked-down browsers */
+  }
+}
 
 // Maps the engine id stamped on each analysis to a human label so the UI is
 // honest about which brain actually produced a result — the hosted neural model
@@ -78,9 +100,11 @@ type WorkbenchProps = {
   onSurfaceLibrary?: () => void;
   remoteProvider: string | null;
   briefDefaults?: Partial<CreativeBrief>;
+  workspaceKey?: string;
+  workspaceReady?: boolean;
 };
 
-export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: WorkbenchProps) {
+export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, workspaceKey = "anonymous", workspaceReady = true }: WorkbenchProps) {
   const [step, setStep] = useState<Step>("inventory");
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -113,9 +137,8 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   const [pollNote, setPollNote] = useState<string | null>(null);
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
   const [outcomeFor, setOutcomeFor] = useState<string | null>(null);
-  const [defaultBrandId, setDefaultBrandId] = useState<string | null>(() =>
-    typeof window === "undefined" ? null : window.localStorage.getItem(DEFAULT_BRAND_KEY)
-  );
+  const defaultBrandStorageKeyValue = useMemo(() => defaultBrandStorageKey(workspaceKey), [workspaceKey]);
+  const [defaultBrandId, setDefaultBrandId] = useState<string | null>(() => readLocalStorage(defaultBrandStorageKeyValue));
   const [defaultBrandName, setDefaultBrandName] = useState<string | null>(null);
   const progressTimerRef = useRef<number | null>(null);
   // Monotonic token identifying the active poll loop. Cancel / continue-in-
@@ -126,9 +149,15 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   const toastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!workspaceReady) return;
     void refreshAssets();
     void refreshComparisons();
-  }, []);
+  }, [workspaceReady, workspaceKey]);
+
+  useEffect(() => {
+    setDefaultBrandId(readLocalStorage(defaultBrandStorageKeyValue));
+    setDefaultBrandName(null);
+  }, [defaultBrandStorageKeyValue]);
 
   // If the user has set a default brand profile from the Brands view, pre-fill
   // the brief so they don't have to retype it. The brand_profile_id is also
@@ -146,7 +175,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
         const match = profiles.find((profile) => profile.id === defaultBrandId);
         if (!match) {
           // Profile was deleted elsewhere — clear the stale localStorage entry.
-          window.localStorage.removeItem(DEFAULT_BRAND_KEY);
+          removeLocalStorage(defaultBrandStorageKeyValue);
           setDefaultBrandId(null);
           setDefaultBrandName(null);
           return;
@@ -165,10 +194,10 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     return () => {
       cancelled = true;
     };
-  }, [defaultBrandId]);
+  }, [defaultBrandId, defaultBrandStorageKeyValue]);
 
   function clearDefaultBrand() {
-    window.localStorage.removeItem(DEFAULT_BRAND_KEY);
+    removeLocalStorage(defaultBrandStorageKeyValue);
     setDefaultBrandId(null);
     setDefaultBrandName(null);
   }
@@ -297,7 +326,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
     setBusy(true);
     try {
       const duration = draft.durationSeconds ? Number(draft.durationSeconds) : undefined;
-      if (draft.file) setUploadProgress(0);
+      if (draft.file) setUploadProgress(-1);
       const asset = await createTextAsset({
         assetType: draft.type,
         name: draft.name.trim(),
@@ -314,7 +343,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
       flash({ kind: "success", message: `${asset.name} added.` });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not add variant.";
-      if (/auth|login|session/i.test(message)) onRequireAuth();
+      if (/auth|login|session|sign in/i.test(message)) onRequireAuth();
       flash({ kind: "error", message });
     } finally {
       setUploadProgress(null);
@@ -366,7 +395,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
       if (pollTokenRef.current !== token) return;
       const message = err instanceof Error ? err.message : "Could not run comparison.";
       finishProgressAnimation();
-      if (/auth|login|session/i.test(message)) onRequireAuth();
+      if (/auth|login|session|sign in/i.test(message)) onRequireAuth();
       flash({ kind: "error", message });
       setStep("inventory");
     } finally {
@@ -465,17 +494,34 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults }: Work
   }
 
   async function handleCancel() {
-    if (!comparison) return;
-    // Stop the poll loop first so it can't flip the view back to "result" if a
-    // late completion lands while the cancel request is in flight.
-    invalidatePoll();
-    finishProgressAnimation();
-    setStep("inventory");
+    if (!comparison) {
+      invalidatePoll();
+      finishProgressAnimation();
+      setBusy(false);
+      setComparison(null);
+      setPollNote(null);
+      setPollStartedAt(null);
+      setStep("inventory");
+      flash({ kind: "info", message: "Analysis cancelled." });
+      return;
+    }
+    const cancelledId = comparison.id;
     try {
       const cancelled = await cancelComparison(comparison.id);
+      // Stop the poll loop after the server has accepted cancellation so a
+      // failed cancel keeps the status poll alive and the user still has a
+      // working cancel/control surface.
+      invalidatePoll();
+      finishProgressAnimation();
       setComparison(cancelled);
+      setStep("inventory");
+      await refreshComparisons();
     } catch (err) {
+      const resumeToken = invalidatePoll();
+      setStep("analyzing");
+      setBusy(false);
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not cancel." });
+      void pollComparison(cancelledId, resumeToken);
     }
   }
 
@@ -840,6 +886,7 @@ function OutcomeModal({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [invalidField, setInvalidField] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -880,26 +927,24 @@ function OutcomeModal({
     return () => window.removeEventListener("keydown", handleKey);
   }, [busy, onClose]);
 
-  function num(value: string): number {
-    const cleaned = value.replace(/[,$\s]/g, "");
-    const parsed = Number(cleaned);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-  }
-
   async function submit() {
     if (!spend.trim() && !revenue.trim() && !impressions.trim() && !clicks.trim() && !conversions.trim()) {
       setError("Add at least one metric.");
+      setInvalidField(null);
+      return;
+    }
+    const metrics = validateOutcomeMetrics({ spend, revenue, impressions, clicks, conversions });
+    if (metrics.error) {
+      setError(metrics.error.message);
+      setInvalidField(metrics.error.field);
       return;
     }
     setBusy(true);
     setError(null);
+    setInvalidField(null);
     try {
       await onSubmit({
-        spend: num(spend),
-        revenue: num(revenue),
-        impressions: num(impressions),
-        clicks: num(clicks),
-        conversions: num(conversions),
+        ...metrics.values,
         notes: notes.trim() || "Logged from workbench"
       });
     } catch (err) {
@@ -933,30 +978,30 @@ function OutcomeModal({
         <div className="outcome-grid">
           <label className="field">
             <span>Spend (USD)</span>
-            <input value={spend} onChange={(e) => setSpend(e.target.value)} inputMode="decimal" placeholder="1500" />
+            <input value={spend} onChange={(e) => setSpend(e.target.value)} inputMode="decimal" placeholder="1500" aria-invalid={invalidField === "spend"} aria-describedby={invalidField === "spend" ? "outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Revenue (USD)</span>
-            <input value={revenue} onChange={(e) => setRevenue(e.target.value)} inputMode="decimal" placeholder="2400" />
+            <input value={revenue} onChange={(e) => setRevenue(e.target.value)} inputMode="decimal" placeholder="2400" aria-invalid={invalidField === "revenue"} aria-describedby={invalidField === "revenue" ? "outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Impressions</span>
-            <input value={impressions} onChange={(e) => setImpressions(e.target.value)} inputMode="numeric" placeholder="42000" />
+            <input value={impressions} onChange={(e) => setImpressions(e.target.value)} inputMode="numeric" placeholder="42000" aria-invalid={invalidField === "impressions"} aria-describedby={invalidField === "impressions" ? "outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Clicks</span>
-            <input value={clicks} onChange={(e) => setClicks(e.target.value)} inputMode="numeric" placeholder="980" />
+            <input value={clicks} onChange={(e) => setClicks(e.target.value)} inputMode="numeric" placeholder="980" aria-invalid={invalidField === "clicks"} aria-describedby={invalidField === "clicks" ? "outcome-error" : undefined} />
           </label>
           <label className="field">
             <span>Conversions</span>
-            <input value={conversions} onChange={(e) => setConversions(e.target.value)} inputMode="numeric" placeholder="38" />
+            <input value={conversions} onChange={(e) => setConversions(e.target.value)} inputMode="numeric" placeholder="38" aria-invalid={invalidField === "conversions"} aria-describedby={invalidField === "conversions" ? "outcome-error" : undefined} />
           </label>
         </div>
         <label className="field">
           <span>Notes (optional)</span>
           <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Channel, audience, dates…" />
         </label>
-        {error ? <div className="auth-error">{error}</div> : null}
+        {error ? <div className="auth-error" id="outcome-error">{error}</div> : null}
         <div className="form-actions" style={{ justifyContent: "flex-end" }}>
           <button className="btn ghost" onClick={onClose} disabled={busy}>
             Cancel
@@ -968,6 +1013,39 @@ function OutcomeModal({
       </div>
     </div>
   );
+}
+
+type OutcomeMetricField = "spend" | "revenue" | "impressions" | "clicks" | "conversions";
+
+function validateOutcomeMetrics(input: Record<OutcomeMetricField, string>): {
+  values: Record<OutcomeMetricField, number>;
+  error: { field: OutcomeMetricField; message: string } | null;
+} {
+  const values = {} as Record<OutcomeMetricField, number>;
+  const specs: Array<{ field: OutcomeMetricField; label: string; integer?: boolean }> = [
+    { field: "spend", label: "Spend" },
+    { field: "revenue", label: "Revenue" },
+    { field: "impressions", label: "Impressions", integer: true },
+    { field: "clicks", label: "Clicks", integer: true },
+    { field: "conversions", label: "Conversions", integer: true }
+  ];
+  for (const spec of specs) {
+    const raw = input[spec.field].trim();
+    if (!raw) {
+      values[spec.field] = 0;
+      continue;
+    }
+    const cleaned = raw.replace(/[,$\s]/g, "");
+    const parsed = Number(cleaned);
+    if (!cleaned || !Number.isFinite(parsed) || parsed < 0) {
+      return { values, error: { field: spec.field, message: `${spec.label} must be a non-negative number.` } };
+    }
+    if (spec.integer && !Number.isInteger(parsed)) {
+      return { values, error: { field: spec.field, message: `${spec.label} must be a whole number.` } };
+    }
+    values[spec.field] = parsed;
+  }
+  return { values, error: null };
 }
 
 function IntakePanel({
@@ -1071,7 +1149,9 @@ function IntakePanel({
                   accept={draft.type === "image" ? "image/*" : draft.type === "audio" ? "audio/*" : "video/*"}
                 />
                 {uploadProgress !== null ? (
-                  <span className="upload-progress">Uploading… {uploadProgress}%</span>
+                  <span className="upload-progress" role="status" aria-live="polite">
+                    Uploading…
+                  </span>
                 ) : null}
               </label>
             ) : null}
@@ -1160,9 +1240,15 @@ function IntakePanel({
           {brief.required_claims.map((claim) => (
             <span key={claim} className="claim-pill">
               {claim}
-              <em onClick={() => setBrief({ ...brief, required_claims: brief.required_claims.filter((x) => x !== claim) })}>
+              <button
+                type="button"
+                className="claim-remove"
+                onClick={() => setBrief({ ...brief, required_claims: brief.required_claims.filter((x) => x !== claim) })}
+                aria-label={`Remove required claim: ${claim}`}
+                title={`Remove ${claim}`}
+              >
                 ×
-              </em>
+              </button>
             </span>
           ))}
           <ClaimAdder
@@ -1178,9 +1264,15 @@ function IntakePanel({
           {brief.forbidden_terms.map((term) => (
             <span key={term} className="claim-pill forbid">
               {term}
-              <em onClick={() => setBrief({ ...brief, forbidden_terms: brief.forbidden_terms.filter((x) => x !== term) })}>
+              <button
+                type="button"
+                className="claim-remove"
+                onClick={() => setBrief({ ...brief, forbidden_terms: brief.forbidden_terms.filter((x) => x !== term) })}
+                aria-label={`Remove forbidden term: ${term}`}
+                title={`Remove ${term}`}
+              >
                 ×
-              </em>
+              </button>
             </span>
           ))}
           <ClaimAdder

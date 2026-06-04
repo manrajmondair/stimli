@@ -5,9 +5,9 @@
 // ${JSON.stringify(x)}::jsonb (the tagged-template helper doesn't expose a
 // .json() method). configureStore(env) is called once per request from the
 // Pages Function entry so the module-level connection picks up POSTGRES_URL.
-// ensureTables runs sequential CREATE IF NOT EXISTS statements (idempotent —
-// the HTTP transport doesn't support multi-statement transactions). When no
-// POSTGRES_URL is configured, the store falls back to globalThis-scoped
+// ensureTables batches idempotent bootstrap statements through Neon's HTTP
+// transport and records a schema version once heavier backfills have run. When
+// no POSTGRES_URL is configured, the store falls back to globalThis-scoped
 // in-memory maps so tests and dev sessions work offline.
 
 import { neon } from "@neondatabase/serverless";
@@ -38,6 +38,8 @@ const memoryStore = (globalThis.__stimliMemoryStore ??= {
 let _databaseUrl = "";
 let _sqlClient = null;
 let _initPromise = null;
+const STORE_SCHEMA_VERSION = "2026-06-04-production-bootstrap-v2";
+const STORE_INDEX_VERSION = "2026-06-04-production-indexes-v1";
 
 export function configureStore(env) {
   const url = env?.POSTGRES_URL || env?.DATABASE_URL || "";
@@ -257,66 +259,72 @@ export async function listOutcomes(comparisonId = null, workspaceId = "public") 
 export async function countUsageEvents({ kind, since, workspaceId = null, bucketKey = null }) {
   const sql = getSql();
   if (!sql) {
-    return [...memoryStore.usageEvents.values()].filter((event) => {
+    return [...memoryStore.usageEvents.values()].reduce((total, event) => {
       if (event.kind !== kind || event.created_at < since) {
-        return false;
+        return total;
       }
       if (workspaceId && event.workspace_id !== workspaceId) {
-        return false;
+        return total;
       }
       if (bucketKey && event.bucket_key !== bucketKey) {
-        return false;
+        return total;
       }
-      return true;
-    }).length;
+      return total + usageUnits(event);
+    }, 0);
   }
   await ensureTables(sql);
   if (workspaceId && bucketKey) {
     const rows = await sql`
-      select count(*)::int as count from stimli_usage_events
+      select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int as count
+      from stimli_usage_events
       where kind = ${kind} and created_at >= ${since} and workspace_id = ${workspaceId} and bucket_key = ${bucketKey}
     `;
     return rows[0]?.count || 0;
   }
   if (workspaceId) {
     const rows = await sql`
-      select count(*)::int as count from stimli_usage_events
+      select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int as count
+      from stimli_usage_events
       where kind = ${kind} and created_at >= ${since} and workspace_id = ${workspaceId}
     `;
     return rows[0]?.count || 0;
   }
   if (bucketKey) {
     const rows = await sql`
-      select count(*)::int as count from stimli_usage_events
+      select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int as count
+      from stimli_usage_events
       where kind = ${kind} and created_at >= ${since} and bucket_key = ${bucketKey}
     `;
     return rows[0]?.count || 0;
   }
   const rows = await sql`
-    select count(*)::int as count from stimli_usage_events
+    select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int as count
+    from stimli_usage_events
     where kind = ${kind} and created_at >= ${since}
   `;
   return rows[0]?.count || 0;
 }
 
 // Atomically records a usage event only if all provided limits still have
-// headroom. Closes the check-then-insert race in quota/rate-limit enforcement:
-// two concurrent requests can't both read "under limit" and both insert,
-// because the limit guards live in the INSERT ... SELECT ... WHERE and Postgres
-// evaluates them as part of the write. Returns true if recorded, false if a
-// limit blocked it. Disabled tiers should pass a huge limit so they never block.
+// headroom. The SQL path takes transaction-scoped advisory locks for the
+// workspace and client buckets before running the conditional INSERT, so
+// concurrent requests at the same quota boundary serialize. Returns true if
+// recorded, false if a limit blocked it. Disabled tiers should pass a huge
+// limit so they never block.
 export async function saveUsageEventConditional(event, limits) {
   const { workspaceId, bucketKey, monthlySince, monthlyLimit, hourlySince, hourlyLimit } = limits;
+  const units = usageUnits(event);
   const sql = getSql();
   if (!sql) {
     // Memory mode is single-threaded in tests, so count-then-insert is race-free.
     const countSince = (since, field, value) =>
-      [...memoryStore.usageEvents.values()].filter(
-        (e) => e.kind === event.kind && e.created_at >= since && e[field] === value
-      ).length;
-    if (countSince(monthlySince, "workspace_id", workspaceId) >= monthlyLimit) return false;
-    if (countSince(hourlySince, "workspace_id", workspaceId) >= hourlyLimit) return false;
-    if (countSince(hourlySince, "bucket_key", bucketKey) >= hourlyLimit) return false;
+      [...memoryStore.usageEvents.values()].reduce(
+        (total, e) => e.kind === event.kind && e.created_at >= since && e[field] === value ? total + usageUnits(e) : total,
+        0
+      );
+    if (countSince(monthlySince, "workspace_id", workspaceId) + units > monthlyLimit) return false;
+    if (countSince(hourlySince, "workspace_id", workspaceId) + units > hourlyLimit) return false;
+    if (countSince(hourlySince, "bucket_key", bucketKey) + units > hourlyLimit) return false;
     // Persist workspace_id/bucket_key on the stored row so later counts (quota
     // checks, /billing/usage) can filter on them — the SQL path sets these as
     // columns from the same limits.
@@ -324,15 +332,41 @@ export async function saveUsageEventConditional(event, limits) {
     return true;
   }
   await ensureTables(sql);
-  const rows = await sql`
+  const lockKeys = [
+    `stimli:usage:${event.kind}:workspace:${workspaceId}`,
+    `stimli:usage:${event.kind}:bucket:${bucketKey}`
+  ].filter(Boolean).sort();
+  const insertQuery = sql`
     insert into stimli_usage_events (id, workspace_id, bucket_key, kind, payload, created_at)
     select ${event.id}, ${workspaceId}, ${bucketKey}, ${event.kind}, ${JSON.stringify(event.payload || {})}::jsonb, ${event.created_at}
-    where (select count(*) from stimli_usage_events where workspace_id = ${workspaceId} and kind = ${event.kind} and created_at >= ${monthlySince}) < ${monthlyLimit}
-      and (select count(*) from stimli_usage_events where workspace_id = ${workspaceId} and kind = ${event.kind} and created_at >= ${hourlySince}) < ${hourlyLimit}
-      and (select count(*) from stimli_usage_events where bucket_key = ${bucketKey} and kind = ${event.kind} and created_at >= ${hourlySince}) < ${hourlyLimit}
+    where (
+        select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int
+        from stimli_usage_events
+        where workspace_id = ${workspaceId} and kind = ${event.kind} and created_at >= ${monthlySince}
+      ) + ${units} <= ${monthlyLimit}
+      and (
+        select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int
+        from stimli_usage_events
+        where workspace_id = ${workspaceId} and kind = ${event.kind} and created_at >= ${hourlySince}
+      ) + ${units} <= ${hourlyLimit}
+      and (
+        select coalesce(sum(case when payload ? 'units' and payload->>'units' ~ '^[0-9]+$' then greatest((payload->>'units')::int, 1) else 1 end), 0)::int
+        from stimli_usage_events
+        where bucket_key = ${bucketKey} and kind = ${event.kind} and created_at >= ${hourlySince}
+      ) + ${units} <= ${hourlyLimit}
     returning id
   `;
+  const results = await sql.transaction([
+    ...lockKeys.map((key) => sql`select pg_advisory_xact_lock(786271, hashtext(${key}))`),
+    insertQuery
+  ]);
+  const rows = results[results.length - 1] || [];
   return rows.length > 0;
+}
+
+function usageUnits(event) {
+  const units = Number(event?.payload?.units);
+  return Number.isFinite(units) && units > 0 ? Math.max(1, Math.floor(units)) : 1;
 }
 
 export async function saveUser(user) {
@@ -412,14 +446,38 @@ export async function rebindUserId(oldId, newId, patch = {}) {
   const existing = rows[0]?.payload;
   if (!existing) return null;
   const updated = { ...existing, ...patch, id: newId };
-  await sql`
+  await sql.transaction([
+    sql`select pg_advisory_xact_lock(786271, hashtext(${`stimli:user-rebind:${oldId}:${newId}`}))`,
+    sql`
     update stimli_users
     set id = ${newId},
         name = ${updated.name},
         payload = ${JSON.stringify(updated)}::jsonb
     where id = ${oldId}
-  `;
-  await sql`update stimli_team_members set user_id = ${newId} where user_id = ${oldId}`;
+    `,
+    sql`
+      update stimli_team_members old_member
+      set user_id = ${newId},
+          payload = payload || ${JSON.stringify({ user_id: newId })}::jsonb
+      where old_member.user_id = ${oldId}
+        and not exists (
+          select 1
+          from stimli_team_members current_member
+          where current_member.team_id = old_member.team_id
+            and current_member.user_id = ${newId}
+        )
+    `,
+    sql`
+      delete from stimli_team_members old_member
+      where old_member.user_id = ${oldId}
+        and exists (
+          select 1
+          from stimli_team_members current_member
+          where current_member.team_id = old_member.team_id
+            and current_member.user_id = ${newId}
+        )
+    `
+  ]);
   return updated;
 }
 
@@ -468,6 +526,56 @@ export async function saveTeamMember(member) {
   return member;
 }
 
+export async function ensureTeamWithOwner(team, member) {
+  const sql = getSql();
+  const key = `${member.team_id}:${member.user_id}`;
+  if (!sql) {
+    const existing = [...memoryStore.teamMembers.values()]
+      .filter((candidate) => candidate.user_id === member.user_id)
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))
+      .map((candidate) => memoryStore.teams.get(candidate.team_id))
+      .find(Boolean);
+    if (existing) return existing;
+    memoryStore.teams.set(team.id, team);
+    memoryStore.teamMembers.set(key, member);
+    return team;
+  }
+  await ensureTables(sql);
+  const mutation = sql`
+    with existing as (
+      select t.payload as team_payload
+      from stimli_team_members m
+      join stimli_teams t on t.id = m.team_id
+      where m.user_id = ${member.user_id}
+      order by m.created_at asc
+      limit 1
+    ),
+    inserted_team as (
+      insert into stimli_teams (id, name, payload, created_at)
+      select ${team.id}, ${team.name}, ${JSON.stringify(team)}::jsonb, ${team.created_at}
+      where not exists (select 1 from existing)
+      on conflict (id) do nothing
+      returning payload
+    ),
+    inserted_member as (
+      insert into stimli_team_members (team_id, user_id, role, payload, created_at)
+      select ${member.team_id}, ${member.user_id}, ${member.role}, ${JSON.stringify(member)}::jsonb, ${member.created_at}
+      where exists (select 1 from inserted_team)
+      on conflict (team_id, user_id) do nothing
+      returning payload
+    )
+    select
+      coalesce((select team_payload from existing limit 1), (select payload from inserted_team limit 1)) as team_payload,
+      (select count(*)::int from inserted_member) as inserted_member_count
+  `;
+  const results = await sql.transaction([
+    sql`select pg_advisory_xact_lock(786271, hashtext(${`stimli:personal-team:${member.user_id}`}))`,
+    mutation
+  ]);
+  const row = results[1]?.[0] || {};
+  return row.team_payload || (await listTeamsForUser(member.user_id))[0] || null;
+}
+
 export async function getTeamMember(teamId, userId) {
   const sql = getSql();
   const key = `${teamId}:${userId}`;
@@ -480,13 +588,58 @@ export async function getTeamMember(teamId, userId) {
 }
 
 export async function updateTeamMemberRole(teamId, userId, role) {
-  const member = await getTeamMember(teamId, userId);
-  if (!member) {
-    return null;
+  const updatedAt = new Date().toISOString();
+  const sql = getSql();
+  const key = `${teamId}:${userId}`;
+  if (!sql) {
+    const member = memoryStore.teamMembers.get(key) || null;
+    if (!member) {
+      return { member: null, blocked_last_owner: false };
+    }
+    if (role !== "owner" && member.role === "owner" && countTeamOwnersInMemory(teamId) <= 1) {
+      return { member, blocked_last_owner: true };
+    }
+    const updated = { ...member, role, updated_at: updatedAt };
+    memoryStore.teamMembers.set(key, updated);
+    return { member: updated, blocked_last_owner: false };
   }
-  const updated = { ...member, role, updated_at: new Date().toISOString() };
-  await saveTeamMember(updated);
-  return updated;
+  await ensureTables(sql);
+  const mutation = sql`
+    with target as (
+      select role from stimli_team_members where team_id = ${teamId} and user_id = ${userId}
+    ),
+    owner_count as (
+      select count(*)::int as count from stimli_team_members where team_id = ${teamId} and role = 'owner'
+    ),
+    updated as (
+      update stimli_team_members
+      set role = ${role},
+          payload = payload || ${JSON.stringify({ role, updated_at: updatedAt })}::jsonb
+      where team_id = ${teamId}
+        and user_id = ${userId}
+        and not (
+          ${role !== "owner"}
+          and exists (select 1 from target where role = 'owner')
+          and (select count from owner_count) <= 1
+        )
+      returning payload
+    )
+    select
+      (select count(*)::int from target) as target_count,
+      (
+        ${role !== "owner"}
+        and exists (select 1 from target where role = 'owner')
+        and (select count from owner_count) <= 1
+      ) as blocked_last_owner,
+      (select payload from updated limit 1) as member
+  `;
+  const results = await sql.transaction([teamSeatLockQuery(sql, teamId), mutation]);
+  const row = results[1]?.[0] || {};
+  return {
+    member: row.member || null,
+    blocked_last_owner: Boolean(row.blocked_last_owner),
+    found: Number(row.target_count || 0) > 0
+  };
 }
 
 export async function listTeamsForUser(userId) {
@@ -556,6 +709,98 @@ export async function saveTeamInvite(invite) {
   return invite;
 }
 
+export async function saveTeamInviteWithSeatLimit(invite, seats) {
+  const limit = Number(seats);
+  const hasLimit = Number.isFinite(limit) && limit > 0;
+  const safeLimit = hasLimit ? limit : 0;
+  const now = new Date().toISOString();
+  const email = String(invite.email || "").toLowerCase();
+  const sql = getSql();
+  if (!sql) {
+    const alreadyMember = [...memoryStore.teamMembers.values()].some((member) => {
+      const user = memoryStore.users.get(member.user_id);
+      return member.team_id === invite.team_id && String(user?.email || "").toLowerCase() === email;
+    });
+    if (alreadyMember) {
+      return { ok: false, existing_member: true, used: countTeamSeatsInMemory(invite.team_id, now) };
+    }
+    const duplicateInvite = [...memoryStore.teamInvites.values()].some((candidate) => (
+      candidate.team_id === invite.team_id
+      && String(candidate.email || "").toLowerCase() === email
+      && candidate.expires_at > now
+      && !candidate.accepted_at
+    ));
+    if (duplicateInvite) {
+      return { ok: false, duplicate_invite: true, used: countTeamSeatsInMemory(invite.team_id, now) };
+    }
+    const used = countTeamSeatsInMemory(invite.team_id, now);
+    if (hasLimit && used >= limit) {
+      return { ok: false, used };
+    }
+    memoryStore.teamInvites.set(invite.token_hash, invite);
+    return { ok: true, invite, used: used + 1 };
+  }
+  await ensureTables(sql);
+  const mutation = sql`
+    with existing_member as (
+      select 1
+      from stimli_team_members member
+      join stimli_users users on users.id = member.user_id
+      where member.team_id = ${invite.team_id}
+        and lower(users.email) = lower(${invite.email})
+      limit 1
+    ),
+    existing_invite as (
+      select 1
+      from stimli_team_invites
+      where team_id = ${invite.team_id}
+        and lower(email) = lower(${invite.email})
+        and expires_at > ${now}
+        and (payload->>'accepted_at') is null
+      limit 1
+    ),
+    seat_usage as (
+      select (
+        (select count(*)::int from stimli_team_members where team_id = ${invite.team_id})
+        +
+        (select count(*)::int from stimli_team_invites
+          where team_id = ${invite.team_id}
+            and expires_at > ${now}
+            and (payload->>'accepted_at') is null)
+      )::int as used
+    ),
+    inserted as (
+      insert into stimli_team_invites (token_hash, team_id, email, role, payload, expires_at, created_at)
+      select ${invite.token_hash}, ${invite.team_id}, ${invite.email}, ${invite.role}, ${JSON.stringify(invite)}::jsonb, ${invite.expires_at}, ${invite.created_at}
+      where not exists (select 1 from existing_member)
+        and not exists (select 1 from existing_invite)
+        and (${!hasLimit} or (select used from seat_usage) < ${safeLimit})
+      on conflict (token_hash) do nothing
+      returning payload
+    )
+    select
+      exists (select 1 from existing_member) as existing_member,
+      exists (select 1 from existing_invite) as duplicate_invite,
+      (select used from seat_usage) as used,
+      (select payload from inserted limit 1) as invite_payload
+  `;
+  const results = await sql.transaction([
+    teamSeatLockQuery(sql, invite.team_id),
+    mutation
+  ]);
+  const row = results[1]?.[0] || {};
+  const used = Number(row.used || 0);
+  if (!row.invite_payload) {
+    return {
+      ok: false,
+      used,
+      existing_member: Boolean(row.existing_member),
+      duplicate_invite: Boolean(row.duplicate_invite)
+    };
+  }
+  return { ok: true, invite: row.invite_payload || invite, used: used + 1 };
+}
+
 export async function getTeamInviteByTokenHash(tokenHash) {
   const sql = getSql();
   const now = new Date().toISOString();
@@ -623,19 +868,183 @@ export async function deleteTeamInvite(inviteId, teamId) {
   return rows.length > 0;
 }
 
+export async function acceptTeamInviteWithSeatLimit(invite, member, seats, acceptedAt = new Date().toISOString()) {
+  const limit = Number(seats);
+  const acceptedInvite = {
+    ...invite,
+    accepted_by: member.user_id,
+    accepted_at: acceptedAt
+  };
+  const sql = getSql();
+  const key = `${member.team_id}:${member.user_id}`;
+  if (!sql) {
+    const currentInvite = memoryStore.teamInvites.get(invite.token_hash) || null;
+    if (!currentInvite || currentInvite.accepted_at || currentInvite.expires_at <= acceptedAt) {
+      return { ok: false, used: countTeamMembersInMemory(member.team_id), invite_consumed: true };
+    }
+    const existing = memoryStore.teamMembers.get(key) || null;
+    if (!existing && Number.isFinite(limit) && limit > 0) {
+      const used = countTeamMembersInMemory(member.team_id);
+      if (used >= limit) {
+        return { ok: false, used };
+      }
+    }
+    const resolvedMember = existing || member;
+    if (!existing) {
+      memoryStore.teamMembers.set(key, member);
+    }
+    memoryStore.teamInvites.set(invite.token_hash, acceptedInvite);
+    return {
+      ok: true,
+      member: resolvedMember,
+      invite: acceptedInvite,
+      created_member: !existing
+    };
+  }
+  if (!Number.isFinite(limit) || limit <= 0) {
+    const current = await getTeamInviteByTokenHash(invite.token_hash);
+    if (!current) {
+      return { ok: false, used: null, invite_consumed: true };
+    }
+    const existing = await getTeamMember(member.team_id, member.user_id);
+    const resolvedMember = existing || await saveTeamMember(member);
+    await saveTeamInvite(acceptedInvite);
+    return { ok: true, member: resolvedMember, invite: acceptedInvite, created_member: !existing };
+  }
+  await ensureTables(sql);
+  const acceptQuery = sql`
+    with eligible as (
+      select payload
+      from stimli_team_invites
+      where token_hash = ${invite.token_hash}
+        and expires_at > ${acceptedAt}
+        and (payload->>'accepted_at') is null
+      for update
+    ),
+    existing as (
+      select payload
+      from stimli_team_members
+      where team_id = ${member.team_id} and user_id = ${member.user_id}
+        and exists (select 1 from eligible)
+    ),
+    inserted as (
+      insert into stimli_team_members (team_id, user_id, role, payload, created_at)
+      select ${member.team_id}, ${member.user_id}, ${member.role}, ${JSON.stringify(member)}::jsonb, ${member.created_at}
+      where exists (select 1 from eligible)
+        and not exists (select 1 from existing)
+        and (select count(*) from stimli_team_members where team_id = ${member.team_id}) < ${limit}
+      on conflict (team_id, user_id) do nothing
+      returning payload
+    ),
+    resolved as (
+      select payload, false as created_member from existing
+      union all
+      select payload, true as created_member from inserted
+    ),
+    accepted as (
+      update stimli_team_invites
+      set payload = ${JSON.stringify(acceptedInvite)}::jsonb
+      where token_hash = ${invite.token_hash}
+        and exists (select 1 from resolved)
+      returning payload
+    )
+    select
+      (select count(*) from eligible)::int as eligible_count,
+      (select count(*) from resolved)::int as resolved_count,
+      (select count(*) from inserted)::int as inserted_count,
+      (select payload from resolved limit 1) as member_payload,
+      (select payload from accepted limit 1) as invite_payload,
+      (select count(*)::int from stimli_team_members where team_id = ${member.team_id}) as used
+  `;
+  const results = await sql.transaction([
+    teamSeatLockQuery(sql, member.team_id),
+    acceptQuery
+  ]);
+  const row = results[1]?.[0] || {};
+  if (!Number(row.eligible_count || 0)) {
+    return { ok: false, used: Number(row.used || 0), invite_consumed: true };
+  }
+  if (!Number(row.resolved_count || 0)) {
+    return { ok: false, used: Number(row.used || limit) };
+  }
+  return {
+    ok: true,
+    member: row.member_payload || member,
+    invite: row.invite_payload || acceptedInvite,
+    created_member: Number(row.inserted_count || 0) > 0
+  };
+}
+
 export async function deleteTeamMember(teamId, userId) {
   const sql = getSql();
   const key = `${teamId}:${userId}`;
   if (!sql) {
-    if (!memoryStore.teamMembers.has(key)) return false;
+    const member = memoryStore.teamMembers.get(key) || null;
+    if (!member) return { removed: false, member: null, blocked_last_owner: false };
+    if (member.role === "owner" && countTeamOwnersInMemory(teamId) <= 1) {
+      return { removed: false, member, blocked_last_owner: true };
+    }
     memoryStore.teamMembers.delete(key);
-    return true;
+    return { removed: true, member, blocked_last_owner: false };
   }
   await ensureTables(sql);
-  const rows = await sql`
-    delete from stimli_team_members where team_id = ${teamId} and user_id = ${userId} returning user_id
+  const mutation = sql`
+    with target as (
+      select role, payload from stimli_team_members where team_id = ${teamId} and user_id = ${userId}
+    ),
+    owner_count as (
+      select count(*)::int as count from stimli_team_members where team_id = ${teamId} and role = 'owner'
+    ),
+    deleted as (
+      delete from stimli_team_members
+      where team_id = ${teamId}
+        and user_id = ${userId}
+        and not (
+          exists (select 1 from target where role = 'owner')
+          and (select count from owner_count) <= 1
+        )
+      returning payload
+    )
+    select
+      (select count(*)::int from target) as target_count,
+      (
+        exists (select 1 from target where role = 'owner')
+        and (select count from owner_count) <= 1
+      ) as blocked_last_owner,
+      (select payload from target limit 1) as target_member,
+      (select payload from deleted limit 1) as deleted_member
   `;
-  return rows.length > 0;
+  const results = await sql.transaction([teamSeatLockQuery(sql, teamId), mutation]);
+  const row = results[1]?.[0] || {};
+  return {
+    removed: Boolean(row.deleted_member),
+    member: row.deleted_member || row.target_member || null,
+    blocked_last_owner: Boolean(row.blocked_last_owner),
+    found: Number(row.target_count || 0) > 0
+  };
+}
+
+function countTeamMembersInMemory(teamId) {
+  return [...memoryStore.teamMembers.values()].filter((member) => member.team_id === teamId).length;
+}
+
+function countTeamOwnersInMemory(teamId) {
+  return [...memoryStore.teamMembers.values()].filter(
+    (member) => member.team_id === teamId && member.role === "owner"
+  ).length;
+}
+
+function countTeamSeatsInMemory(teamId, nowIsoValue) {
+  const pendingInvites = [...memoryStore.teamInvites.values()].filter((invite) => {
+    if (invite.team_id !== teamId || invite.accepted_at) return false;
+    const expiresAt = Date.parse(invite.expires_at || "");
+    return !Number.isFinite(expiresAt) || invite.expires_at > nowIsoValue;
+  }).length;
+  return countTeamMembersInMemory(teamId) + pendingInvites;
+}
+
+function teamSeatLockQuery(sql, teamId) {
+  return sql`select pg_advisory_xact_lock(786272, hashtext(${`stimli:team-seats:${teamId}`}))`;
 }
 
 export async function saveAuthenticator(authenticator) {
@@ -763,29 +1172,35 @@ export async function deleteSessionByHash(tokenHash) {
 
 export async function saveShareLink(link) {
   const sql = getSql();
+  const tokenHash = link.token_hash || (link.token ? await sha256Hex(link.token) : "");
+  if (!tokenHash) {
+    throw new Error("Share link token hash is required.");
+  }
+  const payload = { ...link, token_hash: tokenHash };
+  delete payload.token;
   if (!sql) {
-    memoryStore.shareLinks.set(link.token, link);
-    return link;
+    memoryStore.shareLinks.set(tokenHash, payload);
+    return payload;
   }
   await ensureTables(sql);
   await sql`
     insert into stimli_share_links (token, workspace_id, comparison_id, payload, expires_at, created_at)
-    values (${link.token}, ${link.workspace_id}, ${link.comparison_id}, ${JSON.stringify(link)}::jsonb, ${link.expires_at}, ${link.created_at})
+    values (${tokenHash}, ${link.workspace_id}, ${link.comparison_id}, ${JSON.stringify(payload)}::jsonb, ${link.expires_at}, ${link.created_at})
     on conflict (token) do update
     set payload = excluded.payload,
         expires_at = excluded.expires_at
   `;
-  return link;
+  return payload;
 }
 
-export async function getShareLink(token) {
+export async function getShareLink(tokenHash) {
   const sql = getSql();
   if (!sql) {
-    const link = memoryStore.shareLinks.get(token) || null;
+    const link = memoryStore.shareLinks.get(tokenHash) || null;
     return link && link.expires_at > new Date().toISOString() ? link : null;
   }
   await ensureTables(sql);
-  const rows = await sql`select payload from stimli_share_links where token = ${token} and expires_at > ${new Date().toISOString()} limit 1`;
+  const rows = await sql`select payload from stimli_share_links where token = ${tokenHash} and expires_at > ${new Date().toISOString()} limit 1`;
   return rows[0]?.payload || null;
 }
 
@@ -828,18 +1243,23 @@ export async function saveBrandProfile(profile) {
   const sql = getSql();
   const workspaceId = workspaceForPayload(profile);
   if (!sql) {
+    const existing = memoryStore.brandProfiles.get(profile.id);
+    if (existing && workspaceForPayload(existing) !== workspaceId) {
+      return null;
+    }
     memoryStore.brandProfiles.set(profile.id, profile);
     return profile;
   }
   await ensureTables(sql);
-  await sql`
+  const rows = await sql`
     insert into stimli_brand_profiles (id, workspace_id, payload, created_at)
     values (${profile.id}, ${workspaceId}, ${JSON.stringify(profile)}::jsonb, ${profile.created_at})
     on conflict (id) do update
-    set workspace_id = excluded.workspace_id,
-        payload = excluded.payload
+    set payload = excluded.payload
+    where stimli_brand_profiles.workspace_id = excluded.workspace_id
+    returning payload
   `;
-  return profile;
+  return rows[0]?.payload || null;
 }
 
 export async function listBrandProfiles(workspaceId = "public") {
@@ -966,43 +1386,94 @@ export async function listIntegrationJobs(workspaceId = "public") {
 // team blob on every webhook.
 export async function saveSubscription(subscription) {
   const sql = getSql();
+  const eventCreated = Number(subscription.last_stripe_event_created);
+  const hasEventCreated = Number.isFinite(eventCreated);
   if (!sql) {
+    const existing = memoryStore.subscriptions.get(subscription.team_id) || null;
+    const existingEventCreated = Number(existing?.last_stripe_event_created);
+    if (hasEventCreated && Number.isFinite(existingEventCreated) && eventCreated <= existingEventCreated) {
+      return existing ? { ...existing, last_stripe_write_ignored: true } : existing;
+    }
     memoryStore.subscriptions.set(subscription.team_id, subscription);
     return subscription;
   }
   await ensureTables(sql);
-  await sql`
-    insert into stimli_subscriptions (
-      team_id, stripe_subscription_id, stripe_customer_id, plan, status,
-      current_period_start, current_period_end, cancel_at_period_end, trial_end,
-      payload, created_at, updated_at
-    ) values (
-      ${subscription.team_id},
-      ${subscription.stripe_subscription_id || ""},
-      ${subscription.stripe_customer_id || ""},
-      ${subscription.plan},
-      ${subscription.status},
-      ${subscription.current_period_start || null},
-      ${subscription.current_period_end || null},
-      ${subscription.cancel_at_period_end ? 1 : 0},
-      ${subscription.trial_end || null},
-      ${JSON.stringify(subscription)}::jsonb,
-      ${subscription.created_at},
-      ${subscription.updated_at || subscription.created_at}
-    )
-    on conflict (team_id) do update
-    set stripe_subscription_id = excluded.stripe_subscription_id,
-        stripe_customer_id = excluded.stripe_customer_id,
-        plan = excluded.plan,
-        status = excluded.status,
-        current_period_start = excluded.current_period_start,
-        current_period_end = excluded.current_period_end,
-        cancel_at_period_end = excluded.cancel_at_period_end,
-        trial_end = excluded.trial_end,
-        payload = excluded.payload,
-        updated_at = excluded.updated_at
-  `;
-  return subscription;
+  const rows = hasEventCreated
+    ? await sql`
+      insert into stimli_subscriptions (
+        team_id, stripe_subscription_id, stripe_customer_id, plan, status,
+        current_period_start, current_period_end, cancel_at_period_end, trial_end,
+        payload, created_at, updated_at
+      ) values (
+        ${subscription.team_id},
+        ${subscription.stripe_subscription_id || ""},
+        ${subscription.stripe_customer_id || ""},
+        ${subscription.plan},
+        ${subscription.status},
+        ${subscription.current_period_start || null},
+        ${subscription.current_period_end || null},
+        ${subscription.cancel_at_period_end ? 1 : 0},
+        ${subscription.trial_end || null},
+        ${JSON.stringify(subscription)}::jsonb,
+        ${subscription.created_at},
+        ${subscription.updated_at || subscription.created_at}
+      )
+      on conflict (team_id) do update
+      set stripe_subscription_id = excluded.stripe_subscription_id,
+          stripe_customer_id = excluded.stripe_customer_id,
+          plan = excluded.plan,
+          status = excluded.status,
+          current_period_start = excluded.current_period_start,
+          current_period_end = excluded.current_period_end,
+          cancel_at_period_end = excluded.cancel_at_period_end,
+          trial_end = excluded.trial_end,
+          payload = excluded.payload,
+          updated_at = excluded.updated_at
+      where coalesce(
+        case
+          when (stimli_subscriptions.payload->>'last_stripe_event_created') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            then (stimli_subscriptions.payload->>'last_stripe_event_created')::double precision
+          else -1
+        end,
+        -1
+      ) < ${eventCreated}
+      returning payload
+    `
+    : await sql`
+      insert into stimli_subscriptions (
+        team_id, stripe_subscription_id, stripe_customer_id, plan, status,
+        current_period_start, current_period_end, cancel_at_period_end, trial_end,
+        payload, created_at, updated_at
+      ) values (
+        ${subscription.team_id},
+        ${subscription.stripe_subscription_id || ""},
+        ${subscription.stripe_customer_id || ""},
+        ${subscription.plan},
+        ${subscription.status},
+        ${subscription.current_period_start || null},
+        ${subscription.current_period_end || null},
+        ${subscription.cancel_at_period_end ? 1 : 0},
+        ${subscription.trial_end || null},
+        ${JSON.stringify(subscription)}::jsonb,
+        ${subscription.created_at},
+        ${subscription.updated_at || subscription.created_at}
+      )
+      on conflict (team_id) do update
+      set stripe_subscription_id = excluded.stripe_subscription_id,
+          stripe_customer_id = excluded.stripe_customer_id,
+          plan = excluded.plan,
+          status = excluded.status,
+          current_period_start = excluded.current_period_start,
+          current_period_end = excluded.current_period_end,
+          cancel_at_period_end = excluded.cancel_at_period_end,
+          trial_end = excluded.trial_end,
+          payload = excluded.payload,
+          updated_at = excluded.updated_at
+      returning payload
+    `;
+  if (rows[0]?.payload) return rows[0].payload;
+  const existing = await getSubscription(subscription.team_id);
+  return existing ? { ...existing, last_stripe_write_ignored: true } : existing;
 }
 
 export async function getSubscription(teamId) {
@@ -1113,14 +1584,50 @@ export async function listBillingEvents(teamId, limit = 50) {
 
 async function ensureTables(sql) {
   if (_initPromise) return _initPromise;
-  // Neon's HTTP transport does ONE network round-trip per query, so issuing
-  // ~40 sequential CREATE statements on a cold isolate added 6-10s of latency
-  // to the first request that touched the store — enough, stacked with the
-  // analysis work, to blow past the Cloudflare Pages Functions request budget
-  // and surface as a generic 500. sql.transaction([...]) batches every
-  // statement into a single round-trip. DDL is transactional in Postgres and
-  // each statement is IF NOT EXISTS, so this stays idempotent and atomic.
-  _initPromise = sql.transaction([
+  _initPromise = (async () => {
+    await sql`create table if not exists stimli_schema_migrations (version text primary key, applied_at text not null)`;
+    const applied = await sql`select version from stimli_schema_migrations where version = ${STORE_SCHEMA_VERSION} limit 1`;
+    if (applied.length === 0) {
+      // Neon's HTTP transport does ONE network round-trip per query. Batch the
+      // table/bootstrap/backfill work into a single transaction and mark it in
+      // a ledger so future cold isolates only do tiny migration-table checks.
+      await sql.transaction([
+        sql`select pg_advisory_xact_lock(786271, hashtext(${`stimli:schema:${STORE_SCHEMA_VERSION}`}))`,
+        ...schemaBootstrapQueries(sql),
+        ...schemaBackfillQueries(sql),
+        sql`
+          insert into stimli_schema_migrations (version, applied_at)
+          values (${STORE_SCHEMA_VERSION}, ${new Date().toISOString()})
+          on conflict (version) do update set applied_at = excluded.applied_at
+        `
+      ]);
+    }
+
+    const indexesApplied = await sql`select version from stimli_schema_migrations where version = ${STORE_INDEX_VERSION} limit 1`;
+    if (indexesApplied.length > 0) return;
+    for (const query of schemaIndexQueries(sql)) {
+      await query;
+    }
+    await sql`
+      insert into stimli_schema_migrations (version, applied_at)
+      values (${STORE_INDEX_VERSION}, ${new Date().toISOString()})
+      on conflict (version) do update set applied_at = excluded.applied_at
+    `;
+  })();
+  try {
+    return await _initPromise;
+  } catch (error) {
+    // Never cache a rejected init promise. A single transient Neon error during
+    // the first call would otherwise poison every subsequent store operation in
+    // this isolate (they'd all await the same rejected promise). Reset so the
+    // next request retries the initialization from scratch.
+    _initPromise = null;
+    throw error;
+  }
+}
+
+function schemaBootstrapQueries(sql) {
+  return [
     sql`create table if not exists stimli_assets (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
     sql`create table if not exists stimli_projects (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
     sql`create table if not exists stimli_comparisons (id text primary key, workspace_id text not null default 'public', payload jsonb not null, created_at text not null)`,
@@ -1141,38 +1648,85 @@ async function ensureTables(sql) {
     sql`create table if not exists stimli_integration_jobs (id text primary key, workspace_id text not null default 'public', platform text not null, payload jsonb not null, created_at text not null)`,
     sql`create table if not exists stimli_subscriptions (team_id text primary key, stripe_subscription_id text not null default '', stripe_customer_id text not null default '', plan text not null, status text not null, current_period_start text, current_period_end text, cancel_at_period_end smallint not null default 0, trial_end text, payload jsonb not null, created_at text not null, updated_at text not null)`,
     sql`create table if not exists stimli_billing_events (id text primary key, type text not null, team_id text not null default '', payload jsonb not null, created_at text not null)`,
-    sql`create index if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_projects_workspace_idx on stimli_projects (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_outcomes_workspace_idx on stimli_outcomes (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`,
-    sql`create index if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`,
-    sql`create index if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`,
-    sql`create index if not exists stimli_team_members_user_idx on stimli_team_members (user_id, created_at asc)`,
-    sql`create index if not exists stimli_team_invites_team_idx on stimli_team_invites (team_id, created_at desc)`,
-    sql`create index if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`,
-    sql`create index if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`,
-    sql`create index if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`,
-    sql`create index if not exists stimli_share_links_comparison_idx on stimli_share_links (comparison_id, created_at desc)`,
-    sql`create index if not exists stimli_audit_events_workspace_idx on stimli_audit_events (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_brand_profiles_workspace_idx on stimli_brand_profiles (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_governance_requests_workspace_idx on stimli_governance_requests (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_benchmark_runs_workspace_idx on stimli_benchmark_runs (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_integration_jobs_workspace_idx on stimli_integration_jobs (workspace_id, created_at desc)`,
-    sql`create index if not exists stimli_subscriptions_stripe_idx on stimli_subscriptions (stripe_subscription_id)`,
-    sql`create index if not exists stimli_subscriptions_customer_idx on stimli_subscriptions (stripe_customer_id)`,
-    sql`create index if not exists stimli_billing_events_team_idx on stimli_billing_events (team_id, created_at desc)`
-  ]);
-  try {
-    return await _initPromise;
-  } catch (error) {
-    // Never cache a rejected init promise. A single transient Neon error during
-    // the first call would otherwise poison every subsequent store operation in
-    // this isolate (they'd all await the same rejected promise). Reset so the
-    // next request retries the initialization from scratch.
-    _initPromise = null;
-    throw error;
-  }
+    // CREATE TABLE IF NOT EXISTS does not migrate already-created Neon tables.
+    // Keep these ALTERs idempotent so production databases from earlier
+    // releases pick up the columns this branch reads/writes before indexes or
+    // inserts touch them.
+    sql`alter table stimli_assets add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_projects add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_comparisons add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_outcomes add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_outcomes add column if not exists comparison_id text not null default ''`,
+    sql`alter table stimli_outcomes add column if not exists asset_id text not null default ''`,
+    sql`alter table stimli_usage_events add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_usage_events add column if not exists bucket_key text not null default ''`,
+    sql`alter table stimli_team_invites add column if not exists email text not null default ''`,
+    sql`alter table stimli_sessions add column if not exists team_id text not null default ''`,
+    sql`alter table stimli_share_links add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_share_links add column if not exists comparison_id text not null default ''`,
+    sql`alter table stimli_audit_events add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_audit_events add column if not exists actor_id text not null default ''`,
+    sql`alter table stimli_audit_events add column if not exists target_type text not null default ''`,
+    sql`alter table stimli_audit_events add column if not exists target_id text not null default ''`,
+    sql`alter table stimli_brand_profiles add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_governance_requests add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_benchmark_runs add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_integration_jobs add column if not exists workspace_id text not null default 'public'`,
+    sql`alter table stimli_subscriptions add column if not exists stripe_subscription_id text not null default ''`,
+    sql`alter table stimli_subscriptions add column if not exists stripe_customer_id text not null default ''`,
+    sql`alter table stimli_subscriptions add column if not exists current_period_start text`,
+    sql`alter table stimli_subscriptions add column if not exists current_period_end text`,
+    sql`alter table stimli_subscriptions add column if not exists cancel_at_period_end smallint not null default 0`,
+    sql`alter table stimli_subscriptions add column if not exists trial_end text`,
+    sql`alter table stimli_subscriptions add column if not exists updated_at text not null default ''`,
+    sql`alter table stimli_billing_events add column if not exists team_id text not null default ''`
+  ];
+}
+
+function schemaBackfillQueries(sql) {
+  return [
+    sql`update stimli_assets set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_projects set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_comparisons set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_outcomes set workspace_id = coalesce(nullif(payload->>'workspace_id', ''), workspace_id), comparison_id = coalesce(nullif(payload->>'comparison_id', ''), comparison_id), asset_id = coalesce(nullif(payload->>'asset_id', ''), asset_id) where (payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id') or (payload ? 'comparison_id' and payload->>'comparison_id' <> '' and comparison_id is distinct from payload->>'comparison_id') or (payload ? 'asset_id' and payload->>'asset_id' <> '' and asset_id is distinct from payload->>'asset_id')`,
+    sql`update stimli_usage_events set workspace_id = coalesce(nullif(payload->>'workspace_id', ''), workspace_id), bucket_key = coalesce(nullif(payload->>'bucket_key', ''), bucket_key) where (payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id') or (payload ? 'bucket_key' and payload->>'bucket_key' <> '' and bucket_key is distinct from payload->>'bucket_key')`,
+    sql`update stimli_team_invites set email = payload->>'email' where payload ? 'email' and payload->>'email' <> '' and email is distinct from payload->>'email'`,
+    sql`update stimli_sessions set team_id = payload->>'team_id' where payload ? 'team_id' and payload->>'team_id' <> '' and team_id is distinct from payload->>'team_id'`,
+    sql`update stimli_share_links set workspace_id = coalesce(nullif(payload->>'workspace_id', ''), workspace_id), comparison_id = coalesce(nullif(payload->>'comparison_id', ''), comparison_id) where (payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id') or (payload ? 'comparison_id' and payload->>'comparison_id' <> '' and comparison_id is distinct from payload->>'comparison_id')`,
+    sql`update stimli_audit_events set workspace_id = coalesce(nullif(payload->>'workspace_id', ''), workspace_id), actor_id = coalesce(nullif(payload->>'actor_id', ''), actor_id), target_type = coalesce(nullif(payload->>'target_type', ''), target_type), target_id = coalesce(nullif(payload->>'target_id', ''), target_id) where (payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id') or (payload ? 'actor_id' and payload->>'actor_id' <> '' and actor_id is distinct from payload->>'actor_id') or (payload ? 'target_type' and payload->>'target_type' <> '' and target_type is distinct from payload->>'target_type') or (payload ? 'target_id' and payload->>'target_id' <> '' and target_id is distinct from payload->>'target_id')`,
+    sql`update stimli_brand_profiles set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_governance_requests set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_benchmark_runs set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_integration_jobs set workspace_id = payload->>'workspace_id' where payload ? 'workspace_id' and payload->>'workspace_id' <> '' and workspace_id is distinct from payload->>'workspace_id'`,
+    sql`update stimli_subscriptions set stripe_subscription_id = coalesce(nullif(payload->>'stripe_subscription_id', ''), stripe_subscription_id), stripe_customer_id = coalesce(nullif(payload->>'stripe_customer_id', ''), stripe_customer_id), current_period_start = coalesce(nullif(payload->>'current_period_start', ''), current_period_start), current_period_end = coalesce(nullif(payload->>'current_period_end', ''), current_period_end), cancel_at_period_end = case when payload ? 'cancel_at_period_end' then case when lower(payload->>'cancel_at_period_end') in ('true', 't', '1', 'yes') then 1 when lower(payload->>'cancel_at_period_end') in ('false', 'f', '0', 'no') then 0 else cancel_at_period_end end else cancel_at_period_end end, trial_end = coalesce(nullif(payload->>'trial_end', ''), trial_end), updated_at = coalesce(nullif(payload->>'updated_at', ''), nullif(updated_at, ''), created_at, '') where payload ?| array['stripe_subscription_id', 'stripe_customer_id', 'current_period_start', 'current_period_end', 'cancel_at_period_end', 'trial_end', 'updated_at']`,
+    sql`update stimli_billing_events set team_id = payload->>'team_id' where payload ? 'team_id' and payload->>'team_id' <> '' and team_id is distinct from payload->>'team_id'`
+  ];
+}
+
+function schemaIndexQueries(sql) {
+  return [
+    sql`create index concurrently if not exists stimli_assets_workspace_idx on stimli_assets (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_projects_workspace_idx on stimli_projects (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_comparisons_workspace_idx on stimli_comparisons (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_outcomes_workspace_idx on stimli_outcomes (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_outcomes_comparison_idx on stimli_outcomes (comparison_id)`,
+    sql`create index concurrently if not exists stimli_usage_workspace_idx on stimli_usage_events (workspace_id, kind, created_at desc)`,
+    sql`create index concurrently if not exists stimli_usage_bucket_idx on stimli_usage_events (bucket_key, kind, created_at desc)`,
+    sql`create index concurrently if not exists stimli_team_members_user_idx on stimli_team_members (user_id, created_at asc)`,
+    sql`create index concurrently if not exists stimli_team_invites_team_idx on stimli_team_invites (team_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_authenticators_user_idx on stimli_authenticators (user_id, created_at asc)`,
+    sql`create index concurrently if not exists stimli_auth_challenges_email_idx on stimli_auth_challenges (email, type, created_at desc)`,
+    sql`create index concurrently if not exists stimli_sessions_user_idx on stimli_sessions (user_id, expires_at desc)`,
+    sql`create index concurrently if not exists stimli_share_links_comparison_idx on stimli_share_links (comparison_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_audit_events_workspace_idx on stimli_audit_events (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_brand_profiles_workspace_idx on stimli_brand_profiles (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_governance_requests_workspace_idx on stimli_governance_requests (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_benchmark_runs_workspace_idx on stimli_benchmark_runs (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_integration_jobs_workspace_idx on stimli_integration_jobs (workspace_id, created_at desc)`,
+    sql`create index concurrently if not exists stimli_subscriptions_stripe_idx on stimli_subscriptions (stripe_subscription_id)`,
+    sql`create index concurrently if not exists stimli_subscriptions_customer_idx on stimli_subscriptions (stripe_customer_id)`,
+    sql`create index concurrently if not exists stimli_billing_events_team_idx on stimli_billing_events (team_id, created_at desc)`
+  ];
 }
 
 function workspaceForPayload(payload) {
@@ -1181,4 +1735,9 @@ function workspaceForPayload(payload) {
 
 function descCreatedAt(a, b) {
   return String(b.created_at).localeCompare(String(a.created_at));
+}
+
+async function sha256Hex(value) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
+  return [...new Uint8Array(buf)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

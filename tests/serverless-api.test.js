@@ -11,18 +11,25 @@
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { onRequest } from "../functions/api/[[path]].js";
 import { nowIso, resetRemoteBrainHealth } from "../functions/api/_lib/analysis.js";
 import {
   configureStore,
+  countUsageEvents,
+  ensureTeamWithOwner,
+  getSubscription,
+  getTeam,
   getTeamMember,
   getUser,
   getUserByEmail,
+  listTeamsForUser,
   rebindUserId,
   saveTeam,
   saveTeamMember,
+  saveSubscription,
   saveUser
 } from "../functions/api/_lib/store.js";
 
@@ -45,15 +52,131 @@ test("serves health from the Pages API", async () => {
   assert.equal(response.json.status, "ok");
 });
 
+test("API responses include baseline security headers", async () => {
+  const response = await call("GET", "/api/health");
+
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(response.headers["x-content-type-options"], "nosniff");
+  assert.equal(response.headers["referrer-policy"], "strict-origin-when-cross-origin");
+  assert.equal(response.headers["x-frame-options"], "DENY");
+  assert.equal(response.headers["permissions-policy"], "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+});
+
+test("health reports degraded when production persistence is missing", async () => {
+  withEnv({ STIMLI_TEST_MODE: undefined, STIMLI_ALLOW_MEMORY_STORE: undefined });
+  try {
+    const response = await call("GET", "/api/health");
+
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json.status, "degraded");
+    assert.equal(response.json.storage.mode, "memory");
+  } finally {
+    withEnv({ STIMLI_TEST_MODE: "1" });
+  }
+});
+
+test("production memory mode fails closed for non-health data routes", async () => {
+  withEnv({ STIMLI_TEST_MODE: undefined, STIMLI_ALLOW_MEMORY_STORE: undefined });
+  try {
+    const response = await call("GET", "/api/projects", null, {
+      "x-stimli-workspace": `ws_no_db_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`
+    });
+
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json.code, "persistence_unavailable");
+    assert.equal(response.json.storage.mode, "memory");
+  } finally {
+    withEnv({ STIMLI_TEST_MODE: "1" });
+  }
+});
+
+test("postgres bootstrap migrates columns used by current production code", () => {
+  const source = readFileSync(new URL("../functions/api/_lib/store.js", import.meta.url), "utf8");
+  const requiredFragments = [
+    "alter table stimli_assets add column if not exists workspace_id",
+    "alter table stimli_outcomes add column if not exists comparison_id",
+    "alter table stimli_usage_events add column if not exists bucket_key",
+    "alter table stimli_team_invites add column if not exists email",
+    "alter table stimli_sessions add column if not exists team_id",
+    "alter table stimli_share_links add column if not exists comparison_id",
+    "alter table stimli_audit_events add column if not exists actor_id",
+    "alter table stimli_subscriptions add column if not exists stripe_subscription_id",
+    "alter table stimli_subscriptions add column if not exists updated_at",
+    "alter table stimli_billing_events add column if not exists team_id",
+    "update stimli_subscriptions set stripe_subscription_id",
+    "lower(payload->>'cancel_at_period_end') in ('true', 't', '1', 'yes')",
+    "stimli_schema_migrations",
+    "STORE_SCHEMA_VERSION",
+    "STORE_INDEX_VERSION",
+    "schemaBackfillQueries(sql)",
+    "schemaIndexQueries(sql)",
+    "select version from stimli_schema_migrations where version = ${STORE_SCHEMA_VERSION}",
+    "select version from stimli_schema_migrations where version = ${STORE_INDEX_VERSION}",
+    "create index concurrently if not exists",
+    "stimli:user-rebind",
+    "delete from stimli_team_members old_member",
+    "~ '^-?[0-9]+(\\\\.[0-9]+)?$'",
+    "insert into stimli_schema_migrations (version, applied_at)"
+  ];
+
+  for (const fragment of requiredFragments) {
+    assert.ok(source.includes(fragment), `missing schema migration fragment: ${fragment}`);
+  }
+  assert.equal(source.includes("(payload->>'cancel_at_period_end')::boolean"), false);
+  assert.equal(source.includes("(payload->>'last_stripe_event_created')::double precision, -1"), false);
+  assert.ok(
+    source.indexOf("select version from stimli_schema_migrations") < source.indexOf("schemaBackfillQueries(sql)"),
+    "schema ledger should be checked before backfill queries are built into the bootstrap transaction"
+  );
+  const ensureTablesStart = source.indexOf("async function ensureTables");
+  const indexLedgerCheck = source.indexOf("const indexesApplied", ensureTablesStart);
+  const schemaTransaction = source.slice(source.indexOf("await sql.transaction([", ensureTablesStart), indexLedgerCheck);
+  assert.equal(
+    schemaTransaction.includes("schemaIndexQueries(sql)"),
+    false,
+    "index creation should run outside the request-time bootstrap transaction"
+  );
+});
+
+test("postgres invite acceptance only consumes an invite after seat resolution", () => {
+  const source = readFileSync(new URL("../functions/api/_lib/store.js", import.meta.url), "utf8");
+  const eligibleIdx = source.indexOf("with eligible as (");
+  const resolvedIdx = source.indexOf("resolved as (", eligibleIdx);
+  const acceptedIdx = source.indexOf("accepted as (", resolvedIdx);
+
+  assert.ok(eligibleIdx > -1, "missing eligible invite CTE");
+  assert.ok(resolvedIdx > eligibleIdx, "member resolution must follow invite eligibility");
+  assert.ok(acceptedIdx > resolvedIdx, "invite acceptance must happen after member resolution");
+  assert.equal(source.includes("with claimed as (\n      update stimli_team_invites"), false);
+});
+
 test("allows credentialed local CORS without opening arbitrary origins", async () => {
   const local = await call("OPTIONS", "/api/health", null, { origin: "http://localhost:5173" });
   assert.equal(local.statusCode, 204);
   assert.equal(local.headers["access-control-allow-origin"], "http://localhost:5173");
   assert.equal(local.headers["access-control-allow-credentials"], "true");
+  assert.match(local.headers["access-control-allow-headers"], /X-Stimli-Team/);
 
   const blocked = await call("OPTIONS", "/api/health", null, { origin: "https://example.invalid" });
   assert.equal(blocked.statusCode, 204);
   assert.equal(blocked.headers["access-control-allow-origin"], undefined);
+});
+
+test("rejects oversized JSON payloads before handler processing", async () => {
+  withEnv({ STIMLI_MAX_JSON_BYTES: "80" });
+  try {
+    const response = await call(
+      "POST",
+      "/api/projects",
+      { name: "Huge JSON", description: "x".repeat(200) },
+      { "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}` }
+    );
+
+    assert.equal(response.statusCode, 413);
+    assert.match(response.json.detail, /JSON payload exceeds/);
+  } finally {
+    withEnv({ STIMLI_MAX_JSON_BYTES: undefined });
+  }
 });
 
 test("rebindUserId migrates a legacy user row onto a new id and cascades memberships", async () => {
@@ -93,6 +216,28 @@ test("rebindUserId migrates a legacy user row onto a new id and cascades members
   assert.equal(member?.role, "owner");
   const orphan = await getTeamMember(team.id, legacyId);
   assert.equal(orphan, null);
+});
+
+test("ensureTeamWithOwner is idempotent for first-session personal teams", async () => {
+  const userId = `user_personal_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const createdAt = nowIso();
+  const firstTeamId = `team_personal_${crypto.randomUUID().slice(0, 8)}`;
+  const secondTeamId = `team_personal_${crypto.randomUUID().slice(0, 8)}`;
+  const first = await ensureTeamWithOwner(
+    { id: firstTeamId, name: "Personal One", created_at: createdAt },
+    { team_id: firstTeamId, user_id: userId, role: "owner", created_at: createdAt }
+  );
+  const second = await ensureTeamWithOwner(
+    { id: secondTeamId, name: "Personal Two", created_at: nowIso() },
+    { team_id: secondTeamId, user_id: userId, role: "owner", created_at: nowIso() }
+  );
+  const teams = await listTeamsForUser(userId);
+
+  assert.equal(second.id, first.id);
+  assert.equal(teams.length, 1);
+  assert.equal(teams[0].id, first.id);
+  const owner = await getTeamMember(first.id, userId);
+  assert.equal(owner.role, "owner");
 });
 
 test("returns an anonymous session without a Clerk JWT", async () => {
@@ -159,6 +304,100 @@ test("billing usage exposes both hourly and monthly buckets with a reset window"
   assert.equal(typeof response.json.monthly_usage.comparison, "number");
 });
 
+test("checkout redirects existing subscribers to the billing portal instead of creating duplicates", async () => {
+  const account = await testAccount("Existing Subscriber Team", "owner");
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: account.team.id,
+    stripe_subscription_id: `sub_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    stripe_customer_id: "cus_existing_subscriber",
+    plan: "growth",
+    status: "active",
+    current_period_start: createdAt,
+    current_period_end: createdAt,
+    cancel_at_period_end: false,
+    trial_end: null,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+  const calls = { customers: 0, checkout: 0, portal: 0, portalCustomer: "" };
+  globalThis.__stimliStripeClient = {
+    customers: {
+      create: async () => {
+        calls.customers += 1;
+        return { id: "cus_new" };
+      }
+    },
+    checkout: {
+      sessions: {
+        create: async () => {
+          calls.checkout += 1;
+          return { id: "cs_new", url: "https://checkout.test/new" };
+        }
+      }
+    },
+    billingPortal: {
+      sessions: {
+        create: async (payload) => {
+          calls.portal += 1;
+          calls.portalCustomer = payload.customer;
+          return { url: "https://billing.test/portal" };
+        }
+      }
+    }
+  };
+  withEnv({
+    STRIPE_SECRET_KEY: "sk_test_existing",
+    STRIPE_GROWTH_PRICE_ID: "price_growth",
+    STIMLI_APP_URL: "https://stimli.test"
+  });
+  try {
+    const response = await call("POST", "/api/billing/checkout", { plan: "growth" }, { cookie: account.cookie });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json.url, "https://billing.test/portal");
+    assert.equal(response.json.billing_portal, true);
+    assert.equal(response.json.existing_subscription.status, "active");
+    assert.equal(calls.checkout, 0);
+    assert.equal(calls.customers, 0);
+    assert.equal(calls.portal, 1);
+    assert.equal(calls.portalCustomer, "cus_existing_subscriber");
+    assert.equal((await getTeam(account.team.id)).stripe_customer_id, "cus_existing_subscriber");
+  } finally {
+    delete globalThis.__stimliStripeClient;
+    withEnv({
+      STRIPE_SECRET_KEY: undefined,
+      STRIPE_GROWTH_PRICE_ID: undefined,
+      STIMLI_APP_URL: "https://stimli.test"
+    });
+  }
+});
+
+test("inactive Stripe subscriptions do not grant paid quotas", async () => {
+  const { billingStatus, configureBilling, getQuotaForWorkspace } = await import("../functions/api/_lib/billing.js");
+  const account = await testAccount("Inactive Subscription Team", "owner");
+  configureBilling(testEnv);
+  await saveSubscription({
+    team_id: account.team.id,
+    stripe_subscription_id: `sub_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    stripe_customer_id: `cus_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    plan: "growth",
+    status: "incomplete",
+    current_period_start: "2026-06-01T00:00:00.000Z",
+    current_period_end: "2026-07-01T00:00:00.000Z",
+    cancel_at_period_end: false,
+    trial_end: null,
+    created_at: nowIso(),
+    updated_at: nowIso()
+  });
+
+  const status = await billingStatus(account.team);
+  const quota = await getQuotaForWorkspace(account.team.id);
+
+  assert.equal(status.subscription.status, "incomplete");
+  assert.equal(status.current_plan.id, "research");
+  assert.equal(quota.plan.id, "research");
+});
+
 test("returns a structured 402 with quota_exceeded when the monthly cap is reached", async () => {
   // Squeeze the monthly comparison quota down to 1 so a single comparison
   // exhausts it and the second one trips the 402 path. Keep the hourly limit
@@ -218,6 +457,106 @@ test("returns a structured 402 with quota_exceeded when the monthly cap is reach
   }
 });
 
+test("invalid comparison requests do not consume monthly quota", async () => {
+  withEnv({
+    STIMLI_RESEARCH_COMPARISON_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_COMPARISON_LIMIT_PER_HOUR: "100"
+  });
+  const account = await testAccount("Invalid Quota Team", "owner");
+  const headers = { cookie: account.cookie, "user-agent": "stimli-invalid-quota-test" };
+  try {
+    const assetA = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Invalid quota A", text: "Stop weak hooks before launch. Try the starter kit today." },
+      headers
+    );
+    const assetB = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Invalid quota B", text: "Upload creative and compare variants before spend." },
+      headers
+    );
+    assert.equal(assetA.statusCode, 200);
+    assert.equal(assetB.statusCode, 200);
+
+    const invalid = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [assetA.json.asset.id], objective: "Invalid should not burn quota." },
+      headers
+    );
+    assert.equal(invalid.statusCode, 400);
+
+    const valid = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [assetA.json.asset.id, assetB.json.asset.id], objective: "This should still have quota." },
+      headers
+    );
+    assert.equal(valid.statusCode, 200);
+  } finally {
+    withEnv({
+      STIMLI_RESEARCH_COMPARISON_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_COMPARISON_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
+test("rejects invalid numeric asset and outcome fields", async () => {
+  const workspace = `ws_numbers_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const invalidAsset = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      name: "Bad duration",
+      text: "Try the starter kit today.",
+      duration_seconds: "-5"
+    },
+    headers
+  );
+  assert.equal(invalidAsset.statusCode, 400);
+  assert.match(invalidAsset.json.detail, /duration_seconds must be a non-negative number/i);
+
+  const seeded = await call("POST", "/api/demo/seed", {}, headers);
+  assert.equal(seeded.statusCode, 200);
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    { objective: "numeric guard", asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id) },
+    headers
+  );
+  assert.equal(comparison.statusCode, 200);
+  const invalidOutcome = await call(
+    "POST",
+    `/api/comparisons/${comparison.json.id}/outcomes`,
+    { asset_id: comparison.json.recommendation.winner_asset_id, clicks: "12.5" },
+    headers
+  );
+  assert.equal(invalidOutcome.statusCode, 400);
+  assert.match(invalidOutcome.json.detail, /clicks must be a whole number/i);
+});
+
+test("normalizes scalar JSON asset fields without crashing on malformed string fields", async () => {
+  const response = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "SCRIPT",
+      name: { bad: "shape" },
+      text: 123,
+      duration_seconds: 0
+    },
+    { "x-stimli-workspace": `ws_asset_fields_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}` }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.asset.name, "Untitled asset");
+  assert.equal(response.json.asset.extracted_text, "123");
+});
+
 test("enforces plan seat limits when creating team invites", async () => {
   // Force Research down to a single seat so an owner alone fills the plan and
   // the first invite is blocked with a structured 402.
@@ -235,6 +574,78 @@ test("enforces plan seat limits when creating team invites", async () => {
     assert.equal(blocked.json.details.kind, "seat");
     assert.equal(blocked.json.details.limit, 1);
     assert.equal(blocked.json.details.plan, "research");
+  } finally {
+    withEnv({ STIMLI_RESEARCH_SEATS: undefined });
+  }
+});
+
+test("duplicate or already-member invites do not consume seats", async () => {
+  withEnv({ STIMLI_RESEARCH_SEATS: "3" });
+  const owner = await testAccount("Duplicate Invite Team", "owner");
+  try {
+    const existingMember = await call(
+      "POST",
+      "/api/teams/invites",
+      { email: owner.user.email, role: "analyst" },
+      { cookie: owner.cookie }
+    );
+    assert.equal(existingMember.statusCode, 409);
+    assert.match(existingMember.json.detail, /already belongs/i);
+
+    const first = await call(
+      "POST",
+      "/api/teams/invites",
+      { email: "duplicate-seat@example.com", role: "analyst" },
+      { cookie: owner.cookie }
+    );
+    assert.equal(first.statusCode, 200);
+
+    const duplicate = await call(
+      "POST",
+      "/api/teams/invites",
+      { email: "DUPLICATE-SEAT@example.com", role: "viewer" },
+      { cookie: owner.cookie }
+    );
+    assert.equal(duplicate.statusCode, 409);
+    assert.match(duplicate.json.detail, /active invite/i);
+
+    const secondRealInvite = await call(
+      "POST",
+      "/api/teams/invites",
+      { email: "real-seat@example.com", role: "viewer" },
+      { cookie: owner.cookie }
+    );
+    assert.equal(secondRealInvite.statusCode, 200);
+  } finally {
+    withEnv({ STIMLI_RESEARCH_SEATS: undefined });
+  }
+});
+
+test("requires invite email and re-checks seats when accepting stale invites", async () => {
+  withEnv({ STIMLI_RESEARCH_SEATS: "2" });
+  const owner = await testAccount("Stale Invite Team", "owner");
+  const invited = await testAccount("Stale Invite Default", "member");
+  try {
+    const missingEmail = await call("POST", "/api/teams/invites", { role: "analyst" }, { cookie: owner.cookie });
+    assert.equal(missingEmail.statusCode, 400);
+    assert.equal(missingEmail.json.detail, "Invite email is required.");
+
+    const invite = await call(
+      "POST",
+      "/api/teams/invites",
+      { email: invited.user.email, role: "analyst" },
+      { cookie: owner.cookie }
+    );
+    assert.equal(invite.statusCode, 200);
+
+    withEnv({ STIMLI_RESEARCH_SEATS: "1" });
+    const blockedAccept = await call("POST", `/api/invites/${invite.json.token}/accept`, null, { cookie: invited.cookie });
+    assert.equal(blockedAccept.statusCode, 402);
+    assert.equal(blockedAccept.json.code, "seat_limit_reached");
+    assert.equal(await getTeamMember(owner.team.id, invited.user.id), null);
+    const retryable = await call("GET", `/api/invites/${invite.json.token}`, null, { cookie: invited.cookie });
+    assert.equal(retryable.statusCode, 200);
+    assert.equal(retryable.json.accepted_at, null);
   } finally {
     withEnv({ STIMLI_RESEARCH_SEATS: undefined });
   }
@@ -321,6 +732,87 @@ test("releasing a billing event claim lets the same event be reprocessed", async
   assert.equal(await recordBillingEvent(event), true, "retry can reclaim and reprocess");
 });
 
+test("older Stripe subscription events cannot overwrite newer billing state", async () => {
+  const teamId = `team_stripe_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_ordering",
+    stripe_customer_id: "cus_ordering",
+    plan: "research",
+    status: "cancelled",
+    current_period_start: null,
+    current_period_end: null,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 200,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+
+  const stale = await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_ordering",
+    stripe_customer_id: "cus_ordering",
+    plan: "growth",
+    status: "active",
+    current_period_start: createdAt,
+    current_period_end: createdAt,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 100,
+    created_at: createdAt,
+    updated_at: nowIso()
+  });
+
+  assert.equal(stale.status, "cancelled");
+  assert.equal(stale.plan, "research");
+  const stored = await getSubscription(teamId);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.plan, "research");
+  assert.equal(stored.last_stripe_event_created, 200);
+});
+
+test("same-second Stripe subscription events cannot overwrite existing billing state", async () => {
+  const teamId = `team_stripe_same_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_same_second",
+    stripe_customer_id: "cus_same_second",
+    plan: "growth",
+    status: "active",
+    current_period_start: createdAt,
+    current_period_end: createdAt,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 300,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+
+  const stalePeer = await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_same_second",
+    stripe_customer_id: "cus_same_second",
+    plan: "research",
+    status: "cancelled",
+    current_period_start: null,
+    current_period_end: null,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 300,
+    created_at: createdAt,
+    updated_at: nowIso()
+  });
+
+  assert.equal(stalePeer.last_stripe_write_ignored, true);
+  const stored = await getSubscription(teamId);
+  assert.equal(stored.status, "active");
+  assert.equal(stored.plan, "growth");
+  assert.equal(stored.last_stripe_event_created, 300);
+});
+
 test("creates free team invite links and switches invited users into the team", async () => {
   const owner = await testAccount("Owner Team", "owner");
   const invited = await testAccount("Invited Default Team", "member");
@@ -347,6 +839,85 @@ test("creates free team invite links and switches invited users into the team", 
   assert.equal(accepted.json.teams.some((team) => team.id === owner.team.id), true);
   // Clerk owns the session cookie now; the API no longer issues its own.
   assert.equal((await getTeamMember(owner.team.id, invited.user.id)).role, "analyst");
+
+  const reused = await call("POST", `/api/invites/${invite.json.token}/accept`, null, { cookie: invited.cookie });
+  assert.equal(reused.statusCode, 404);
+});
+
+test("demo seed consumes asset quota for every seeded asset", async () => {
+  withEnv({
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "2",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const account = await testAccount("Demo Seed Quota Team", "owner");
+  const headers = { cookie: account.cookie, "user-agent": "stimli-demo-seed-quota-test" };
+  try {
+    const blocked = await call("POST", "/api/demo/seed", null, headers);
+    assert.equal(blocked.statusCode, 402);
+    assert.equal(blocked.json.code, "quota_exceeded");
+    assert.equal(blocked.json.details.kind, "asset");
+    assert.equal(blocked.json.details.limit, 2);
+    assert.equal(blocked.json.details.requested, 3);
+    assert.equal(await countUsageEvents({ kind: "asset", since: account.team.created_at, workspaceId: account.team.id }), 0);
+  } finally {
+    withEnv({
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
+test("Pages preview deployments generate links on the request origin", async () => {
+  withEnv({
+    STIMLI_APP_URL: "https://stimli.pages.dev",
+    STIMLI_ORIGIN: "https://stimli.pages.dev"
+  });
+  const owner = await testAccount("Preview Link Team", "owner");
+  try {
+    const request = new Request("https://branch-test.stimli.pages.dev/api/teams/invites", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-stimli-test-user": owner.user.id
+      },
+      body: JSON.stringify({ email: "preview-invite@example.com", role: "analyst" })
+    });
+    const response = await onRequest({ request, env: testEnv, params: {} });
+    const json = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.match(json.url, /^https:\/\/branch-test\.stimli\.pages\.dev\/invite\//);
+  } finally {
+    withEnv({
+      STIMLI_APP_URL: "https://stimli.test",
+      STIMLI_ORIGIN: "https://stimli.test"
+    });
+  }
+});
+
+test("admins cannot mint elevated invites or self-promote by accepting one", async () => {
+  const owner = await testAccount("Invite Escalation Team", "owner");
+  const admin = await testAccount("Invite Escalation Admin Home", "admin");
+  await saveTeamMember({ team_id: owner.team.id, user_id: admin.user.id, role: "admin", created_at: nowIso() });
+  const adminCookie = await sessionCookie(admin.user.id, owner.team.id);
+
+  const blocked = await call(
+    "POST",
+    "/api/teams/invites",
+    { email: admin.user.email, role: "owner" },
+    { cookie: adminCookie }
+  );
+  assert.equal(blocked.statusCode, 403);
+
+  const ownerInvite = await call(
+    "POST",
+    "/api/teams/invites",
+    { email: admin.user.email, role: "owner" },
+    { cookie: owner.cookie }
+  );
+  assert.equal(ownerInvite.statusCode, 409);
+  assert.match(ownerInvite.json.detail, /already belongs/i);
+  assert.equal((await getTeamMember(owner.team.id, admin.user.id)).role, "admin");
 });
 
 test("enforces granular team roles for workspace writes", async () => {
@@ -383,6 +954,16 @@ test("enforces granular team roles for workspace writes", async () => {
     { cookie: analystCookie }
   );
   assert.equal(allowed.statusCode, 200);
+});
+
+test("demo seed requires team write permission for authenticated team workspaces", async () => {
+  const owner = await testAccount("Demo Seed Role Team", "owner");
+  const viewer = await testAccount("Demo Seed Viewer Home", "viewer");
+  await saveTeamMember({ team_id: owner.team.id, user_id: viewer.user.id, role: "viewer", created_at: nowIso() });
+  const viewerCookie = await sessionCookie(viewer.user.id, owner.team.id);
+
+  const blocked = await call("POST", "/api/demo/seed", null, { cookie: viewerCookie });
+  assert.equal(blocked.statusCode, 403);
 });
 
 test("a multi-team member can act on a selected team and is scoped to it", async () => {
@@ -735,7 +1316,7 @@ test("public share link to a non-complete comparison returns 404, not a 409 stat
 
 test("creates public share links for completed reports", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
-  const headers = { "x-stimli-workspace": workspace, host: "stimli.test", "x-forwarded-proto": "https" };
+  const headers = { "x-stimli-workspace": workspace, host: "evil.example", "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" };
   const seeded = await call("POST", "/api/demo/seed", null, headers);
   const comparison = await call(
     "POST",
@@ -748,10 +1329,235 @@ test("creates public share links for completed reports", async () => {
   assert.match(share.json.url, /^https:\/\/stimli\.test\/share\//);
   assert.match(share.json.api_path, /^\/api\/share\//);
 
+  const { getShareLink } = await import("../functions/api/_lib/store.js");
+  assert.equal(await getShareLink(share.json.token), null, "raw share token must not be a storage key");
+  const stored = await getShareLink(sha256HexSync(share.json.token));
+  assert.equal(stored.comparison_id, comparison.json.id);
+  assert.equal(stored.token, undefined);
+
   const report = await call("GET", share.json.api_path);
   assert.equal(report.statusCode, 200);
   assert.equal(report.json.comparison_id, comparison.json.id);
   assert.equal(report.json.title, "Stimli Creative Decision Report");
+});
+
+test("landing page extraction blocks private URLs without fetching them", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    return jsonResponse({ should_not: "be called" });
+  };
+
+  try {
+    const created = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "landing_page",
+        name: "Internal dashboard",
+        url: "http://127.0.0.1:8788/admin"
+      },
+      { "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}` }
+    );
+
+    assert.equal(created.statusCode, 200);
+    assert.equal(fetchCalled, false);
+    assert.equal(created.json.asset.source_url, null);
+    assert.equal(created.json.asset.metadata.extraction_status, "blocked");
+    assert.match(created.json.asset.metadata.extraction_error, /private_or_local_host/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("landing page extraction validates redirects before following them", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push(String(url));
+    assert.equal(options.redirect, "manual");
+    return new Response("", {
+      status: 302,
+      headers: { location: "http://127.0.0.1/private" }
+    });
+  };
+
+  try {
+    const created = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "landing_page",
+        name: "Redirect trap",
+        url: "https://example.com/offer"
+      },
+      { "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}` }
+    );
+
+    assert.equal(created.statusCode, 200);
+    assert.deepEqual(calls, ["https://example.com/offer"]);
+    assert.equal(created.json.asset.metadata.extraction_status, "blocked");
+    assert.match(created.json.asset.metadata.extraction_error, /redirect_private_or_local_host/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("normalizes stored source URLs and rejects credentialed URLs", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, "user-agent": "stimli-url-normalization-test" };
+
+  const created = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      url: "example.com/ad?utm=one&token=private-token&api_key=secret#access-token",
+      text: "Stop weak hooks. Try the starter kit today."
+    },
+    headers
+  );
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.json.asset.source_url, "https://example.com/ad?utm=one");
+  assert.equal(JSON.stringify(created.json).includes("private-token"), false);
+  assert.equal(JSON.stringify(created.json).includes("api_key"), false);
+
+  const credentialedAsset = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      url: "https://user:secret@example.com/ad",
+      text: "This URL should not be accepted."
+    },
+    headers
+  );
+  assert.equal(credentialedAsset.statusCode, 400);
+  assert.match(credentialedAsset.json.detail, /credentials_not_allowed/);
+
+  const privateMappedAsset = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      url: "http://[::ffff:172.16.0.1]/ad",
+      text: "IPv6-mapped private addresses should be rejected."
+    },
+    headers
+  );
+  assert.equal(privateMappedAsset.statusCode, 400);
+  assert.match(privateMappedAsset.json.detail, /private_or_local_host/);
+
+  const publicMappedAsset = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      url: "https://[::ffff:8.8.8.8]/ad#token",
+      text: "IPv6-mapped public addresses should still normalize."
+    },
+    headers
+  );
+  assert.equal(publicMappedAsset.statusCode, 200);
+  assert.equal(publicMappedAsset.json.asset.source_url, "https://[::ffff:808:808]/ad");
+
+  const imported = await call(
+    "POST",
+    "/api/imports",
+    {
+      platform: "csv",
+      source: "url-normalization-test",
+      items: [
+        { asset_type: "script", url: "https://example.com/import?utm_source=csv&x-amz-signature=secret#private", text: "Compare variants before launch." },
+        { asset_type: "script", url: "https://user:secret@example.com/import", text: "Reject credentials.", duration_seconds: { secret: "duration-token" } }
+      ]
+    },
+    headers
+  );
+  assert.equal(imported.statusCode, 200);
+  assert.equal(imported.json.job.status, "partial");
+  assert.equal(imported.json.assets.length, 1);
+  assert.equal(imported.json.assets[0].source_url, "https://example.com/import?utm_source=csv");
+  assert.equal(JSON.stringify(imported.json.assets[0]).includes("x-amz-signature"), false);
+  assert.equal(imported.json.job.failed_items, 1);
+  assert.equal(imported.json.job.failures[0].item.url, null);
+  assert.equal(imported.json.job.failures[0].item.duration_seconds, null);
+  assert.match(imported.json.job.failures[0].error, /credentials_not_allowed/);
+  assert.equal(JSON.stringify(imported.json).includes("user:secret"), false);
+  assert.equal(JSON.stringify(imported.json).includes("duration-token"), false);
+
+  const jobs = await call("GET", "/api/imports", null, headers);
+  assert.equal(jobs.statusCode, 200);
+  const storedJob = jobs.json.find((job) => job.id === imported.json.job.id);
+  assert.ok(storedJob);
+  assert.equal(JSON.stringify(storedJob).includes("user:secret"), false);
+  assert.equal(JSON.stringify(storedJob).includes("duration-token"), false);
+});
+
+test("oversized direct uploads are rejected before persistence or quota consumption", async () => {
+  withEnv({
+    STIMLI_MAX_DIRECT_UPLOAD_BYTES: "4",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  try {
+    const form = new FormData();
+    form.append("asset_type", "script");
+    form.append("name", "Too big");
+    form.append("file", new Blob(["12345"], { type: "text/plain" }), "too-big.txt");
+    const request = new Request("http://stimli.test/api/assets", {
+      method: "POST",
+      headers: { "x-stimli-workspace": workspace, "user-agent": "stimli-upload-limit-test" },
+      body: form
+    });
+    const response = await onRequest({ request, env: testEnv, params: {} });
+    assert.equal(response.status, 413);
+
+    const listed = await call("GET", "/api/assets", null, { "x-stimli-workspace": workspace });
+    assert.equal(listed.json.length, 0);
+
+    const valid = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Still allowed", text: "Stop weak hooks. Try the kit today." },
+      { "x-stimli-workspace": workspace, "user-agent": "stimli-upload-limit-test" }
+    );
+    assert.equal(valid.statusCode, 200);
+  } finally {
+    withEnv({
+      STIMLI_MAX_DIRECT_UPLOAD_BYTES: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
+test("oversized multipart text fields are rejected before persistence", async () => {
+  withEnv({ STIMLI_MAX_FORM_FIELD_BYTES: "16" });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  try {
+    const form = new FormData();
+    form.append("asset_type", "script");
+    form.append("name", "Huge text");
+    form.append("text", "x".repeat(32));
+    const request = new Request("http://stimli.test/api/assets", {
+      method: "POST",
+      headers: { "x-stimli-workspace": workspace, "user-agent": "stimli-field-limit-test" },
+      body: form
+    });
+
+    const response = await onRequest({ request, env: testEnv, params: {} });
+    assert.equal(response.status, 413);
+    const payload = await response.json();
+    assert.match(payload.detail, /Form field 'text' exceeds/);
+
+    const listed = await call("GET", "/api/assets", null, { "x-stimli-workspace": workspace });
+    assert.equal(listed.json.length, 0);
+  } finally {
+    withEnv({ STIMLI_MAX_FORM_FIELD_BYTES: undefined });
+  }
 });
 
 test("organizes assets and comparisons by project", async () => {
@@ -1055,6 +1861,65 @@ test("async job that completes with no timeline degrades to the heuristic instea
   }
 });
 
+test("failed remote job diagnostics are redacted before persistence", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const jobs = new Map();
+  const fakeStripeKey = `sk_live_${"1234567890abcdef"}`;
+  let jobIndex = 0;
+
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `failed_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      return jsonResponse({
+        ...jobs.get(body.job_id),
+        status: "failed",
+        error:
+          `Failed callback https://user:pass@example.com/callback?token=abc&api_key=secret with ${fakeStripeKey}`
+      });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Audio A", text: "Stop wasting spend." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Audio B", text: "A modern solution." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Failed job secret redaction." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+
+    const failed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(failed.statusCode, 200);
+    assert.equal(failed.json.status, "failed");
+    assert.equal(JSON.stringify(failed.json).includes("user:pass"), false);
+    assert.equal(JSON.stringify(failed.json).includes("token=abc"), false);
+    assert.equal(JSON.stringify(failed.json).includes("api_key=secret"), false);
+    assert.equal(JSON.stringify(failed.json).includes(fakeStripeKey), false);
+    assert.match(failed.json.jobs[0].error, /https:\/\/\[redacted\]@example\.com/);
+    assert.match(failed.json.recommendation.reasons[0], /\[redacted\]/);
+
+    const listed = await call("GET", "/api/comparisons", null, headers);
+    const stored = listed.json.find((comparison) => comparison.id === created.json.id);
+    assert.ok(stored);
+    assert.equal(JSON.stringify(stored).includes(fakeStripeKey), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
 test("a flaky remote that answers some variants but not others normalizes to one engine", async () => {
   // Fairness: if the inline remote answers for one variant and times out for
   // another, the whole comparison must fall back to the heuristic so variants
@@ -1263,6 +2128,34 @@ test("rate limits comparison creation per workspace and client", async () => {
   }
 });
 
+test("rate limiting prefers Cloudflare client IP over spoofable forwarded headers", async () => {
+  withEnv({ STIMLI_COMPARISON_LIMIT_PER_HOUR: "1" });
+  const workspaceA = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const workspaceB = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const base = { "cf-connecting-ip": "203.0.113.77", "user-agent": "stimli-cf-rate-test" };
+  const headersA = { ...base, "x-stimli-workspace": workspaceA, "x-forwarded-for": "198.51.100.1" };
+  const headersB = { ...base, "x-stimli-workspace": workspaceB, "x-forwarded-for": "198.51.100.2" };
+
+  try {
+    const a1 = await call("POST", "/api/assets", { asset_type: "script", name: "A1", text: "Stop weak hooks. Try the kit today." }, headersA);
+    const a2 = await call("POST", "/api/assets", { asset_type: "script", name: "A2", text: "Compare variants before launch." }, headersA);
+    const b1 = await call("POST", "/api/assets", { asset_type: "script", name: "B1", text: "Stop weak hooks. Try the kit today." }, headersB);
+    const b2 = await call("POST", "/api/assets", { asset_type: "script", name: "B2", text: "Compare variants before launch." }, headersB);
+    assert.equal(a1.statusCode, 200);
+    assert.equal(a2.statusCode, 200);
+    assert.equal(b1.statusCode, 200);
+    assert.equal(b2.statusCode, 200);
+
+    const allowed = await call("POST", "/api/comparisons", { asset_ids: [a1.json.asset.id, a2.json.asset.id], objective: "First client comparison." }, headersA);
+    const blocked = await call("POST", "/api/comparisons", { asset_ids: [b1.json.asset.id, b2.json.asset.id], objective: "Same CF client should be blocked." }, headersB);
+
+    assert.equal(allowed.statusCode, 200);
+    assert.equal(blocked.statusCode, 429);
+  } finally {
+    withEnv({ STIMLI_COMPARISON_LIMIT_PER_HOUR: undefined });
+  }
+});
+
 test("uses hosted extraction for media assets before filename fallback", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
@@ -1392,6 +2285,41 @@ test("exposes enterprise controls for brands, governance, validation, imports, a
   assert.equal(audit.json.some((event) => event.action === "validation.benchmark_run"), true);
 });
 
+test("imports consume asset quota per imported asset", async () => {
+  withEnv({
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, "user-agent": "stimli-import-quota-test" };
+  try {
+    const imported = await call(
+      "POST",
+      "/api/imports",
+      {
+        platform: "csv",
+        source: "quota-test",
+        items: [
+          { asset_type: "script", name: "Import quota A", text: "Stop weak hooks. Try the starter kit today." },
+          { asset_type: "script", name: "Import quota B", text: "Compare variants before spend." }
+        ]
+      },
+      headers
+    );
+
+    assert.equal(imported.statusCode, 200);
+    assert.equal(imported.json.job.status, "partial");
+    assert.equal(imported.json.assets.length, 1);
+    assert.equal(imported.json.job.failed_items, 1);
+    assert.match(imported.json.job.failures[0].error, /Monthly asset quota reached/);
+  } finally {
+    withEnv({
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
 test("deletes an asset and removes it from the library listing", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
@@ -1414,6 +2342,38 @@ test("deletes an asset and removes it from the library listing", async () => {
 
   const notFound = await call("DELETE", `/api/assets/${created.json.asset.id}`, null, headers);
   assert.equal(notFound.statusCode, 404);
+});
+
+test("brand profile create ignores client ids and cannot steal another workspace profile", async () => {
+  const ownerA = await testAccount("Brand Workspace A", "owner");
+  const ownerB = await testAccount("Brand Workspace B", "owner");
+  const suppliedId = `brand_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+
+  const createdA = await call(
+    "POST",
+    "/api/brand-profiles",
+    { id: suppliedId, name: "Workspace A Brand", brief: { audience: "A buyers" } },
+    { cookie: ownerA.cookie }
+  );
+  assert.equal(createdA.statusCode, 200);
+  assert.notEqual(createdA.json.id, suppliedId);
+
+  const createdB = await call(
+    "POST",
+    "/api/brand-profiles",
+    { id: createdA.json.id, name: "Workspace B Brand", brief: { audience: "B buyers" } },
+    { cookie: ownerB.cookie }
+  );
+  assert.equal(createdB.statusCode, 200);
+  assert.notEqual(createdB.json.id, createdA.json.id);
+
+  const fetchedA = await call("GET", `/api/brand-profiles/${createdA.json.id}`, null, { cookie: ownerA.cookie });
+  assert.equal(fetchedA.statusCode, 200);
+  assert.equal(fetchedA.json.name, "Workspace A Brand");
+  assert.equal(fetchedA.json.workspace_id, ownerA.team.id);
+
+  const blockedCrossRead = await call("GET", `/api/brand-profiles/${createdA.json.id}`, null, { cookie: ownerB.cookie });
+  assert.equal(blockedCrossRead.statusCode, 404);
 });
 
 test("deletes a brand profile", async () => {
@@ -1754,6 +2714,10 @@ function safeJson(text) {
   } catch {
     return null;
   }
+}
+
+function sha256HexSync(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
 async function testAccount(teamName, role) {

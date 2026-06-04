@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { Workbench } from "../Workbench";
 import type { Comparison } from "../types";
 
@@ -68,6 +68,22 @@ describe("Workbench", () => {
     expect((await screen.findAllByText(/demo set/i)).length).toBeGreaterThan(0);
   });
 
+  it("renders keyboard-accessible controls for removing brief rules", async () => {
+    stubFetch([]);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    const demoBriefButtons = await screen.findAllByRole("button", { name: /load demo brief/i });
+    fireEvent.click(demoBriefButtons[0]);
+
+    const removeClaim = screen.getByRole("button", { name: /remove required claim: 24-hr hydration/i });
+    const removeTerm = screen.getByRole("button", { name: /remove forbidden term: miracle cure/i });
+    fireEvent.click(removeClaim);
+    fireEvent.click(removeTerm);
+
+    expect(screen.queryByText("24-hr hydration")).not.toBeInTheDocument();
+    expect(screen.queryByText("miracle cure")).not.toBeInTheDocument();
+  });
+
   it("shows a search box and filters the decision history once there are several", async () => {
     const comparisons = [
       makeComparison("cmp_1", "spring hero test", "Pain-led hook"),
@@ -130,5 +146,203 @@ describe("Workbench", () => {
     const compare = screen.getByRole("button", { name: /^Compare/i });
     fireEvent.click(compare);
     expect(await screen.findByText(/Ship Demo A/i)).toBeInTheDocument();
+  });
+
+  it("does not submit malformed outcome metrics", async () => {
+    const demoAssets = [
+      { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
+      { id: "asset_d2", type: "script", name: "Demo B", extracted_text: "A modern holistic ecosystem." }
+    ];
+    const result = makeComparison("cmp_invalid_outcome", "demo run", "Demo A");
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/demo/seed") && method === "POST") return json(demoAssets);
+      if (u.includes("/comparisons") && method === "POST" && !u.includes("/outcomes")) return json(result);
+      if (u.includes("/comparisons")) return json([]);
+      if (u.includes("/assets")) return json([]);
+      if (u.includes("/brand-profiles")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /demo set/i }))[0]);
+    await screen.findAllByText(/Demo A/);
+    fireEvent.click(screen.getByRole("button", { name: /^Compare/i }));
+    await screen.findByText(/Ship Demo A/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /log outcome/i }));
+    fireEvent.change(screen.getByLabelText(/clicks/i), { target: { value: "12.5" } });
+    fireEvent.click(screen.getByRole("button", { name: /save outcome/i }));
+
+    expect(await screen.findByText(/Clicks must be a whole number/i)).toBeInTheDocument();
+    const outcomePosts = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).includes("/outcomes") && (init?.method || "GET").toUpperCase() === "POST"
+    );
+    expect(outcomePosts).toHaveLength(0);
+  });
+
+  it("keeps an in-flight analysis visible when cancellation fails", async () => {
+    const demoAssets = [
+      { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
+      { id: "asset_d2", type: "script", name: "Demo B", extracted_text: "A modern holistic ecosystem." }
+    ];
+    const processing = {
+      ...makeComparison("cmp_cancel", "demo run", "Demo A"),
+      status: "processing",
+      jobs: [
+        { asset_id: "asset_d1", status: "running" },
+        { asset_id: "asset_d2", status: "queued" }
+      ]
+    } as unknown as Comparison;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/demo/seed") && method === "POST") return json(demoAssets);
+      if (u.includes("/comparisons") && method === "POST" && u.includes("/cancel")) {
+        return json({ detail: "Could not cancel analysis." }, 500);
+      }
+      if (u.includes("/comparisons") && method === "POST") return json(processing);
+      if (u.includes("/comparisons/cmp_cancel")) return json(processing);
+      if (u.includes("/comparisons")) return json([]);
+      if (u.includes("/assets")) return json([]);
+      if (u.includes("/brand-profiles")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /demo set/i }))[0]);
+    await screen.findAllByText(/Demo A/);
+    fireEvent.click(screen.getByRole("button", { name: /^Compare/i }));
+    expect(await screen.findByText(/Growing thought-trails/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+
+    expect(await screen.findByText(/Could not cancel analysis/i)).toBeInTheDocument();
+    expect(screen.getByText(/Growing thought-trails/i)).toBeInTheDocument();
+    const cancelCalls = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).includes("/comparisons/cmp_cancel/cancel") && (init?.method || "GET").toUpperCase() === "POST"
+    );
+    expect(cancelCalls).toHaveLength(1);
+  });
+
+  it("calls onRequireAuth when an asset upload is rejected for auth", async () => {
+    const onRequireAuth = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = (init?.method || "GET").toUpperCase();
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+        if (u.includes("/assets") && method === "POST") return json({ detail: "Sign in before uploading." }, 401);
+        if (u.includes("/comparisons")) return json([]);
+        if (u.includes("/assets")) return json([]);
+        if (u.includes("/brand-profiles")) return json([]);
+        return json([]);
+      })
+    );
+    render(<Workbench onRequireAuth={onRequireAuth} remoteProvider={null} briefDefaults={undefined} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Add a variant/i }));
+    fireEvent.change(screen.getByLabelText(/^Name$/i), { target: { value: "Auth variant" } });
+    fireEvent.change(screen.getByLabelText(/Creative text/i), { target: { value: "Try the starter kit today." } });
+    fireEvent.click(screen.getByRole("button", { name: /add to comparison/i }));
+
+    await waitFor(() => expect(onRequireAuth).toHaveBeenCalledTimes(1));
+  });
+
+  it("lets users cancel while the initial comparison request is still in flight", async () => {
+    const demoAssets = [
+      { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
+      { id: "asset_d2", type: "script", name: "Demo B", extracted_text: "A modern holistic ecosystem." }
+    ];
+    const result = makeComparison("cmp_late", "demo run", "Demo A");
+    const compareResolver: { current?: (response: Response) => void } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = (init?.method || "GET").toUpperCase();
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+        if (u.includes("/demo/seed") && method === "POST") return json(demoAssets);
+        if (u.includes("/comparisons") && method === "POST") {
+          return new Promise<Response>((resolve) => {
+            compareResolver.current = resolve;
+          });
+        }
+        if (u.includes("/comparisons")) return json([]);
+        if (u.includes("/assets")) return json([]);
+        if (u.includes("/brand-profiles")) return json([]);
+        return json([]);
+      })
+    );
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /demo set/i }))[0]);
+    await screen.findAllByText(/Demo A/);
+    fireEvent.click(screen.getByRole("button", { name: /^Compare/i }));
+    expect(await screen.findByText(/Growing thought-trails/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+    expect(await screen.findByText(/Analysis cancelled/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Growing thought-trails/i)).not.toBeInTheDocument();
+
+    if (!compareResolver.current) throw new Error("Comparison request did not start.");
+    compareResolver.current(
+      new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    await waitFor(() => expect(screen.queryByText(/Ship Demo A/i)).not.toBeInTheDocument());
+  });
+
+  it("shows indeterminate upload progress for file assets", async () => {
+    const uploadResolver: { current?: (response: Response) => void } = {};
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/assets") && method === "POST") {
+        return new Promise<Response>((resolve) => {
+          uploadResolver.current = resolve;
+        });
+      }
+      if (u.includes("/comparisons")) return json([]);
+      if (u.includes("/assets")) return json([]);
+      if (u.includes("/brand-profiles")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /\+ New variant/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Video" }));
+    fireEvent.change(screen.getByLabelText(/^Name$/i), { target: { value: "Upload variant" } });
+    fireEvent.change(screen.getByLabelText(/upload file/i), {
+      target: { files: [new File(["clip"], "clip.mp4", { type: "video/mp4" })] }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add to comparison/i }));
+
+    expect(await screen.findByText(/^Uploading…$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Uploading…\s+\d+%/i)).not.toBeInTheDocument();
+
+    if (!uploadResolver.current) throw new Error("Upload request did not start.");
+    uploadResolver.current(
+      new Response(JSON.stringify({ asset: { id: "asset_upload", type: "video", name: "Upload variant", extracted_text: "", metadata: {} } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    await waitFor(() => expect(screen.queryByText(/^Uploading…$/i)).not.toBeInTheDocument());
   });
 });

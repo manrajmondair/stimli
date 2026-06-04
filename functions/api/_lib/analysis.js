@@ -223,7 +223,7 @@ export async function compareAssetsWithBrain(comparisonId, objective, assets, cr
   // prod would otherwise make the "cap" just as high and defeat the point. 9s is
   // generous for the fast path (Haiku answers in ~2-3s) while bounding the
   // slow/retry tail; override with STIMLI_LLM_PHASE_DEADLINE_MS.
-  const polishDeadlineMs = Number(requestEnv.STIMLI_LLM_PHASE_DEADLINE_MS || 9000);
+  const polishDeadlineMs = positiveNumber(requestEnv.STIMLI_LLM_PHASE_DEADLINE_MS, 9000);
   const [polishedSuggestions, recommendation, compliance] = await Promise.all([
     withDeadline(
       polishSuggestionsAcrossVariants(rawSuggestions, variants, safeBrief, requestEnv).catch((err) => {
@@ -1288,6 +1288,11 @@ function tokenize(text = "") {
 
 function average(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function severityRank(severity) {

@@ -24,12 +24,18 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
       - run: npm ci
+      - run: python -m pip install -r backend/requirements.txt
 
       - name: Run full test suite
         # Same chain the deploy workflow runs: node-native API tests, then the
-        # Vitest frontend suite, then a production Vite build as a final
-        # correctness check.
+        # Vitest frontend suite, backend pytest, then a production Vite build
+        # as a final correctness check.
         # Intentionally do NOT forward VITE_CLERK_PUBLISHABLE_KEY here: when
         # it's set, the Landing component calls useUser() without a
         # ClerkProvider wrapper in jsdom and the test crashes. The deploy

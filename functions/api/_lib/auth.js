@@ -11,14 +11,13 @@ import { createClerkClient, verifyToken } from "@clerk/backend";
 
 import { newId, nowIso } from "./analysis.js";
 import {
+  ensureTeamWithOwner,
   getTeam,
   getTeamMember,
   getUser,
   getUserByEmail,
   listTeamsForUser,
   rebindUserId,
-  saveTeam,
-  saveTeamMember,
   saveUser
 } from "./store.js";
 
@@ -114,14 +113,17 @@ export async function getAuthContext(request) {
     team = personalTeam;
     membership = await getTeamMember(personalTeam.id, user.id);
   }
+  if (!membership) {
+    return anonymousContext(`membership-missing: ${team?.id || "unknown-team"}`);
+  }
 
   return {
     authenticated: true,
     user,
     team,
     membership,
-    role: membership?.role || "owner",
-    permissions: permissionsForRole(membership?.role || "owner"),
+    role: membership.role,
+    permissions: permissionsForRole(membership.role),
     workspace_id: team.id
   };
 }
@@ -158,13 +160,14 @@ async function synthesizeTestContext(testUserId, request) {
   const team = resolveActiveTeam(request, teams, teams[0]);
   if (!team) return anonymousContext();
   const membership = await getTeamMember(team.id, user.id);
+  if (!membership) return anonymousContext(`membership-missing: ${team.id}`);
   return {
     authenticated: true,
     user,
     team,
     membership,
-    role: membership?.role || "owner",
-    permissions: permissionsForRole(membership?.role || "owner"),
+    role: membership.role,
+    permissions: permissionsForRole(membership.role),
     workspace_id: team.id
   };
 }
@@ -251,14 +254,12 @@ async function ensurePersonalTeam(user) {
     name: defaultTeamNameFor(user),
     created_at: createdAt
   };
-  await saveTeam(team);
-  await saveTeamMember({
+  return await ensureTeamWithOwner(team, {
     team_id: teamId,
     user_id: user.id,
     role: "owner",
     created_at: createdAt
   });
-  return team;
 }
 
 function defaultTeamNameFor(user) {

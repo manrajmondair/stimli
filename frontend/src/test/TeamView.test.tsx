@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 
 // TeamView calls Clerk's useUser(); mock the module so it renders without a
 // ClerkProvider (the suite deliberately runs without a real Clerk key).
@@ -71,5 +71,143 @@ describe("TeamView team switcher", () => {
     render(<TeamView session={single as never} onUpdate={vi.fn()} />);
     expect(screen.queryByLabelText(/active team/i)).not.toBeInTheDocument();
     expect(screen.getAllByText(/Team B/).length).toBeGreaterThan(0);
+  });
+
+  it("requires an invite email before creating a link", async () => {
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+      const u = String(url);
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/teams/members")) return json([]);
+      if (u.includes("/teams/invites")) return json([]);
+      if (u.includes("/audit")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TeamView session={multiTeamSession as never} onUpdate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /create invite link/i }));
+
+    expect((await screen.findAllByText(/invite email is required/i)).length).toBeGreaterThan(0);
+    const inviteCreates = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).includes("/teams/invites") && (init?.method || "GET").toUpperCase() === "POST"
+    );
+    expect(inviteCreates).toHaveLength(0);
+  });
+
+  it("preserves the current member list when a refresh fails", async () => {
+    let memberLoads = 0;
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/teams/members")) {
+        memberLoads += 1;
+        if (memberLoads > 1) return json({ detail: "Team temporarily unavailable." }, 500);
+        return json([
+          {
+            user_id: "u2",
+            name: "Ada Analyst",
+            email: "ada@example.com",
+            role: "analyst",
+            created_at: new Date().toISOString()
+          }
+        ]);
+      }
+      if (u.includes("/teams/invites")) return json([]);
+      if (u.includes("/audit")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TeamView session={multiTeamSession as never} onUpdate={vi.fn()} />);
+    expect(await screen.findByText("Ada Analyst")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+
+    expect(await screen.findByText(/team temporarily unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText("Ada Analyst")).toBeInTheDocument();
+  });
+
+  it("does not confirm member removal when Enter is pressed on the cancel button", async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/teams/members") && method === "DELETE") return new Response("", { status: 204 });
+      if (u.includes("/teams/members")) {
+        return json([
+          {
+            user_id: "u2",
+            name: "Ada Analyst",
+            email: "ada@example.com",
+            role: "analyst",
+            created_at: new Date().toISOString()
+          }
+        ]);
+      }
+      if (u.includes("/teams/invites")) return json([]);
+      if (u.includes("/audit")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TeamView session={multiTeamSession as never} onUpdate={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /remove/i }));
+    const dialog = await screen.findByRole("alertdialog", { name: /remove this member/i });
+    const cancel = within(dialog).getByRole("button", { name: /cancel/i });
+    const confirm = within(dialog).getByRole("button", { name: /remove member/i });
+
+    await waitFor(() => expect(cancel).toHaveFocus());
+
+    confirm.focus();
+    fireEvent.keyDown(confirm, { key: "Tab", code: "Tab" });
+    expect(cancel).toHaveFocus();
+
+    fireEvent.keyDown(cancel, { key: "Enter", code: "Enter" });
+
+    const deleteCalls = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).includes("/teams/members/u2") && (init?.method || "GET").toUpperCase() === "DELETE"
+    );
+    expect(deleteCalls).toHaveLength(0);
+    expect(dialog).toBeInTheDocument();
+  });
+
+  it("only dispatches one member removal when confirm is clicked twice", async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/teams/members") && method === "DELETE") return json({ removed: "u2" });
+      if (u.includes("/teams/members")) {
+        return json([
+          {
+            user_id: "u2",
+            name: "Ada Analyst",
+            email: "ada@example.com",
+            role: "analyst",
+            created_at: new Date().toISOString()
+          }
+        ]);
+      }
+      if (u.includes("/teams/invites")) return json([]);
+      if (u.includes("/audit")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TeamView session={multiTeamSession as never} onUpdate={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /remove/i }));
+    const dialog = await screen.findByRole("alertdialog", { name: /remove this member/i });
+    const confirm = within(dialog).getByRole("button", { name: /remove member/i });
+
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      const deleteCalls = fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).includes("/teams/members/u2") && (init?.method || "GET").toUpperCase() === "DELETE"
+      );
+      expect(deleteCalls).toHaveLength(1);
+    });
   });
 });

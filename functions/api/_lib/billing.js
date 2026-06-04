@@ -138,7 +138,8 @@ function publicPlan(plan) {
 export async function billingStatus(team = null) {
   const catalog = getCatalog();
   const subscription = team ? await getSubscription(team.id) : null;
-  const currentPlanId = normalizePlan(subscription?.plan || team?.plan, catalog);
+  const entitledSubscription = activeSubscription(subscription);
+  const currentPlanId = normalizePlan(entitledSubscription?.plan || (!subscription ? team?.plan : null), catalog);
   const currentPlan = catalog.find((plan) => plan.id === currentPlanId) || catalog[0];
   return {
     current_plan: publicPlan(currentPlan),
@@ -169,7 +170,8 @@ export async function getQuotaForWorkspace(workspaceId) {
     useWorkspace ? getSubscription(workspaceId) : Promise.resolve(null)
   ]);
   const subscription = team ? rawSubscription : null;
-  const planId = normalizePlan(subscription?.plan || team?.plan, catalog);
+  const entitledSubscription = activeSubscription(subscription);
+  const planId = normalizePlan(entitledSubscription?.plan || (!subscription ? team?.plan : null), catalog);
   const plan = catalog.find((p) => p.id === planId) || catalog[0];
 
   // Env-level overrides are still honored as a kill switch for tightening or
@@ -178,7 +180,7 @@ export async function getQuotaForWorkspace(workspaceId) {
   const hourlyAssetOverride = envNum("STIMLI_ASSET_LIMIT_PER_HOUR", null);
   const hourlyComparisonOverride = envNum("STIMLI_COMPARISON_LIMIT_PER_HOUR", null);
 
-  const period = currentPeriod(subscription);
+  const period = currentPeriod(entitledSubscription);
 
   return {
     plan: publicPlan(plan),
@@ -222,6 +224,21 @@ export async function createCheckoutSession(request, team, requestedPlan) {
     throw httpError(409, "Commercial plans require a licensed commercial brain-response provider.");
   }
 
+  const existingSubscription = await getSubscription(team.id);
+  if (subscriptionBlocksCheckout(existingSubscription)) {
+    const customerId = team.stripe_customer_id || existingSubscription.stripe_customer_id || "";
+    if (!customerId) {
+      throw httpError(409, "This team already has a subscription in progress.");
+    }
+    const portal = await createPortalSession(request, team);
+    return {
+      ...portal,
+      id: null,
+      billing_portal: true,
+      existing_subscription: publicSubscription(existingSubscription)
+    };
+  }
+
   const stripe = await stripeClient();
   let customerId = team.stripe_customer_id || "";
   if (!customerId) {
@@ -256,12 +273,17 @@ export async function createPortalSession(request, team) {
   if (!billingConfigured()) {
     throw httpError(503, "Billing is not configured.");
   }
-  if (!team.stripe_customer_id) {
+  const subscription = await getSubscription(team.id);
+  const customerId = team.stripe_customer_id || subscription?.stripe_customer_id || "";
+  if (!customerId) {
     throw httpError(404, "No billing customer exists for this team.");
+  }
+  if (!team.stripe_customer_id) {
+    await saveTeam({ ...team, stripe_customer_id: customerId, updated_at: nowIso() });
   }
   const stripe = await stripeClient();
   const session = await stripe.billingPortal.sessions.create({
-    customer: team.stripe_customer_id,
+    customer: customerId,
     return_url: appOrigin(request)
   });
   return { url: session.url };
@@ -304,23 +326,23 @@ export async function handleBillingWebhook(signature, rawBody) {
   try {
     switch (event.type) {
       case "checkout.session.completed":
-        await onCheckoutCompleted(event.data.object, stripe);
+        await onCheckoutCompleted(event.data.object, stripe, event.created);
         break;
       case "customer.subscription.created":
       case "customer.subscription.updated":
-        await onSubscriptionChanged(event.data.object);
+        await onSubscriptionChanged(event.data.object, event.created);
         break;
       case "customer.subscription.deleted":
-        await onSubscriptionDeleted(event.data.object);
+        await onSubscriptionDeleted(event.data.object, event.created);
         break;
       case "invoice.payment_succeeded":
-        await onInvoicePaid(event.data.object);
+        await onInvoicePaid(event.data.object, event.created);
         break;
       case "invoice.payment_failed":
-        await onInvoiceFailed(event.data.object);
+        await onInvoiceFailed(event.data.object, event.created);
         break;
       case "customer.subscription.trial_will_end":
-        await onTrialWillEnd(event.data.object);
+        await onTrialWillEnd(event.data.object, event.created);
         break;
       default:
         // Unhandled events are still recorded so we have a trail; nothing else
@@ -338,7 +360,7 @@ export async function handleBillingWebhook(signature, rawBody) {
   return { received: true };
 }
 
-async function onCheckoutCompleted(session, stripe) {
+async function onCheckoutCompleted(session, stripe, eventCreated = null) {
   const teamId = session.metadata?.team_id || session.client_reference_id;
   if (!teamId) return;
   const team = await getTeam(teamId);
@@ -355,7 +377,7 @@ async function onCheckoutCompleted(session, stripe) {
   const subscriptionId = stringValue(session.subscription);
   if (subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
-    await onSubscriptionChanged(sub);
+    await onSubscriptionChanged(sub, eventCreated);
   }
 }
 
@@ -372,7 +394,7 @@ export function subscriptionPeriodSeconds(subscription) {
   };
 }
 
-async function onSubscriptionChanged(subscription) {
+async function onSubscriptionChanged(subscription, eventCreated = null) {
   const teamId =
     subscription.metadata?.team_id ||
     (await teamIdForCustomer(stringValue(subscription.customer))) ||
@@ -393,14 +415,17 @@ async function onSubscriptionChanged(subscription) {
     trial_end: subscription.trial_end
       ? new Date(subscription.trial_end * 1000).toISOString()
       : null,
+    last_stripe_event_created: normalizedEventCreated(eventCreated),
     created_at: nowIso(),
     updated_at: nowIso()
   };
-  await saveSubscription(record);
-  await syncTeamPlan(teamId, planId, subscription.status);
+  const saved = await saveSubscription(record);
+  if (subscriptionWriteApplied(saved, eventCreated)) {
+    await syncTeamPlan(teamId, planId, subscription.status);
+  }
 }
 
-async function onSubscriptionDeleted(subscription) {
+async function onSubscriptionDeleted(subscription, eventCreated = null) {
   const teamId =
     subscription.metadata?.team_id ||
     (await getSubscriptionByStripeId(subscription.id))?.team_id;
@@ -415,41 +440,52 @@ async function onSubscriptionDeleted(subscription) {
     current_period_end: null,
     cancel_at_period_end: false,
     trial_end: null,
+    last_stripe_event_created: normalizedEventCreated(eventCreated),
     created_at: nowIso(),
     updated_at: nowIso()
   };
-  await saveSubscription(record);
-  await syncTeamPlan(teamId, "research", "cancelled");
+  const saved = await saveSubscription(record);
+  if (subscriptionWriteApplied(saved, eventCreated)) {
+    await syncTeamPlan(teamId, "research", "cancelled");
+  }
 }
 
-async function onInvoicePaid(invoice) {
+async function onInvoicePaid(invoice, eventCreated = null) {
   const teamId = await teamIdForCustomer(stringValue(invoice.customer));
   if (!teamId) return;
   const existing = await getSubscription(teamId);
   if (!existing) return;
-  await saveSubscription({
+  const saved = await saveSubscription({
     ...existing,
     status: "active",
     last_invoice_paid_at: nowIso(),
     last_invoice_amount_paid: invoice.amount_paid || 0,
+    last_stripe_event_created: normalizedEventCreated(eventCreated),
     updated_at: nowIso()
   });
+  if (subscriptionWriteApplied(saved, eventCreated)) {
+    await syncTeamPlan(teamId, existing.plan, "active");
+  }
 }
 
-async function onInvoiceFailed(invoice) {
+async function onInvoiceFailed(invoice, eventCreated = null) {
   const teamId = await teamIdForCustomer(stringValue(invoice.customer));
   if (!teamId) return;
   const existing = await getSubscription(teamId);
   if (!existing) return;
-  await saveSubscription({
+  const saved = await saveSubscription({
     ...existing,
     status: "past_due",
     last_invoice_failed_at: nowIso(),
+    last_stripe_event_created: normalizedEventCreated(eventCreated),
     updated_at: nowIso()
   });
+  if (subscriptionWriteApplied(saved, eventCreated)) {
+    await syncTeamPlan(teamId, existing.plan, "past_due");
+  }
 }
 
-async function onTrialWillEnd(subscription) {
+async function onTrialWillEnd(subscription, eventCreated = null) {
   const teamId =
     subscription.metadata?.team_id ||
     (await getSubscriptionByStripeId(subscription.id))?.team_id;
@@ -459,8 +495,21 @@ async function onTrialWillEnd(subscription) {
   await saveSubscription({
     ...existing,
     trial_will_end_notified_at: nowIso(),
+    last_stripe_event_created: normalizedEventCreated(eventCreated),
     updated_at: nowIso()
   });
+}
+
+function normalizedEventCreated(value) {
+  const created = Number(value);
+  return Number.isFinite(created) && created > 0 ? created : null;
+}
+
+function subscriptionWriteApplied(saved, eventCreated) {
+  if (saved?.last_stripe_write_ignored) return false;
+  const created = normalizedEventCreated(eventCreated);
+  if (!created) return true;
+  return Number(saved?.last_stripe_event_created) === created;
 }
 
 async function syncTeamPlan(teamId, planId, billingStatusValue) {
@@ -536,6 +585,16 @@ function publicSubscription(subscription) {
   };
 }
 
+function activeSubscription(subscription) {
+  if (!subscription) return null;
+  return ["active", "trialing"].includes(subscription.status) ? subscription : null;
+}
+
+function subscriptionBlocksCheckout(subscription) {
+  if (!subscription) return false;
+  return ["active", "trialing", "past_due", "incomplete"].includes(subscription.status);
+}
+
 function billingConfigured() {
   return Boolean(getEnv("STRIPE_SECRET_KEY") && getEnv("STIMLI_APP_URL"));
 }
@@ -559,6 +618,9 @@ function normalizePlan(planId, catalog) {
 }
 
 async function stripeClient() {
+  if (_env.STIMLI_TEST_MODE === "1" && globalThis.__stimliStripeClient) {
+    return globalThis.__stimliStripeClient;
+  }
   const { default: Stripe } = await import("stripe");
   return new Stripe(getEnv("STRIPE_SECRET_KEY"), {
     httpClient: Stripe.createFetchHttpClient()
@@ -568,23 +630,32 @@ async function stripeClient() {
 function appOrigin(request) {
   const configured = getEnv("STIMLI_APP_URL");
   if (configured) {
-    return configured.replace(/\/$/, "");
+    const origin = configured.replace(/\/$/, "");
+    return pagesPreviewOrigin(request, origin) || origin;
   }
-  const host = header(request, "x-forwarded-host") || header(request, "host") || "stimli.pages.dev";
-  const protocol = header(request, "x-forwarded-proto") || (host.includes("localhost") || host.startsWith("127.") ? "http" : "https");
-  return `${protocol}://${host.split(",")[0].trim()}`;
+  const origin = getEnv("STIMLI_ORIGIN");
+  if (origin) {
+    const configuredOrigin = origin.replace(/\/$/, "");
+    return pagesPreviewOrigin(request, configuredOrigin) || configuredOrigin;
+  }
+  try {
+    return new URL(request.url).origin;
+  } catch {
+    return "https://stimli.pages.dev";
+  }
 }
 
-function header(request, name) {
-  if (request?.headers?.get && typeof request.headers.get === "function") {
-    return request.headers.get(name) || "";
-  }
-  const headers = request?.headers || {};
-  const target = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === target) {
-      return Array.isArray(value) ? value[0] : value;
+function pagesPreviewOrigin(request, configuredOrigin) {
+  try {
+    const configured = new URL(configuredOrigin);
+    const actual = new URL(request.url);
+    if (configured.hostname !== "stimli.pages.dev") return "";
+    if (actual.protocol !== "https:") return "";
+    if (actual.hostname === configured.hostname || actual.hostname.endsWith(`.${configured.hostname}`)) {
+      return actual.origin;
     }
+  } catch {
+    return "";
   }
   return "";
 }

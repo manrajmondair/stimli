@@ -9,7 +9,8 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: .
+      dockerfile: frontend/Dockerfile
     environment:
       VITE_API_BASE: http://localhost:8000
     ports:
@@ -19,4 +20,3 @@ services:
 
 volumes:
   stimli-data:
-

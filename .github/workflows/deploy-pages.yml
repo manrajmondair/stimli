@@ -23,7 +23,48 @@ jobs:
         with:
           node-version: "22"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
       - run: npm ci
+      - run: python -m pip install -r backend/requirements.txt
+
+      - name: Verify deploy secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          missing=()
+          for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN VITE_CLERK_PUBLISHABLE_KEY; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing GitHub secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Verify Pages runtime secrets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          required=(POSTGRES_URL CLERK_SECRET_KEY CLERK_PUBLISHABLE_KEY TRIBE_INFERENCE_URL TRIBE_CONTROL_URL STIMLI_EXTRACT_URL TRIBE_API_KEY)
+          secrets="$(npx wrangler pages secret list --project-name=stimli)"
+          missing=()
+          for name in "${required[@]}"; do
+            if ! grep -Eq "^[[:space:]]*-[[:space:]]+${name}:" <<<"$secrets"; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing Cloudflare Pages secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
 
       - name: Run tests
         # Gate every production deploy on the full Node + Vitest suite so a
@@ -57,3 +98,29 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy frontend/dist --project-name=stimli --branch=main --commit-hash=${{ github.sha }}
+
+      - name: Verify production health
+        run: |
+          for attempt in $(seq 1 10); do
+            if curl --fail --silent --show-error https://stimli.pages.dev/api/health -o health.json; then
+              node -e "const fs=require('fs'); const health=JSON.parse(fs.readFileSync('health.json','utf8')); if (health.status !== 'ok') { console.error(JSON.stringify(health)); process.exit(1); }"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "Production health check did not pass." >&2
+          exit 1
+
+      - name: Verify production app shell
+        run: |
+          for path in / /app /app/team /share/deploy-smoke /invite/deploy-smoke; do
+            status="$(curl --silent --show-error --output app-shell.html --write-out "%{http_code}" "https://stimli.pages.dev${path}")"
+            if [ "$status" != "200" ]; then
+              echo "Expected ${path} to serve the SPA shell, got HTTP ${status}." >&2
+              exit 1
+            fi
+            if ! grep -qi '<div id="root"' app-shell.html; then
+              echo "Expected ${path} to serve the Vite app shell." >&2
+              exit 1
+            fi
+          done

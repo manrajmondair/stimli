@@ -1,3 +1,3 @@
 -r requirements.txt
 uv==0.9.18
-tribev2 @ git+https://github.com/facebookresearch/tribev2.git@main
+tribev2 @ git+https://github.com/facebookresearch/tribev2.git@34f52344e5ba96660fac877393e1954e399d3ef3

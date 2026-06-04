@@ -53,7 +53,6 @@ import {
   getTeamInviteById,
   countUsageEvents,
   getTeamInviteByTokenHash,
-  getTeamMember,
   listAuditEvents,
   listAssets,
   listBenchmarkRuns,
@@ -69,6 +68,7 @@ import {
   getShareLink,
   saveAuditEvent,
   saveAsset,
+  acceptTeamInviteWithSeatLimit,
   saveBenchmarkRun,
   saveBrandProfile,
   saveComparison,
@@ -76,8 +76,7 @@ import {
   saveIntegrationJob,
   saveOutcome,
   saveProject,
-  saveTeamInvite,
-  saveTeamMember,
+  saveTeamInviteWithSeatLimit,
   saveShareLink,
   saveUsageEventConditional,
   storageHealth,
@@ -85,6 +84,7 @@ import {
 } from "./_lib/store.js";
 
 const assetTypes = new Set(["script", "landing_page", "image", "audio", "video"]);
+const DEMO_SEED_ASSET_UNITS = 3;
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -93,7 +93,8 @@ export async function onRequest(context) {
   configureAnalysis(env);
   configureBilling(env);
 
-  const maxInlineFileBytes = Number(env.STIMLI_MAX_INLINE_FILE_BYTES || 8 * 1024 * 1024);
+  const maxInlineFileBytes = positiveNumber(env.STIMLI_MAX_INLINE_FILE_BYTES, 8 * 1024 * 1024);
+  const maxDirectUploadBytes = positiveNumber(env.STIMLI_MAX_DIRECT_UPLOAD_BYTES, 25 * 1024 * 1024);
 
   const cookies = new CookieSink();
   const headers = baseHeaders(request, env);
@@ -108,11 +109,23 @@ export async function onRequest(context) {
     const segments = apiPath.split("/").filter(Boolean);
 
     if (request.method === "GET" && apiPath === "/health") {
-      return sendJson(200, { status: "ok", storage: storageHealth() }, headers, cookies);
+      const storage = storageHealth();
+      const allowMemory = env.STIMLI_TEST_MODE === "1" || env.STIMLI_ALLOW_MEMORY_STORE === "1";
+      const healthy = storage.persistent || allowMemory;
+      return sendJson(healthy ? 200 : 503, { status: healthy ? "ok" : "degraded", storage }, headers, cookies);
     }
 
     if (request.method === "GET" && apiPath === "/brain/providers") {
       return sendJson(200, await providerHealth(), headers, cookies);
+    }
+
+    const storage = storageHealth();
+    if (!storage.persistent && !memoryStoreAllowed(env)) {
+      return sendJson(503, {
+        detail: "Persistent storage is not configured. Add POSTGRES_URL to the Pages project or explicitly enable memory store for local/test use.",
+        code: "persistence_unavailable",
+        storage
+      }, headers, cookies);
     }
 
     const authContext = await getAuthContext(request);
@@ -167,8 +180,11 @@ export async function onRequest(context) {
     }
 
     if (request.method === "POST" && apiPath === "/demo/seed") {
+      requirePermission(authContext, "workspace:write", { allowAnonymous: true });
       const payload = await parseJson(request);
       const projectId = await resolveProjectId(payload.project_id, workspaceId);
+      const quota = await getQuotaForWorkspace(workspaceId);
+      await enforceUsageLimit(request, workspaceId, "asset", quota, authContext, { units: DEMO_SEED_ASSET_UNITS });
       return sendJson(200, await seedDemo(workspaceId, projectId), headers, cookies);
     }
 
@@ -177,7 +193,7 @@ export async function onRequest(context) {
     }
 
     if (segments[0] === "assets") {
-      return await handleAssets(request, segments, workspaceId, authContext, env, maxInlineFileBytes, headers, cookies);
+      return await handleAssets(request, segments, workspaceId, authContext, env, maxInlineFileBytes, maxDirectUploadBytes, headers, cookies);
     }
 
     if (segments[0] === "comparisons") {
@@ -185,7 +201,7 @@ export async function onRequest(context) {
     }
 
     if (segments[0] === "reports") {
-      return await handleReports(request, segments, workspaceId, authContext, headers, cookies);
+      return await handleReports(request, segments, workspaceId, authContext, env, headers, cookies);
     }
 
     if (request.method === "GET" && apiPath === "/learning/summary") {
@@ -284,10 +300,9 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
     }
     if (request.method === "POST") {
       const payload = await parseJson(request);
-      // Seat enforcement: paid plans cap the number of seats. Count active
-      // members plus unaccepted pending invites against plan.seats so a team
-      // can't quietly grow past their plan by minting invites in advance.
-      await enforceSeatLimit(authContext.team);
+      const role = normalizeRole(payload.role || "analyst");
+      assertCanGrantRole(authContext, role);
+      const quota = await getQuotaForWorkspace(authContext.team.id);
       const token = randomBase64url(24);
       const invite = {
         id: newId("invite"),
@@ -295,19 +310,32 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
         team_id: authContext.team.id,
         team_name: authContext.team.name,
         email: normalizeInviteEmail(payload.email),
-        role: normalizeRole(payload.role || "analyst"),
+        role,
         created_by: authContext.user.id,
         expires_at: new Date(Date.now() + Number(env.STIMLI_INVITE_TTL_DAYS || 14) * 24 * 60 * 60 * 1000).toISOString(),
         created_at: nowIso()
       };
-      await saveTeamInvite(invite);
+      // Seat enforcement: paid plans cap active members plus unaccepted,
+      // unexpired invites. The store performs the count and insert under a
+      // team advisory lock so two concurrent invite requests can't both see
+      // the same final seat.
+      const saved = await saveTeamInviteWithSeatLimit(invite, quota?.plan?.seats);
+      if (!saved.ok) {
+        if (saved.existing_member) {
+          throw httpError(409, "This email already belongs to a team member.");
+        }
+        if (saved.duplicate_invite) {
+          throw httpError(409, "An active invite already exists for this email.");
+        }
+        throw seatLimitError(quota, saved.used);
+      }
       await audit(authContext.team.id, authContext.user, "invite.created", "invite", invite.id, {
         email: invite.email,
         role: invite.role
       });
       const origin = requestOrigin(request, env);
       return sendJson(200, {
-        ...publicInvite(invite, authContext.team),
+        ...publicInvite(saved.invite || invite, authContext.team),
         url: `${origin}/invite/${token}`,
         token
       }, headers, cookies);
@@ -343,47 +371,30 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
       if (segments[2] === authContext.user.id && role !== "owner") {
         throw httpError(400, "Owners cannot demote their own active session.");
       }
-      // Don't let a demotion strip the team of its last owner — same invariant
-      // the member-removal path enforces, applied to the role change too.
-      if (role !== "owner") {
-        const members = await listTeamMembers(authContext.team.id);
-        const target = members.find((m) => m.user_id === segments[2]);
-        if (target && (target.role || "viewer") === "owner") {
-          const ownerCount = members.filter((m) => (m.role || "viewer") === "owner").length;
-          if (ownerCount <= 1) {
-            throw httpError(409, "Can't demote the team's last owner.");
-          }
-        }
+      const result = await updateTeamMemberRole(authContext.team.id, segments[2], role);
+      if (result.blocked_last_owner) {
+        throw httpError(409, "Can't demote the team's last owner.");
       }
-      const updated = await updateTeamMemberRole(authContext.team.id, segments[2], role);
-      if (!updated) {
+      if (!result.member) {
         throw httpError(404, "Team member not found.");
       }
       await audit(authContext.team.id, authContext.user, "member.role_updated", "user", segments[2], { role });
-      return sendJson(200, publicMember(updated), headers, cookies);
+      return sendJson(200, publicMember(result.member), headers, cookies);
     }
     if (request.method === "DELETE" && segments[2] && segments.length === 3) {
       const targetUserId = segments[2];
       if (targetUserId === authContext.user.id) {
         throw httpError(400, "You can't remove yourself from the team — use account → sign out instead.");
       }
-      const members = await listTeamMembers(authContext.team.id);
-      const target = members.find((m) => m.user_id === targetUserId);
-      if (!target) {
-        throw httpError(404, "Team member not found.");
+      const result = await deleteTeamMember(authContext.team.id, targetUserId);
+      if (result.blocked_last_owner) {
+        throw httpError(409, "Can't remove the team's last owner.");
       }
-      if ((target.role || "viewer") === "owner") {
-        const ownerCount = members.filter((m) => (m.role || "viewer") === "owner").length;
-        if (ownerCount <= 1) {
-          throw httpError(409, "Can't remove the team's last owner.");
-        }
-      }
-      const removed = await deleteTeamMember(authContext.team.id, targetUserId);
-      if (!removed) {
+      if (!result.removed) {
         throw httpError(404, "Team member not found.");
       }
       await audit(authContext.team.id, authContext.user, "member.removed", "user", targetUserId, {
-        role: target.role || "viewer"
+        role: result.member?.role || "viewer"
       });
       return sendJson(200, { removed: targetUserId }, headers, cookies);
     }
@@ -408,31 +419,31 @@ async function handleInvites(request, cookies, segments, authContext, headers) {
     if (invite.email && invite.email !== authContext.user.email) {
       throw httpError(403, "This invite belongs to a different email address.");
     }
-    // Re-check seats at accept time: a Growth team might have minted 5 invites
-    // before downgrading, and we shouldn't honor a stale invite that pushes
-    // them over the new cap. Skipped if the invitee is already a member
-    // (re-accept idempotency).
-    const acceptingTeam = await getTeam(invite.team_id);
-    if (acceptingTeam) {
-      const existingMembership = await getTeamMember(invite.team_id, authContext.user.id);
-      if (!existingMembership) {
-        await enforceSeatLimit(acceptingTeam, { includePendingInvites: false });
-      }
-    }
-    await saveTeamMember({
+    // Re-check seats at accept time under the same team advisory lock used by
+    // invite creation. That catches stale invites after a downgrade and
+    // concurrent accept bursts, while preserving idempotency for users who are
+    // already members of the team.
+    const quota = await getQuotaForWorkspace(invite.team_id);
+    const accepted = await acceptTeamInviteWithSeatLimit(invite, {
       team_id: invite.team_id,
       user_id: authContext.user.id,
       role: invite.role,
       invited_by: invite.created_by || null,
       created_at: nowIso()
-    });
-    await saveTeamInvite({
-      ...invite,
-      accepted_by: authContext.user.id,
-      accepted_at: nowIso()
-    });
+    }, quota?.plan?.seats, nowIso());
+    if (!accepted.ok) {
+      if (accepted.invite_consumed) {
+        throw httpError(409, "Invite has already been accepted.");
+      }
+      throw seatLimitError(quota, accepted.used);
+    }
+    // Accepting an invite should be idempotent for existing members. The store
+    // returns the existing membership when one exists, so a stale/malicious
+    // invite cannot upsert a stronger role around normal role-change guards.
+    const effectiveRole = accepted.member?.role || invite.role;
     await audit(invite.team_id, authContext.user, "invite.accepted", "invite", invite.id, {
-      role: invite.role
+      role: effectiveRole,
+      invited_role: invite.role
     });
     // Return a session payload anchored to the team the invite belongs to, so
     // the frontend can switch the active workspace to the freshly-joined team.
@@ -447,8 +458,8 @@ async function handleInvites(request, cookies, segments, authContext, headers) {
         created_at: authContext.user.created_at
       },
       team: acceptedTeam || teams[0] || null,
-      role: invite.role,
-      permissions: permissionsForRole(invite.role),
+      role: effectiveRole,
+      permissions: permissionsForRole(effectiveRole),
       teams
     }, headers, cookies);
   }
@@ -598,7 +609,7 @@ async function handleBrandProfiles(request, segments, authContext, workspaceId, 
   if (request.method === "POST" && segments.length === 1) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const payload = await parseJson(request);
-    const profile = normalizeBrandProfile(payload, workspaceId);
+    const profile = normalizeBrandProfile({ ...payload, id: newId("brand"), created_at: nowIso() }, workspaceId);
     await saveBrandProfile(profile);
     await audit(workspaceId, authContext.user, "brand_profile.created", "brand_profile", profile.id, { name: profile.name });
     return sendJson(200, profile, headers, cookies);
@@ -681,18 +692,21 @@ async function handleImports(request, segments, authContext, workspaceId, header
     }
     const imported = [];
     const failed = [];
+    const quota = await getQuotaForWorkspace(workspaceId);
     for (const item of items) {
       try {
         const assetType = assetTypes.has(item.asset_type) ? item.asset_type : "script";
         const projectId = await resolveProjectId(item.project_id || payload.project_id, workspaceId);
+        const sourceUrl = item.url ? requirePublicSourceUrl(item.url) : "";
+        await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
         const asset = {
           id: newId("asset"),
           type: assetType,
-          name: String(item.name || item.url || "Imported creative").trim().slice(0, 180),
-          source_url: item.url || null,
+          name: String(item.name || sourceUrl || "Imported creative").trim().slice(0, 180),
+          source_url: sourceUrl || null,
           file_path: null,
-          extracted_text: String(item.text || item.notes || textFromFilename(item.name || item.url || "Imported creative")).trim(),
-          duration_seconds: item.duration_seconds ? Number(item.duration_seconds) : null,
+          extracted_text: String(item.text || item.notes || textFromFilename(item.name || sourceUrl || "Imported creative")).trim(),
+          duration_seconds: optionalNonNegativeNumber(item.duration_seconds, "duration_seconds", { max: 24 * 60 * 60 }),
           metadata: { import_source: payload.source || "manual", import_platform: payload.platform || "csv" },
           workspace_id: workspaceId,
           project_id: projectId,
@@ -701,7 +715,7 @@ async function handleImports(request, segments, authContext, workspaceId, header
         await saveAsset(asset);
         imported.push(publicAsset(asset));
       } catch (error) {
-        failed.push({ item, error: error.message });
+        failed.push({ item: safeImportFailureItem(item), error: error.message });
       }
     }
     const job = {
@@ -746,6 +760,8 @@ async function handleValidation(request, segments, authContext, workspaceId, hea
   }
   if (request.method === "POST" && segments[1] === "benchmarks" && segments[2] === "run") {
     const payload = await parseJson(request);
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "comparison", quota, authContext);
     const run = await runBenchmark(payload.benchmark_id || "dtc-hooks-v1", workspaceId);
     await saveBenchmarkRun(run);
     await audit(workspaceId, authContext.user, "validation.benchmark_run", "benchmark", run.id, {
@@ -757,27 +773,36 @@ async function handleValidation(request, segments, authContext, workspaceId, hea
   return sendJson(404, { detail: "Not found" }, headers, cookies);
 }
 
-async function handleAssets(request, segments, workspaceId, authContext, env, maxInlineFileBytes, headers, cookies) {
+async function handleAssets(request, segments, workspaceId, authContext, env, maxInlineFileBytes, maxDirectUploadBytes, headers, cookies) {
   if (request.method === "GET" && segments.length === 1) {
     return sendJson(200, (await listAssets(workspaceId)).map(publicAsset), headers, cookies);
   }
 
   if (request.method === "POST" && segments.length === 1) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    const quota = await getQuotaForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "asset", quota);
-    const { fields, files } = await parseForm(request);
-    const assetType = fields.asset_type || fields.assetType;
+    const { fields, files } = await parseForm(request, { maxFileBytes: maxDirectUploadBytes });
+    const assetType = stringField(fields.asset_type ?? fields.assetType).toLowerCase();
     if (!assetTypes.has(assetType)) {
       throw httpError(400, "asset_type must be script, landing_page, image, audio, or video.");
     }
 
     const file = files.find((item) => item.fieldname === "file");
+    if (file?.bytes?.length > maxDirectUploadBytes) {
+      throw httpError(413, `Upload exceeds the ${maxDirectUploadBytes} byte limit.`);
+    }
     const assetId = newId("asset");
-    const url = fields.url || "";
-    const finalName = fields.name || url || file?.filename || "Untitled asset";
-    const projectId = await resolveProjectId(fields.project_id || fields.projectId, workspaceId);
-    let extractedText = fields.text || "";
+    const url = stringField(fields.url);
+    const resolvedUrl = url ? normalizePublicHttpUrl(url) : { ok: true, url: "" };
+    if (url && !resolvedUrl.ok && assetType !== "landing_page") {
+      throw httpError(400, `url must be a public http(s) URL (${resolvedUrl.reason}).`);
+    }
+    const sourceUrl = resolvedUrl.ok ? resolvedUrl.url : "";
+    const finalName = stringField(fields.name).trim().slice(0, 180) || sourceUrl || stringField(file?.filename).trim().slice(0, 180) || "Untitled asset";
+    const projectId = await resolveProjectId(stringField(fields.project_id ?? fields.projectId), workspaceId);
+    const durationSeconds = optionalNonNegativeNumber(fields.duration_seconds, "duration_seconds", { max: 24 * 60 * 60 });
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
+    let extractedText = stringField(fields.text);
     let extractionMetadata = {};
 
     if (file && assetType === "script" && !extractedText) {
@@ -785,7 +810,7 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
     }
 
     if (assetType === "landing_page" && url && !extractedText) {
-      const extracted = await extractLandingPageText(url);
+      const extracted = await extractLandingPageText(sourceUrl || url, env);
       extractedText = extracted.text;
       extractionMetadata = extracted.metadata;
     }
@@ -821,9 +846,9 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
         id: assetId,
         type: assetType,
         name: finalName,
-        source_url: url || null,
+        source_url: sourceUrl || null,
         extracted_text: "",
-        duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
+        duration_seconds: durationSeconds,
         metadata: baseMetadata
       }, env);
       if (extracted?.text) {
@@ -848,10 +873,10 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
       id: assetId,
       type: assetType,
       name: finalName,
-      source_url: url || null,
+      source_url: sourceUrl || null,
       file_path: null,
       extracted_text: extractedText.trim(),
-      duration_seconds: fields.duration_seconds ? Number(fields.duration_seconds) : null,
+      duration_seconds: durationSeconds,
       metadata: { ...baseMetadata, ...extractionMetadata },
       workspace_id: workspaceId,
       project_id: projectId,
@@ -905,8 +930,6 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments.length === 1) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    const quota = await getQuotaForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "comparison", quota);
     const payload = await parseJson(request);
     // Dedupe while preserving order: passing the same id twice would otherwise
     // pass the < 2 guard and produce a degenerate "tied with itself" comparison.
@@ -929,6 +952,8 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
       resolveComparisonProjectId(payload.project_id || payload.projectId, assets, workspaceId),
       resolveComparisonBrief(payload, workspaceId)
     ]);
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "comparison", quota, authContext);
 
     const comparisonId = newId("cmp");
     const createdAt = nowIso();
@@ -1001,7 +1026,7 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
     // with templated asset rows; consistency with /assets POST is the safer
     // default.
     const quota = await getQuotaForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "asset", quota);
+    await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
@@ -1055,11 +1080,11 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
         id: newId("outcome"),
         comparison_id: comparisonId,
         asset_id: payload.asset_id,
-        spend: Number(payload.spend || 0),
-        impressions: Number(payload.impressions || 0),
-        clicks: Number(payload.clicks || 0),
-        conversions: Number(payload.conversions || 0),
-        revenue: Number(payload.revenue || 0),
+        spend: outcomeMetric(payload.spend, "spend"),
+        impressions: outcomeMetric(payload.impressions, "impressions", { integer: true }),
+        clicks: outcomeMetric(payload.clicks, "clicks", { integer: true }),
+        conversions: outcomeMetric(payload.conversions, "conversions", { integer: true }),
+        revenue: outcomeMetric(payload.revenue, "revenue"),
         notes: payload.notes || "",
         workspace_id: workspaceId,
         created_at: nowIso()
@@ -1076,10 +1101,10 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
   return sendJson(405, { detail: "Method not allowed" }, headers, cookies);
 }
 
-async function handleReports(request, segments, workspaceId, authContext, headers, cookies) {
+async function handleReports(request, segments, workspaceId, authContext, env, headers, cookies) {
   if (request.method === "POST" && segments[1] && segments[2] === "share") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    const link = await createShareLink(request, segments[1], workspaceId);
+    const link = await createShareLink(request, segments[1], workspaceId, env);
     await audit(workspaceId, authContext.user, "report.shared", "comparison", segments[1], {
       expires_at: link.expires_at
     });
@@ -1103,7 +1128,7 @@ async function handleSharedReport(request, segments, headers, cookies) {
   if (request.method !== "GET" || !segments[1]) {
     return sendJson(405, { detail: "Method not allowed" }, headers, cookies);
   }
-  const link = await getShareLink(segments[1]);
+  const link = await getShareLink(await sha256Hex(segments[1]));
   if (!link) {
     throw httpError(404, "Shared report not found");
   }
@@ -1122,19 +1147,20 @@ async function handleSharedReport(request, segments, headers, cookies) {
   }
 }
 
-async function createShareLink(request, comparisonId, workspaceId) {
+async function createShareLink(request, comparisonId, workspaceId, env) {
   await requireCompleteComparison(comparisonId, workspaceId);
   const token = randomBase64url(18);
+  const tokenHash = await sha256Hex(token);
   const ttlDays = Number((globalThis.__stimliEnv && globalThis.__stimliEnv.STIMLI_SHARE_LINK_TTL_DAYS) || 14);
   const link = {
-    token,
+    token_hash: tokenHash,
     workspace_id: workspaceId,
     comparison_id: comparisonId,
     expires_at: new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString(),
     created_at: nowIso()
   };
   await saveShareLink(link);
-  const origin = requestOriginFromRequest(request);
+  const origin = requestOrigin(request, env);
   return {
     token,
     path: `/share/${token}`,
@@ -1283,6 +1309,7 @@ async function refreshComparison(comparison, workspaceId) {
   }
 
   if (jobStatuses.some((job) => job.status === "failed")) {
+    const failureReasons = updatedJobs.map((job) => job.error).filter(Boolean).slice(0, 3);
     const failed = {
       ...comparison,
       status: "failed",
@@ -1293,7 +1320,7 @@ async function refreshComparison(comparison, workspaceId) {
         verdict: "revise",
         confidence: 0,
         headline: "Analysis failed before a shipping recommendation could be made",
-        reasons: jobStatuses.filter((job) => job.error).map((job) => job.error).slice(0, 3)
+        reasons: failureReasons.length ? failureReasons : ["A remote analysis job failed."]
       }
     };
     await saveComparison(publicComparison(failed));
@@ -1399,11 +1426,26 @@ function publicJobStatus(job) {
     asset_id: job.asset_id,
     status: job.status || "processing",
     provider: job.provider || "tribe-remote",
-    error: job.error || job.polling_error || null,
+    error: safeDiagnosticMessage(job.error || job.polling_error) || null,
     attempt: Number.isFinite(Number(job.attempt)) ? Number(job.attempt) : null,
     created_at: job.created_at || null,
     updated_at: job.updated_at || nowIso()
   };
+}
+
+function safeDiagnosticMessage(value) {
+  let text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  text = text
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^/@\s:]+):([^/@\s]+)@/g, "$1[redacted]@")
+    .replace(
+      /([?&][^=\s&]*(?:access[-_]?key|api[-_]?key|authorization|credential|password|passwd|secret|signature|token)[^=\s&]*=)[^&\s]+/gi,
+      "$1[redacted]"
+    )
+    .replace(/\bsk-or-v1-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, "[redacted]")
+    .replace(/\bsk_(?:live|test)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  return text.slice(0, 180);
 }
 
 function withJobStatuses(variants, jobs) {
@@ -1545,36 +1587,267 @@ function outcomeRank(left, right) {
   );
 }
 
-async function extractLandingPageText(url) {
+async function extractLandingPageText(rawUrl, env = {}) {
+  const resolved = normalizePublicHttpUrl(rawUrl);
+  const fallbackUrl = resolved.ok ? resolved.url : "";
+  if (!resolved.ok) {
+    return {
+      text: landingPageFallbackText(fallbackUrl),
+      metadata: { extraction_status: "blocked", extraction_error: resolved.reason }
+    };
+  }
+  let url = resolved.url;
+  const maxBytes = positiveNumber(env.STIMLI_LANDING_PAGE_MAX_BYTES, 1_000_000);
+  const maxRedirects = positiveNumber(env.STIMLI_LANDING_PAGE_MAX_REDIRECTS, 5);
   try {
-    const response = await fetch(url, {
-      headers: { "User-Agent": "Stimli creative analyzer" },
-      signal: AbortSignal.timeout(6000)
-    });
-    if (!response.ok) {
+    for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
+      const response = await fetch(url, {
+        headers: { "User-Agent": "Stimli creative analyzer" },
+        signal: AbortSignal.timeout(6000),
+        redirect: "manual"
+      });
+      if (isRedirectStatus(response.status)) {
+        const location = response.headers.get("location") || "";
+        if (!location) {
+          return {
+            text: landingPageFallbackText(url),
+            metadata: { extraction_status: "blocked", extraction_error: "redirect_missing_location", status_code: response.status }
+          };
+        }
+        const nextUrl = new URL(location, url).toString();
+        const next = normalizePublicHttpUrl(nextUrl);
+        if (!next.ok) {
+          return {
+            text: landingPageFallbackText(fallbackUrl),
+            metadata: { extraction_status: "blocked", extraction_error: `redirect_${next.reason}`, status_code: response.status }
+          };
+        }
+        url = next.url;
+        continue;
+      }
+      if (!response.ok) {
+        return {
+          text: landingPageFallbackText(url),
+          metadata: { extraction_status: "blocked", status_code: response.status }
+        };
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType && !isReadablePageContentType(contentType)) {
+        return {
+          text: landingPageFallbackText(url),
+          metadata: { extraction_status: "blocked", content_type: contentType.slice(0, 120) }
+        };
+      }
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        return {
+          text: landingPageFallbackText(url),
+          metadata: { extraction_status: "blocked", content_length: contentLength, max_bytes: maxBytes }
+        };
+      }
+      const html = await responseTextWithLimit(response, maxBytes);
+      const text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 8000);
       return {
-        text: `Landing page at ${url}. Add page copy or upload a screenshot transcript for deeper scoring.`,
-        metadata: { extraction_status: "blocked", status_code: response.status }
+        text: text || landingPageFallbackText(url, { short: true }),
+        metadata: { extraction_status: text ? "success" : "empty", final_url: url }
       };
     }
-    const html = await response.text();
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 8000);
     return {
-      text: text || `Landing page at ${url}. Add page copy for deeper scoring.`,
-      metadata: { extraction_status: text ? "success" : "empty" }
+      text: landingPageFallbackText(fallbackUrl),
+      metadata: { extraction_status: "blocked", extraction_error: "too_many_redirects" }
     };
   } catch (error) {
     return {
-      text: `Landing page at ${url}. Add page copy or upload a screenshot transcript for deeper scoring.`,
+      text: landingPageFallbackText(url),
       metadata: { extraction_status: "error", extraction_error: error.message }
     };
   }
+}
+
+function isRedirectStatus(status) {
+  return [301, 302, 303, 307, 308].includes(Number(status));
+}
+
+function requirePublicSourceUrl(rawUrl) {
+  const normalized = normalizePublicHttpUrl(rawUrl);
+  if (!normalized.ok) {
+    throw httpError(400, `url must be a public http(s) URL (${normalized.reason}).`);
+  }
+  return normalized.url;
+}
+
+function safeImportFailureItem(item = {}) {
+  const url = item.url ? normalizePublicHttpUrl(item.url) : { ok: false };
+  const duration = Number(item.duration_seconds);
+  return {
+    asset_type: assetTypes.has(item.asset_type) ? item.asset_type : "script",
+    name: String(item.name || "").trim().slice(0, 180) || null,
+    url: url.ok ? url.url : null,
+    duration_seconds: Number.isFinite(duration) && duration >= 0 ? duration : null
+  };
+}
+
+function normalizePublicHttpUrl(rawUrl) {
+  const input = String(rawUrl || "").trim();
+  if (!input) return { ok: false, reason: "empty_url" };
+  let parsed;
+  try {
+    parsed = new URL(/^[A-Za-z][A-Za-z0-9+.-]*:/.test(input) ? input : `https://${input}`);
+  } catch {
+    return { ok: false, reason: "invalid_url" };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, reason: "unsupported_scheme" };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: "credentials_not_allowed" };
+  }
+  if (isBlockedHostname(parsed.hostname)) {
+    return { ok: false, reason: "private_or_local_host" };
+  }
+  stripSensitiveSearchParams(parsed);
+  parsed.hash = "";
+  return { ok: true, url: parsed.toString() };
+}
+
+function stripSensitiveSearchParams(parsed) {
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (isSensitiveUrlParam(key)) parsed.searchParams.delete(key);
+  }
+}
+
+function isSensitiveUrlParam(name) {
+  const normalized = String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    normalized === "auth" ||
+    normalized === "apikey" ||
+    normalized === "code" ||
+    normalized === "jwt" ||
+    normalized === "key" ||
+    normalized === "session" ||
+    normalized === "sessionid" ||
+    normalized === "sid" ||
+    normalized === "sig" ||
+    normalized.includes("accesskey") ||
+    normalized.includes("authorization") ||
+    normalized.includes("credential") ||
+    normalized.includes("password") ||
+    normalized.includes("passwd") ||
+    normalized.includes("secret") ||
+    normalized.includes("signature") ||
+    normalized.includes("token")
+  );
+}
+
+function landingPageFallbackText(url, options = {}) {
+  const target = url ? ` at ${url}` : " URL";
+  const suffix = options.short ? "Add page copy for deeper scoring." : "Add page copy or upload a screenshot transcript for deeper scoring.";
+  return `Landing page${target}. ${suffix}`;
+}
+
+function isReadablePageContentType(contentType) {
+  const type = String(contentType).split(";")[0].trim().toLowerCase();
+  return (
+    !type ||
+    type.startsWith("text/") ||
+    type === "application/xhtml+xml" ||
+    type === "application/xml" ||
+    type === "application/json"
+  );
+}
+
+async function responseTextWithLimit(response, maxBytes) {
+  if (!response.body?.getReader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw new Error(`Landing page response exceeded ${maxBytes} bytes.`);
+    return new TextDecoder().decode(bytes);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      try { await reader.cancel(); } catch {}
+      throw new Error(`Landing page response exceeded ${maxBytes} bytes.`);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function isBlockedHostname(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/\.$/, "");
+  if (!host) return true;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
+    return true;
+  }
+  if (host === "metadata.google.internal") return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isPrivateIpv4(host);
+  if (host.includes(":")) return isPrivateIpv6(host);
+  return false;
+}
+
+function isPrivateIpv4(host) {
+  const octets = host.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b] = octets;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 192 && b === 0 && octets[2] === 2) ||
+    (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+    (a === 203 && b === 0 && octets[2] === 113) ||
+    a >= 224
+  );
+}
+
+function isPrivateIpv6(host) {
+  const value = host.replace(/^\[|\]$/g, "").toLowerCase();
+  const mappedIpv4 = ipv4FromMappedIpv6(value);
+  if (mappedIpv4) return isPrivateIpv4(mappedIpv4);
+  return (
+    value === "::" ||
+    value === "::1" ||
+    value.startsWith("fc") ||
+    value.startsWith("fd") ||
+    value.startsWith("fe8") ||
+    value.startsWith("fe9") ||
+    value.startsWith("fea") ||
+    value.startsWith("feb")
+  );
+}
+
+function ipv4FromMappedIpv6(value) {
+  const prefix = "::ffff:";
+  if (!value.startsWith(prefix)) return null;
+  const suffix = value.slice(prefix.length);
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(suffix)) return suffix;
+  const hextets = suffix.split(":");
+  if (hextets.length !== 2) return null;
+  const [high, low] = hextets.map((part) => Number.parseInt(part, 16));
+  if ([high, low].some((part) => !Number.isInteger(part) || part < 0 || part > 0xffff)) return null;
+  return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
 }
 
 function reportToMarkdown(report) {
@@ -1669,27 +1942,45 @@ function reportToMarkdown(report) {
 
 async function parseJson(request) {
   try {
+    const maxBytes = positiveNumber(globalThis.__stimliEnv?.STIMLI_MAX_JSON_BYTES, 1_000_000);
+    const contentLength = Number(request.headers.get("content-length") || 0);
+    if (contentLength > maxBytes) {
+      throw httpError(413, `JSON payload exceeds the ${maxBytes} byte limit.`);
+    }
     const body = await request.text();
     if (!body) return {};
+    const bytes = new TextEncoder().encode(body).byteLength;
+    if (bytes > maxBytes) {
+      throw httpError(413, `JSON payload exceeds the ${maxBytes} byte limit.`);
+    }
     return JSON.parse(body);
   } catch (err) {
+    if (err?.statusCode || err?.status) throw err;
     throw httpError(400, "Invalid JSON payload.");
   }
 }
 
-async function parseForm(request) {
+async function parseForm(request, options = {}) {
   const contentType = request.headers.get("content-type") || "";
   if (!contentType.includes("multipart/form-data")) {
     const payload = await parseJson(request);
     return { fields: payload, files: [] };
   }
 
+  const maxFieldBytes = positiveNumber(globalThis.__stimliEnv?.STIMLI_MAX_FORM_FIELD_BYTES, 1_000_000);
+  const maxFileBytes = positiveNumber(options.maxFileBytes, Number.POSITIVE_INFINITY);
   const fields = {};
   const files = [];
   const form = await request.formData();
   for (const [name, value] of form.entries()) {
     if (value instanceof File) {
+      if (Number.isFinite(maxFileBytes) && value.size > maxFileBytes) {
+        throw httpError(413, `Upload exceeds the ${maxFileBytes} byte limit.`);
+      }
       const bytes = new Uint8Array(await value.arrayBuffer());
+      if (Number.isFinite(maxFileBytes) && bytes.length > maxFileBytes) {
+        throw httpError(413, `Upload exceeds the ${maxFileBytes} byte limit.`);
+      }
       files.push({
         fieldname: name,
         filename: value.name,
@@ -1697,10 +1988,20 @@ async function parseForm(request) {
         bytes
       });
     } else {
+      if (new TextEncoder().encode(String(value)).byteLength > maxFieldBytes) {
+        throw httpError(413, `Form field '${name}' exceeds the ${maxFieldBytes} byte limit.`);
+      }
       fields[name] = value;
     }
   }
   return { fields, files };
+}
+
+function stringField(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
 }
 
 function textFromFilename(name) {
@@ -1722,8 +2023,12 @@ function baseHeaders(request, env) {
     }
   }
   headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,DELETE,OPTIONS";
-  headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Stimli-Workspace";
+  headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Stimli-Workspace, X-Stimli-Team";
   headers["Cache-Control"] = "no-store";
+  headers["X-Content-Type-Options"] = "nosniff";
+  headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+  headers["X-Frame-Options"] = "DENY";
+  headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
   return headers;
 }
 
@@ -1733,9 +2038,7 @@ function allowedCorsOrigin(request, env) {
   const configured = [
     env.STIMLI_APP_URL,
     env.STIMLI_ORIGIN,
-    "https://stimli.pages.dev",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
+    "https://stimli.pages.dev"
   ];
   const extra = String(env.STIMLI_ALLOWED_ORIGINS || "")
     .split(",")
@@ -1746,7 +2049,9 @@ function allowedCorsOrigin(request, env) {
   }
   try {
     const parsed = new URL(origin);
+    const allowLocal = env.STIMLI_TEST_MODE === "1" || env.STIMLI_ALLOW_LOCAL_ORIGINS === "1";
     const isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    if (!allowLocal && isLocal) return "";
     if (isLocal && ["3000", "5173", "8000", "8788"].includes(parsed.port)) {
       return origin;
     }
@@ -1809,15 +2114,16 @@ async function resolveComparisonBrief(payload, workspaceId) {
   };
 }
 
-async function enforceUsageLimit(request, workspaceId, kind, quota) {
+async function enforceUsageLimit(request, workspaceId, kind, quota, authContext = null, options = {}) {
   const env = globalThis.__stimliEnv || {};
   if (env.STIMLI_DISABLE_RATE_LIMITS === "1") return;
+  const units = Math.max(1, Math.floor(Number(options.units) || 1));
 
   const hourlyLimit = quota?.hourly?.[kind];
   const monthlyLimit = quota?.monthly?.[kind];
   const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
   const hourlySince = new Date(Date.now() - windowMs).toISOString();
-  const bucketKey = await clientBucketKey(request, workspaceId);
+  const bucketKey = await clientBucketKey(request, workspaceId, authContext);
 
   // Hourly bucket is abuse protection — checked against both the workspace and
   // a per-client hash so a flood from one IP can't drain a paid quota. Monthly
@@ -1839,7 +2145,7 @@ async function enforceUsageLimit(request, workspaceId, kind, quota) {
 
   // Fast path: pre-check the counts so the common over-limit case returns a
   // precise 402/429 with good detail before we attempt the write.
-  throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, { kind, hourlyLimit, monthlyLimit, windowMs, quota });
+  throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, { kind, hourlyLimit, monthlyLimit, windowMs, quota, units });
 
   // Atomic gate: record the usage event only if every limit still has headroom.
   // Disabled tiers pass a huge limit so they never block. This closes the
@@ -1856,7 +2162,8 @@ async function enforceUsageLimit(request, workspaceId, kind, quota) {
         hourly_limit: hourlyLimit || null,
         monthly_limit: monthlyLimit || null,
         window_ms: windowMs,
-        plan: quota.plan?.id || null
+        plan: quota.plan?.id || null,
+        units
       },
       created_at: nowIso()
     },
@@ -1881,19 +2188,19 @@ async function enforceUsageLimit(request, workspaceId, kind, quota) {
         ? countUsageEvents({ kind, since: quota.period.start, workspaceId })
         : Promise.resolve(0)
     ]);
-    throwIfOverLimit({ hourlyWorkspace: hw, hourlyClient: hc, monthlyWorkspace: mw }, { kind, hourlyLimit, monthlyLimit, windowMs, quota });
+    throwIfOverLimit({ hourlyWorkspace: hw, hourlyClient: hc, monthlyWorkspace: mw }, { kind, hourlyLimit, monthlyLimit, windowMs, quota, units });
     // The guard blocked the insert but a re-read shows headroom (rare clock/
     // window edge). Treat as a transient rate-limit rather than silently
     // allowing an unrecorded request through.
     const err = httpError(429, "Rate limit reached. Try again in a few minutes.");
     err.code = "rate_limited";
-    err.details = { kind, limit: hourlyLimit || monthlyLimit || null, window_ms: windowMs, plan: quota.plan?.id || null };
+    err.details = { kind, limit: hourlyLimit || monthlyLimit || null, window_ms: windowMs, plan: quota.plan?.id || null, units };
     throw err;
   }
 }
 
-function throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, { kind, hourlyLimit, monthlyLimit, windowMs, quota }) {
-  if (Number.isFinite(monthlyLimit) && monthlyLimit > 0 && monthlyWorkspace >= monthlyLimit) {
+function throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, { kind, hourlyLimit, monthlyLimit, windowMs, quota, units = 1 }) {
+  if (Number.isFinite(monthlyLimit) && monthlyLimit > 0 && monthlyWorkspace + units > monthlyLimit) {
     // 402 is the right status for a billing-quota block — the client should
     // surface an upgrade CTA, not a generic retry-later message.
     const err = httpError(
@@ -1905,6 +2212,7 @@ function throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, {
       kind,
       limit: monthlyLimit,
       used: monthlyWorkspace,
+      requested: units,
       plan: quota.plan?.id || null,
       reset_at: quota.period?.end || null,
       upgrade_url: "/?billing=upgrade"
@@ -1912,12 +2220,14 @@ function throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, {
     throw err;
   }
 
-  if (Number.isFinite(hourlyLimit) && hourlyLimit > 0 && Math.max(hourlyWorkspace, hourlyClient) >= hourlyLimit) {
+  if (Number.isFinite(hourlyLimit) && hourlyLimit > 0 && Math.max(hourlyWorkspace, hourlyClient) + units > hourlyLimit) {
     const err = httpError(429, "Hourly rate limit reached. Try again in a few minutes.");
     err.code = "rate_limited";
     err.details = {
       kind,
       limit: hourlyLimit,
+      used: Math.max(hourlyWorkspace, hourlyClient),
+      requested: units,
       window_ms: windowMs,
       plan: quota.plan?.id || null
     };
@@ -1925,39 +2235,37 @@ function throwIfOverLimit({ hourlyWorkspace, hourlyClient, monthlyWorkspace }, {
   }
 }
 
-async function enforceSeatLimit(team, options = {}) {
-  if (!team?.id) return;
-  const quota = await getQuotaForWorkspace(team.id);
-  const seats = Number(quota?.plan?.seats);
-  if (!Number.isFinite(seats) || seats <= 0) return;
-  const [members, invites] = await Promise.all([
-    listTeamMembers(team.id),
-    options.includePendingInvites === false ? Promise.resolve([]) : listTeamInvites(team.id)
-  ]);
-  const pending = invites.filter((invite) => !invite.accepted_at);
-  const used = members.length + pending.length;
-  if (used >= seats) {
-    const err = httpError(
-      402,
-      `Seat limit reached on the ${quota.plan?.name || "current"} plan (${seats} seats). Upgrade to invite more teammates.`
-    );
-    err.code = "seat_limit_reached";
-    err.details = {
-      kind: "seat",
-      limit: seats,
-      used,
-      plan: quota.plan?.id || null,
-      upgrade_url: "/?billing=upgrade"
-    };
-    throw err;
-  }
+function memoryStoreAllowed(env) {
+  return env.STIMLI_TEST_MODE === "1" || env.STIMLI_ALLOW_MEMORY_STORE === "1";
 }
 
-async function clientBucketKey(request, workspaceId) {
-  const forwardedFor = (request.headers.get("x-forwarded-for") || "").split(",")[0]?.trim();
-  const realIp = (request.headers.get("x-real-ip") || "").trim();
+function seatLimitError(quota, used = 0) {
+  const seats = Number(quota?.plan?.seats);
+  const err = httpError(
+    402,
+    `Seat limit reached on the ${quota?.plan?.name || "current"} plan (${seats || 0} seats). Upgrade to invite more teammates.`
+  );
+  err.code = "seat_limit_reached";
+  err.details = {
+    kind: "seat",
+    limit: Number.isFinite(seats) ? seats : 0,
+    used: Number.isFinite(Number(used)) ? Number(used) : 0,
+    plan: quota?.plan?.id || null,
+    upgrade_url: "/?billing=upgrade"
+  };
+  return err;
+}
+
+async function clientBucketKey(request, workspaceId, authContext = null) {
+  if (authContext?.authenticated && authContext.user?.id) {
+    return `client_user_${workspaceId}_${authContext.user.id}`.slice(0, 180);
+  }
+  const cfIp = (request.headers.get("cf-connecting-ip") || "").trim();
+  const allowForwardedFallback = globalThis.__stimliEnv?.STIMLI_TEST_MODE === "1" || globalThis.__stimliEnv?.STIMLI_TRUST_FORWARDED_FOR === "1";
+  const forwardedFor = allowForwardedFallback ? (request.headers.get("x-forwarded-for") || "").split(",")[0]?.trim() : "";
+  const realIp = allowForwardedFallback ? (request.headers.get("x-real-ip") || "").trim() : "";
   const userAgent = (request.headers.get("user-agent") || "").slice(0, 180);
-  const source = forwardedFor || realIp ? `${forwardedFor || realIp}|${userAgent}` : `workspace:${workspaceId}`;
+  const source = cfIp || forwardedFor || realIp ? `${cfIp || forwardedFor || realIp}|${userAgent}` : `workspace:${workspaceId}`;
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
   return `client_${bytesToHex(new Uint8Array(buf)).slice(0, 32)}`;
 }
@@ -1966,6 +2274,12 @@ function requirePermission(authContext, permission, options = {}) {
   if (options.allowAnonymous && !authContext.authenticated) return;
   if (!authContext.authenticated) throw httpError(401, "Sign in before using this workspace control.");
   if (!authContext.permissions?.includes(permission)) throw httpError(403, "Your role does not allow this action.");
+}
+
+function assertCanGrantRole(authContext, role) {
+  if (["owner", "admin"].includes(role) && authContext.role !== "owner") {
+    throw httpError(403, "Only owners can grant owner or admin roles.");
+  }
 }
 
 async function audit(workspaceId, actor, action, targetType, targetId, details = {}) {
@@ -2266,7 +2580,7 @@ function publicInvite(invite, team) {
 
 function normalizeInviteEmail(value) {
   const email = String(value || "").trim().toLowerCase();
-  if (!email) return "";
+  if (!email) throw httpError(400, "Invite email is required.");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw httpError(400, "Invite email is invalid.");
   return email;
 }
@@ -2276,14 +2590,38 @@ function getHeader(request, name) {
 }
 
 function requestOrigin(request, env) {
-  if (env?.STIMLI_APP_URL) return String(env.STIMLI_APP_URL).replace(/\/$/, "");
+  if (env?.STIMLI_APP_URL) {
+    const configured = String(env.STIMLI_APP_URL).replace(/\/$/, "");
+    return pagesPreviewOrigin(request, configured) || configured;
+  }
+  if (env?.STIMLI_ORIGIN) {
+    const configured = String(env.STIMLI_ORIGIN).replace(/\/$/, "");
+    return pagesPreviewOrigin(request, configured) || configured;
+  }
   return requestOriginFromRequest(request);
 }
 
+function pagesPreviewOrigin(request, configuredOrigin) {
+  try {
+    const configured = new URL(configuredOrigin);
+    const actual = new URL(request.url);
+    if (configured.hostname !== "stimli.pages.dev") return "";
+    if (actual.protocol !== "https:") return "";
+    if (actual.hostname === configured.hostname || actual.hostname.endsWith(`.${configured.hostname}`)) {
+      return actual.origin;
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
 function requestOriginFromRequest(request) {
-  const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "stimli.pages.dev";
-  const protocol = request.headers.get("x-forwarded-proto") || (host.includes("localhost") || host.startsWith("127.") ? "http" : "https");
-  return `${protocol}://${host.split(",")[0].trim()}`;
+  try {
+    return new URL(request.url).origin;
+  } catch {
+    return "https://stimli.pages.dev";
+  }
 }
 
 function applyCookies(headers, cookies) {
@@ -2312,6 +2650,32 @@ function titleCase(value) {
 function round(value, places = 1) {
   const factor = 10 ** places;
   return Math.round(value * factor) / factor;
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function optionalNonNegativeNumber(value, label, options = {}) {
+  if (value === undefined || value === null || value === "") return null;
+  const cleaned = String(value).replace(/[,$\s]/g, "");
+  const parsed = Number(cleaned);
+  if (!cleaned || !Number.isFinite(parsed) || parsed < 0) {
+    throw httpError(400, `${label} must be a non-negative number.`);
+  }
+  if (options.integer && !Number.isInteger(parsed)) {
+    throw httpError(400, `${label} must be a whole number.`);
+  }
+  const max = Number(options.max);
+  if (Number.isFinite(max) && parsed > max) {
+    throw httpError(400, `${label} is too large.`);
+  }
+  return parsed;
+}
+
+function outcomeMetric(value, label, options = {}) {
+  return optionalNonNegativeNumber(value, label, { max: 1_000_000_000_000, ...options }) ?? 0;
 }
 
 function randomBase64url(byteLength) {

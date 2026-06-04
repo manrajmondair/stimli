@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import math
 import os
 import re
@@ -25,6 +26,8 @@ EXTRACT_GPU = os.getenv("STIMLI_EXTRACT_GPU") or None
 GPU_SCALEDOWN_WINDOW = int(os.getenv("STIMLI_MODAL_SCALEDOWN_WINDOW", "60"))
 EXTRACT_SCALEDOWN_WINDOW = int(os.getenv("STIMLI_EXTRACT_SCALEDOWN_WINDOW", "30"))
 MAX_CONTAINERS = int(os.getenv("STIMLI_MODAL_MAX_CONTAINERS", "1"))
+MAX_INLINE_FILE_BYTES = int(os.getenv("STIMLI_MAX_INLINE_FILE_BYTES", str(8 * 1024 * 1024)))
+MAX_INLINE_SCRIPT_TEXT_BYTES = int(os.getenv("STIMLI_MAX_INLINE_SCRIPT_TEXT_BYTES", str(1 * 1024 * 1024)))
 
 app = modal.App(APP_NAME)
 cache_volume = modal.Volume.from_name("stimli-tribe-cache", create_if_missing=True)
@@ -41,7 +44,7 @@ image = (
         "torch==2.6.0",
         "torchaudio==2.6.0",
         "torchvision==0.21.0",
-        "tribev2 @ git+https://github.com/facebookresearch/tribev2.git@main",
+        "tribev2 @ git+https://github.com/facebookresearch/tribev2.git@34f52344e5ba96660fac877393e1954e399d3ef3",
     )
 )
 control_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi>=0.115.0")
@@ -224,60 +227,74 @@ def secret_status() -> dict[str, Any]:
 def _predict_asset(asset: dict[str, Any]) -> dict[str, Any]:
     _configure_hf_auth()
     model = _load_model()
-    events = _events_for_asset(model, asset)
-    preds, segments = model.predict(events=events, verbose=False)
-    return {
-        "provider": "tribe-v2",
-        "asset_id": asset.get("id"),
-        "timeline": _predictions_to_timeline(asset, preds, segments),
-    }
+    file_path = _asset_file(asset)
+    try:
+        events = _events_for_asset(model, asset, file_path)
+        preds, segments = model.predict(events=events, verbose=False)
+        return {
+            "provider": "tribe-v2",
+            "asset_id": asset.get("id"),
+            "timeline": _predictions_to_timeline(asset, preds, segments),
+        }
+    finally:
+        _cleanup_path(file_path)
 
 
 def _extract_asset(asset: dict[str, Any]) -> dict[str, Any]:
     asset_type = asset.get("type")
     file_path = _asset_file(asset)
+    temp_paths: list[Path | None] = [file_path]
     text_parts = []
     segments = []
 
-    if asset.get("extracted_text"):
-        text_parts.append(asset["extracted_text"])
+    try:
+        if asset.get("extracted_text"):
+            text_parts.append(asset["extracted_text"])
 
-    if file_path and asset_type == "image":
-        ocr_text = _ocr_image(file_path)
-        if ocr_text:
-            text_parts.append(ocr_text)
-            segments.append({"type": "ocr", "start": 0, "end": 0, "text": ocr_text})
+        if file_path and asset_type == "image":
+            ocr_text = _ocr_image(file_path)
+            if ocr_text:
+                text_parts.append(ocr_text)
+                segments.append({"type": "ocr", "start": 0, "end": 0, "text": ocr_text})
 
-    if file_path and asset_type == "audio":
-        transcript, transcript_segments = _transcribe_audio(file_path)
-        if transcript:
-            text_parts.append(transcript)
-            segments.extend(transcript_segments)
-
-    if file_path and asset_type == "video":
-        audio_path = _video_audio(file_path)
-        if audio_path:
-            transcript, transcript_segments = _transcribe_audio(audio_path)
+        if file_path and asset_type == "audio":
+            transcript, transcript_segments = _transcribe_audio(file_path)
             if transcript:
                 text_parts.append(transcript)
                 segments.extend(transcript_segments)
-        for frame in _video_frames(file_path):
-            ocr_text = _ocr_image(frame["path"])
-            if ocr_text:
-                text_parts.append(ocr_text)
-                segments.append({"type": "ocr", "start": frame["second"], "end": frame["second"], "text": ocr_text})
 
-    text = _dedupe_text(" ".join(part.strip() for part in text_parts if part and part.strip()))
-    return {
-        "provider": "stimli-extractor",
-        "asset_id": asset.get("id"),
-        "text": text,
-        "segments": segments[:80],
-        "metadata": {
-            "extraction_status": "success" if text else "empty",
-            "segment_count": len(segments),
-        },
-    }
+        if file_path and asset_type == "video":
+            audio_path = _video_audio(file_path)
+            temp_paths.append(audio_path)
+            if audio_path:
+                transcript, transcript_segments = _transcribe_audio(audio_path)
+                if transcript:
+                    text_parts.append(transcript)
+                    segments.extend(transcript_segments)
+            frames = _video_frames(file_path)
+            temp_paths.extend(frame["path"] for frame in frames)
+            if frames:
+                temp_paths.append(frames[0]["path"].parent)
+            for frame in frames:
+                ocr_text = _ocr_image(frame["path"])
+                if ocr_text:
+                    text_parts.append(ocr_text)
+                    segments.append({"type": "ocr", "start": frame["second"], "end": frame["second"], "text": ocr_text})
+
+        text = _dedupe_text(" ".join(part.strip() for part in text_parts if part and part.strip()))
+        return {
+            "provider": "stimli-extractor",
+            "asset_id": asset.get("id"),
+            "text": text,
+            "segments": segments[:80],
+            "metadata": {
+                "extraction_status": "success" if text else "empty",
+                "segment_count": len(segments),
+            },
+        }
+    finally:
+        for path in temp_paths:
+            _cleanup_path(path)
 
 
 def _job_record(job_id: str, asset: dict[str, Any], status: str) -> dict[str, Any]:
@@ -389,8 +406,12 @@ def _video_frames(file_path: Path) -> list[dict[str, Any]]:
         str(pattern),
     ]
     if not _run(command):
+        _cleanup_path(directory)
         return []
-    return [{"second": float(index * 4), "path": path} for index, path in enumerate(sorted(directory.glob("frame_*.jpg")))]
+    frames = [{"second": float(index * 4), "path": path} for index, path in enumerate(sorted(directory.glob("frame_*.jpg")))]
+    if not frames:
+        _cleanup_path(directory)
+    return frames
 
 
 def _run(command: list[str]) -> bool:
@@ -544,15 +565,14 @@ def _load_model():
     return _model
 
 
-def _events_for_asset(model, asset: dict[str, Any]):
+def _events_for_asset(model, asset: dict[str, Any], file_path: Path | None = None):
     asset_type = asset.get("type")
-    file_path = _asset_file(asset)
     if file_path and asset_type == "video":
         return model.get_events_dataframe(video_path=str(file_path))
     if file_path and asset_type == "audio":
         return model.get_events_dataframe(audio_path=str(file_path))
     if file_path and asset_type == "script":
-        return _text_events_dataframe(file_path.read_text(encoding="utf-8", errors="ignore"))
+        return _text_events_dataframe(_read_text_file_with_limit(file_path, MAX_INLINE_SCRIPT_TEXT_BYTES))
 
     text = (asset.get("extracted_text") or asset.get("name") or asset.get("source_url") or "").strip()
     if not text:
@@ -569,13 +589,56 @@ def _asset_file(asset: dict[str, Any]) -> Path | None:
     encoded = metadata.get("file_base64")
     if not encoded:
         return None
+    if _decoded_base64_size(encoded) > MAX_INLINE_FILE_BYTES:
+        raise _http_error(413, f"Inline file exceeds the {MAX_INLINE_FILE_BYTES} byte limit.")
     suffix = Path(metadata.get("original_filename") or "").suffix
     if not suffix:
         suffix = _suffix_for_type(asset.get("type"))
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    handle.write(base64.b64decode(encoded))
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+        if len(decoded) > MAX_INLINE_FILE_BYTES:
+            raise _http_error(413, f"Inline file exceeds the {MAX_INLINE_FILE_BYTES} byte limit.")
+        handle.write(decoded)
+    except (binascii.Error, ValueError, TypeError) as exc:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+        raise _http_error(400, "Invalid inline file payload.") from exc
+    except Exception:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+        raise
     handle.close()
     return Path(handle.name)
+
+
+def _decoded_base64_size(encoded: Any) -> int:
+    if not isinstance(encoded, str):
+        raise _http_error(400, "Invalid inline file payload.")
+    padding = encoded.count("=")
+    return max(0, (len(encoded) * 3) // 4 - padding)
+
+
+def _read_text_file_with_limit(path: Path, max_bytes: int) -> str:
+    with path.open("rb") as handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise _http_error(413, f"Inline script file exceeds the {max_bytes} byte text limit.")
+    return data.decode("utf-8", errors="ignore")
+
+
+def _cleanup_path(path: Path | None) -> None:
+    if not path:
+        return
+    try:
+        if path.is_dir():
+            for child in path.iterdir():
+                _cleanup_path(child)
+            path.rmdir()
+        else:
+            path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _suffix_for_type(asset_type: str | None) -> str:
@@ -602,7 +665,7 @@ def _predictions_to_timeline(asset: dict[str, Any], preds, segments) -> list[dic
 
     timeline = []
     for index, _row in enumerate(rows):
-        segment = segments[index] if index < len(segments) else None
+        segment = _segment_at(segments, index)
         attention = attention_values[index]
         memory = memory_values[index]
         load = load_values[index]
@@ -646,13 +709,32 @@ def _safe_mean(values) -> float:
 def _segment_second(segment, index: int) -> float:
     if segment is None:
         return float(index)
-    offset = getattr(segment, "offset", None)
-    start = getattr(segment, "start", None)
+    if isinstance(segment, dict):
+        offset = segment.get("offset")
+        start = segment.get("start")
+    else:
+        offset = getattr(segment, "offset", None)
+        start = getattr(segment, "start", None)
     if offset is not None:
         return round(float(offset), 1)
     if start is not None:
         return round(float(start), 1)
     return float(index)
+
+
+def _segment_at(segments, index: int):
+    if segments is None:
+        return None
+    iloc = getattr(segments, "iloc", None)
+    if iloc is not None:
+        try:
+            return iloc[index]
+        except (IndexError, TypeError):
+            return None
+    try:
+        return segments[index]
+    except (IndexError, KeyError, TypeError):
+        return None
 
 
 def _tribe_note(attention: float, memory: float, load: float) -> str:

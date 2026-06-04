@@ -36,9 +36,9 @@ export function Landing() {
             Creative pretesting · brain-aware
           </span>
           <h1 className="hero-title">
-            Know which ad
+            Know which ad{" "}
             <br />
-            <span className="hl-tomato">a real brain</span>
+            <span className="hl-tomato">a real brain</span>{" "}
             <br />
             will{" "}
             <span style={{ position: "relative", display: "inline-block" }}>

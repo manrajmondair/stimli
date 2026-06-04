@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import types
 
-from app.brain import FallbackBrainResponseProvider, FixtureBrainResponseProvider, TribeAdapter
+from app.brain import FallbackBrainResponseProvider, FixtureBrainResponseProvider, TribeAdapter, _predictions_to_timeline
 from app.models import Asset
 
 
@@ -50,6 +50,28 @@ def test_tribe_adapter_maps_predictions_to_timeline(monkeypatch, tmp_path):
     assert timeline[1].note.startswith("TRIBE")
 
 
+def test_tribe_adapter_resolves_auto_device(monkeypatch, tmp_path):
+    module = types.ModuleType("tribev2")
+    module.TribeModel = FakeModel
+    torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
+    monkeypatch.setitem(sys.modules, "tribev2", module)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    FakeModel.calls.clear()
+
+    adapter = TribeAdapter(cache_folder=str(tmp_path), device="auto")
+    asset = Asset(
+        id="asset_1",
+        type="script",
+        name="Script",
+        extracted_text="Stop guessing and try the kit today.",
+        created_at="2026-05-06T00:00:00+00:00",
+    )
+
+    adapter.predict(asset)
+
+    assert FakeModel.calls[-1].endswith(":cpu")
+
+
 def test_auto_provider_falls_back_when_tribe_fails():
     class BrokenProvider:
         name = "broken"
@@ -64,3 +86,12 @@ def test_auto_provider_falls_back_when_tribe_fails():
 
     assert provider.last_error == "missing dependency"
     assert len(timeline) == 12
+
+
+def test_timeline_conversion_handles_dict_and_missing_segments():
+    asset = Asset(id="asset_1", type="script", name="Segments", extracted_text="Try it today.", created_at="2026-05-06T00:00:00+00:00")
+
+    timeline = _predictions_to_timeline(asset, [[0.1, 0.2], [0.5, -0.1]], [{"start": 2.34}])
+
+    assert timeline[0].second == 2.3
+    assert timeline[1].second == 1.0

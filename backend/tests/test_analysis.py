@@ -1,5 +1,7 @@
-from app.analysis import CreativeAnalyzer
-from app.models import Asset
+import pytest
+
+from app.analysis import CreativeAnalyzer, _largest_advantage
+from app.models import AnalysisRun, Asset, ScoreBreakdown, TimelinePoint, VariantResult
 
 
 def test_comparison_picks_stronger_variant():
@@ -42,3 +44,54 @@ def test_analysis_is_deterministic():
     assert first.scores == second.scores
     assert first.timeline == second.timeline
 
+
+def test_comparison_requires_at_least_two_assets():
+    analyzer = CreativeAnalyzer()
+    asset = Asset(
+        id="a1",
+        type="script",
+        name="Only one",
+        extracted_text="Try the kit today.",
+        created_at="2026-05-06T00:00:00+00:00",
+    )
+
+    with pytest.raises(ValueError, match="At least two assets"):
+        analyzer.compare("cmp_1", "Pick a winner", [asset], "2026-05-06T00:00:00+00:00")
+
+
+def test_largest_advantage_treats_lower_cognitive_load_as_better():
+    best = _variant("best", overall=76, cognitive_load=45)
+    other = _variant("other", overall=70, cognitive_load=75)
+
+    reason = _largest_advantage(best, other)
+
+    assert "lower cognitive load" in reason
+    assert "30" in reason
+
+
+def _variant(asset_id: str, overall: float, cognitive_load: float) -> VariantResult:
+    scores = ScoreBreakdown(
+        overall=overall,
+        hook=60,
+        clarity=60,
+        cta=60,
+        brand_cue=60,
+        pacing=60,
+        offer_strength=60,
+        audience_fit=60,
+        neural_attention=60,
+        memory=60,
+        cognitive_load=cognitive_load,
+    )
+    timeline = [TimelinePoint(second=0, attention=0.6, memory=0.6, cognitive_load=0.5, note="stable")]
+    asset = Asset(id=asset_id, type="script", name=asset_id, extracted_text="", created_at="2026-05-06T00:00:00+00:00")
+    analysis = AnalysisRun(
+        asset_id=asset_id,
+        provider="test",
+        status="complete",
+        scores=scores,
+        timeline=timeline,
+        feature_vector={},
+        summary="test",
+    )
+    return VariantResult(asset=asset, analysis=analysis, rank=1, delta_from_best=0)

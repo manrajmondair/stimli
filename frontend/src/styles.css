@@ -664,6 +664,13 @@ h1, h2, h3, .display {
   gap: 18px;
   align-items: start;
 }
+.wb-grid-sidebar {
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+}
+
+@media (max-width: 1100px) {
+  .wb-grid-sidebar { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); }
+}
 
 @media (max-width: 1280px) { .wb-grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) {
@@ -675,7 +682,10 @@ h1, h2, h3, .display {
   .side-tip > svg, .side-tip p { display: none; }
   .side-tip strong { font-size: 14px; }
   .side-tip span { font-size: 11px; }
-  .wb-grid { grid-template-columns: 1fr; }
+  .wb-grid,
+  .wb-grid-sidebar {
+    grid-template-columns: 1fr;
+  }
   .wb-h1 { font-size: 36px; }
   .wb-main { padding: 20px 22px 36px; }
   .usage-badge { width: 100%; }
@@ -798,7 +808,23 @@ h1, h2, h3, .display {
   padding: 3px 10px;
   font-family: var(--body);
 }
-.claim-pill em { font-style: normal; opacity: 0.6; cursor: pointer; }
+.claim-pill .claim-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin: -2px -6px -2px 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  opacity: 0.65;
+}
+.claim-pill .claim-remove:hover,
+.claim-pill .claim-remove:focus-visible { opacity: 1; background: rgba(31, 30, 26, 0.1); }
 .claim-pill.forbid { background: var(--tomato-soft); border-color: var(--tomato-ink); color: var(--tomato-ink); }
 .claim-pill.add { background: var(--paper); border-style: dashed; color: var(--ink-soft); border-color: var(--ink); cursor: pointer; }
 
@@ -2221,6 +2247,12 @@ h1, h2, h3, .display {
 .simple-table th, .simple-table td { padding: 10px 12px; text-align: left; border-bottom: 1px dashed var(--line); }
 .simple-table th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
 .simple-table tr:hover td { background: var(--paper-warm); }
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-scroll .simple-table { min-width: 620px; }
 
 .banner {
   border: 2px dashed var(--ink);

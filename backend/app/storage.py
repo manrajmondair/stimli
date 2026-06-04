@@ -87,6 +87,14 @@ class Store:
             row = conn.execute("SELECT payload FROM assets WHERE id = ?", (asset_id,)).fetchone()
         return Asset.model_validate_json(row["payload"]) if row else None
 
+    def delete_asset(self, asset_id: str) -> Asset | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT payload FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+        return Asset.model_validate_json(row["payload"])
+
     def save_comparison(self, comparison: Comparison) -> Comparison:
         with self._connect() as conn:
             conn.execute(
@@ -127,13 +135,7 @@ class Store:
     def clear_demo_assets(self) -> None:
         with self._connect() as conn:
             rows = conn.execute("SELECT payload FROM assets").fetchall()
-            keep = []
             for row in rows:
                 payload: dict[str, Any] = json.loads(row["payload"])
-                if payload.get("metadata", {}).get("demo") is not True:
-                    keep.append(payload["id"])
-            conn.execute("DELETE FROM assets")
-            for asset_id in keep:
-                asset = self.get_asset(asset_id)
-                if asset:
-                    self.save_asset(asset)
+                if payload.get("metadata", {}).get("demo") is True:
+                    conn.execute("DELETE FROM assets WHERE id = ?", (payload["id"],))

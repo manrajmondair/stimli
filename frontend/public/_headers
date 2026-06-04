@@ -1,6 +1,16 @@
 # Cloudflare Pages will use this file to set HTTP headers on the matching
-# requests. Path globs are matched top-to-bottom; the FIRST matching rule
-# is applied, so more specific paths must come before more generic ones.
+# requests. Requests inherit every matching block; if the same header is set
+# more than once Cloudflare joins the values with a comma, so keep global
+# headers unique and put route-specific cache policy in the path blocks below.
+
+# Conservative security headers for the static app shell and its bundled
+# assets. Content-Security-Policy is intentionally left to a future Clerk-aware
+# pass so auth scripts, frames, and API calls are not broken by guesswork.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
 
 # Hashed asset bundles are content-addressed (filename embeds a hash). Cache
 # them aggressively — when the content changes, the filename changes too.

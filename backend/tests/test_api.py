@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.storage import UPLOAD_DIR
 
 
 client = TestClient(app)
@@ -35,6 +36,23 @@ def test_demo_seed_and_compare():
     assert "## Recommendation" in markdown.text
 
 
+def test_demo_seed_replaces_prior_demo_assets():
+    first = client.post("/demo/seed")
+    assert first.status_code == 200
+    first_ids = {asset["id"] for asset in first.json()}
+
+    second = client.post("/demo/seed")
+    assert second.status_code == 200
+    second_ids = {asset["id"] for asset in second.json()}
+    assert len(second_ids) == 3
+    assert first_ids.isdisjoint(second_ids)
+
+    listed = client.get("/assets")
+    assert listed.status_code == 200
+    demo_assets = [asset for asset in listed.json() if asset["metadata"].get("demo") is True]
+    assert {asset["id"] for asset in demo_assets} == second_ids
+
+
 def test_text_asset_upload():
     response = client.post(
         "/assets",
@@ -48,6 +66,245 @@ def test_text_asset_upload():
     payload = response.json()
     assert payload["asset"]["type"] == "script"
     assert "Stop guessing" in payload["asset"]["extracted_text"]
+    assert "file_path" not in payload["asset"]
+
+
+def test_json_asset_upload_matches_serverless_shape():
+    response = client.post(
+        "/assets",
+        json={
+            "asset_type": "script",
+            "name": "JSON script",
+            "text": "Compare variants before buying media.",
+            "duration_seconds": 12,
+        },
+    )
+
+    assert response.status_code == 200
+    asset = response.json()["asset"]
+    assert asset["type"] == "script"
+    assert asset["name"] == "JSON script"
+    assert asset["extracted_text"] == "Compare variants before buying media."
+    assert asset["duration_seconds"] == 12
+    assert "file_path" not in asset
+
+
+def test_upload_limits_reject_and_cleanup(monkeypatch):
+    monkeypatch.setenv("STIMLI_MAX_DIRECT_UPLOAD_BYTES", "8")
+    filename = "oversized-stimli-upload.txt"
+    before = {path.name for path in UPLOAD_DIR.glob(f"*_{filename}")}
+
+    response = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "Too large"},
+        files={"file": (filename, b"123456789", "text/plain")},
+    )
+
+    assert response.status_code == 413
+    after = {path.name for path in UPLOAD_DIR.glob(f"*_{filename}")}
+    assert after == before
+
+
+def test_script_upload_text_limit_rejects_and_cleanup(monkeypatch):
+    monkeypatch.setenv("STIMLI_MAX_DIRECT_UPLOAD_BYTES", "64")
+    monkeypatch.setenv("STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES", "4")
+    filename = "oversized-stimli-script.txt"
+    before = {path.name for path in UPLOAD_DIR.glob(f"*_{filename}")}
+
+    response = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "Script too large"},
+        files={"file": (filename, b"hello", "text/plain")},
+    )
+
+    assert response.status_code == 413
+    after = {path.name for path in UPLOAD_DIR.glob(f"*_{filename}")}
+    assert after == before
+
+
+def test_public_payloads_never_expose_file_paths():
+    asset_a = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "File-backed A"},
+        files={"file": ("public-path-a.txt", b"Stop guessing. Try the kit today.", "text/plain")},
+    )
+    asset_b = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "File-backed B"},
+        files={"file": ("public-path-b.txt", b"Compare variants before buying media.", "text/plain")},
+    )
+    assert asset_a.status_code == 200
+    assert asset_b.status_code == 200
+    assert "file_path" not in asset_a.json()["asset"]
+
+    listed = client.get("/assets")
+    assert listed.status_code == 200
+    listed_asset = next(asset for asset in listed.json() if asset["id"] == asset_a.json()["asset"]["id"])
+    assert "file_path" not in listed_asset
+
+    comparison = client.post(
+        "/comparisons",
+        json={
+            "asset_ids": [asset_a.json()["asset"]["id"], asset_b.json()["asset"]["id"]],
+            "objective": "Public payload should not leak server paths.",
+        },
+    )
+    assert comparison.status_code == 200
+    assert "file_path" not in str(comparison.json())
+
+    report = client.get(f"/reports/{comparison.json()['id']}")
+    assert report.status_code == 200
+    assert "file_path" not in str(report.json())
+
+
+def test_delete_asset_removes_library_row_and_uploaded_file():
+    filename = "delete-stimli-upload.txt"
+    before = {path.name for path in UPLOAD_DIR.glob(f"*_{filename}")}
+    created = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "Delete file-backed asset"},
+        files={"file": (filename, b"Delete this uploaded creative.", "text/plain")},
+    )
+    assert created.status_code == 200
+    asset_id = created.json()["asset"]["id"]
+    matches = [path for path in UPLOAD_DIR.glob(f"*_{filename}") if path.name not in before]
+    assert len(matches) == 1
+    upload_path = matches[0]
+    assert upload_path.exists()
+
+    deleted = client.delete(f"/assets/{asset_id}")
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": asset_id}
+    assert not upload_path.exists()
+    listed = client.get("/assets")
+    assert listed.status_code == 200
+    assert all(asset["id"] != asset_id for asset in listed.json())
+    assert client.delete(f"/assets/{asset_id}").status_code == 404
+
+
+def test_comparison_requires_two_distinct_assets():
+    seeded = client.post("/demo/seed").json()
+    response = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[0]["id"]], "objective": "Duplicate asset should not compare."},
+    )
+
+    assert response.status_code == 400
+    assert "two distinct" in response.json()["detail"]
+
+
+def test_blank_landing_page_text_uses_url_extraction(monkeypatch):
+    def fake_extract(url: str):
+        return f"Fetched landing page copy from {url}. Shop today.", {"extraction_status": "fetched"}
+
+    monkeypatch.setattr("app.main.extract_landing_page_text", fake_extract)
+
+    response = client.post(
+        "/assets",
+        data={
+            "asset_type": "landing_page",
+            "name": "Offer page",
+            "text": "   ",
+            "url": "example.com/offer",
+        },
+    )
+
+    assert response.status_code == 200
+    asset = response.json()["asset"]
+    assert asset["extracted_text"].startswith("Fetched landing page copy")
+    assert asset["metadata"]["extraction_status"] == "fetched"
+
+
+def test_asset_url_and_duration_validation():
+    sanitized = client.post(
+        "/assets",
+        data={
+            "asset_type": "script",
+            "url": "example.com/creative?utm=paid&token=private-token&api_key=secret#fragment",
+            "text": "Compare variants before launch.",
+            "duration_seconds": "12",
+        },
+    )
+    assert sanitized.status_code == 200
+    assert sanitized.json()["asset"]["source_url"] == "https://example.com/creative?utm=paid"
+    assert sanitized.json()["asset"]["duration_seconds"] == 12
+    assert "private-token" not in str(sanitized.json())
+    assert "api_key" not in str(sanitized.json())
+
+    credentialed = client.post(
+        "/assets",
+        data={
+            "asset_type": "script",
+            "url": "https://user:secret@example.com/creative",
+            "text": "Credentialed URLs should be rejected.",
+        },
+    )
+    assert credentialed.status_code == 400
+    assert "credentials" in credentialed.json()["detail"].lower()
+
+    negative_duration = client.post(
+        "/assets",
+        data={
+            "asset_type": "script",
+            "name": "Bad duration",
+            "text": "Try the starter kit today.",
+            "duration_seconds": "-1",
+        },
+    )
+    assert negative_duration.status_code == 400
+    assert "non-negative" in negative_duration.json()["detail"]
+
+    private_landing = client.post(
+        "/assets",
+        data={
+            "asset_type": "landing_page",
+            "url": "http://127.0.0.1:8000/admin",
+        },
+    )
+    assert private_landing.status_code == 200
+    assert private_landing.json()["asset"]["source_url"] is None
+
+
+def test_unresolved_source_url_returns_client_error(monkeypatch):
+    def fail_resolution(url: str):
+        raise ValueError("Could not resolve landing page host: missing.example")
+
+    monkeypatch.setattr("app.main.normalize_public_url", fail_resolution)
+    response = client.post(
+        "/assets",
+        data={
+            "asset_type": "script",
+            "url": "missing.example",
+            "text": "DNS failures should not become 500s.",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "could not resolve" in response.json()["detail"].lower()
+
+
+def test_unresolved_landing_page_uses_extraction_fallback(monkeypatch):
+    def fail_resolution(url: str):
+        raise ValueError("Could not resolve landing page host: missing.example")
+
+    def fake_extract(url: str):
+        return "Landing page fallback copy. Shop now.", {"extraction_status": "fallback"}
+
+    monkeypatch.setattr("app.main.normalize_public_url", fail_resolution)
+    monkeypatch.setattr("app.main.extract_landing_page_text", fake_extract)
+    response = client.post(
+        "/assets",
+        data={
+            "asset_type": "landing_page",
+            "url": "missing.example",
+        },
+    )
+
+    assert response.status_code == 200
+    asset = response.json()["asset"]
+    assert asset["source_url"] is None
+    assert asset["metadata"]["extraction_status"] == "fallback"
 
 
 def test_brief_history_outcome_and_learning_summary():
@@ -102,3 +359,28 @@ def test_brief_history_outcome_and_learning_summary():
     learning = client.get("/learning/summary")
     assert learning.status_code == 200
     assert learning.json()["outcome_count"] >= 1
+
+
+def test_outcome_metrics_must_be_non_negative():
+    seeded = client.post("/demo/seed").json()
+    response = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Validate outcome metrics."},
+    )
+    assert response.status_code == 200
+    comparison = response.json()
+
+    outcome = client.post(
+        f"/comparisons/{comparison['id']}/outcomes",
+        json={
+            "asset_id": comparison["recommendation"]["winner_asset_id"],
+            "spend": -1,
+            "impressions": 100,
+            "clicks": 10,
+            "conversions": 1,
+            "revenue": 20,
+        },
+    )
+
+    assert outcome.status_code == 400
+    assert "spend must be a non-negative number" in outcome.json()["detail"]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 AssetType = Literal["script", "landing_page", "image", "audio", "video"]
@@ -20,8 +20,21 @@ class Asset(BaseModel):
     created_at: str
 
 
+class PublicAsset(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    type: AssetType
+    name: str
+    source_url: str | None = None
+    extracted_text: str = ""
+    duration_seconds: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
 class AssetUploadResponse(BaseModel):
-    asset: Asset
+    asset: PublicAsset
 
 
 class TimelinePoint(BaseModel):
@@ -89,7 +102,7 @@ class ComparisonCreate(BaseModel):
 
 
 class VariantResult(BaseModel):
-    asset: Asset
+    asset: PublicAsset
     analysis: AnalysisRun
     rank: int
     delta_from_best: float
@@ -130,7 +143,7 @@ class ChallengerCreate(BaseModel):
 
 
 class ChallengerResponse(BaseModel):
-    asset: Asset
+    asset: PublicAsset
     source_asset_id: str
     focus: str
 

@@ -18,7 +18,7 @@ bucket_name = "stimli-media"
 STIMLI_BRAIN_PROVIDER = "tribe-remote"
 STIMLI_ORIGIN = "https://stimli.pages.dev"
 STIMLI_APP_URL = "https://stimli.pages.dev"
-CLERK_AUTHORIZED_PARTIES = "https://stimli.pages.dev,http://localhost:5173,http://localhost:8788"
+CLERK_AUTHORIZED_PARTIES = "https://stimli.pages.dev"
 STIMLI_ASSET_LIMIT_PER_HOUR = "40"
 STIMLI_COMPARISON_LIMIT_PER_HOUR = "12"
 STIMLI_MAX_DIRECT_UPLOAD_BYTES = "26214400"
@@ -29,12 +29,14 @@ STIMLI_SHARE_LINK_TTL_DAYS = "14"
 STIMLI_INVITE_TTL_DAYS = "14"
 STIMLI_RATE_LIMIT_WINDOW_MS = "3600000"
 
-# Preview environment for branch deploys.
+# Preview environment for branch deploys. API-generated links use the incoming
+# *.stimli.pages.dev request origin when production is configured here, so
+# branch previews do not mint production invite/share/checkout URLs.
 [env.preview.vars]
 STIMLI_BRAIN_PROVIDER = "tribe-remote"
 STIMLI_ORIGIN = "https://stimli.pages.dev"
 STIMLI_APP_URL = "https://stimli.pages.dev"
-CLERK_AUTHORIZED_PARTIES = "https://stimli.pages.dev,http://localhost:5173,http://localhost:8788"
+CLERK_AUTHORIZED_PARTIES = "https://stimli.pages.dev"
 STIMLI_ASSET_LIMIT_PER_HOUR = "40"
 STIMLI_COMPARISON_LIMIT_PER_HOUR = "12"
 STIMLI_MAX_DIRECT_UPLOAD_BYTES = "26214400"
@@ -47,4 +49,4 @@ STIMLI_RATE_LIMIT_WINDOW_MS = "3600000"
 
 [[env.preview.r2_buckets]]
 binding = "STIMLI_MEDIA"
-bucket_name = "stimli-media"
+bucket_name = "stimli-media-preview"

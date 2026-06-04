@@ -5,6 +5,7 @@ import importlib.util
 import math
 import os
 import re
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from statistics import mean, pstdev
@@ -110,7 +111,7 @@ class TribeAdapter(BrainResponseProvider):
             self._model = tribe_model_cls.from_pretrained(
                 self.checkpoint,
                 cache_folder=self.cache_folder,
-                device=self.device,
+                device=feature_device,
                 config_update={
                     "data.text_feature.device": feature_device,
                     "data.image_feature.image.device": feature_device,
@@ -128,12 +129,12 @@ class TribeAdapter(BrainResponseProvider):
         if path and path.exists() and asset.type == "audio" and suffix in {".wav", ".mp3", ".flac", ".ogg"}:
             return model.get_events_dataframe(audio_path=str(path))
         if path and path.exists() and asset.type == "script" and suffix == ".txt":
-            return _text_events_dataframe(path.read_text(encoding="utf-8", errors="ignore"))
+            return _text_events_dataframe(model, path=path)
 
         text = asset.extracted_text.strip() or asset.name or asset.source_url
         if not text:
             raise RuntimeError("TRIBE requires a file or extracted text for inference.")
-        return _text_events_dataframe(text)
+        return _text_events_dataframe(model, text=text)
 
 
 class FallbackBrainResponseProvider(BrainResponseProvider):
@@ -215,7 +216,7 @@ def _predictions_to_timeline(asset: Asset, preds, segments) -> list[TimelinePoin
 
     points = []
     for index, _row in enumerate(rows):
-        segment = segments[index] if index < len(segments) else None
+        segment = _segment_at(segments, index)
         attention = attention_values[index]
         memory = memory_values[index]
         load = load_values[index]
@@ -259,13 +260,32 @@ def _safe_mean(values) -> float:
 def _segment_second(segment, index: int) -> float:
     if segment is None:
         return float(index)
-    offset = getattr(segment, "offset", None)
-    start = getattr(segment, "start", None)
+    if isinstance(segment, dict):
+        offset = segment.get("offset")
+        start = segment.get("start")
+    else:
+        offset = getattr(segment, "offset", None)
+        start = getattr(segment, "start", None)
     if offset is not None:
         return round(float(offset), 1)
     if start is not None:
         return round(float(start), 1)
     return float(index)
+
+
+def _segment_at(segments, index: int):
+    if segments is None:
+        return None
+    iloc = getattr(segments, "iloc", None)
+    if iloc is not None:
+        try:
+            return iloc[index]
+        except (IndexError, TypeError):
+            return None
+    try:
+        return segments[index]
+    except (IndexError, KeyError, TypeError):
+        return None
 
 
 def _tribe_note(attention: float, memory: float, load: float) -> str:
@@ -291,47 +311,18 @@ def _feature_device(device: str) -> str:
         return "cpu"
 
 
-def _text_events_dataframe(text: str):
-    try:
-        import pandas as pd
-        from neuralset.events.utils import standardize_events
-    except Exception as exc:
-        raise RuntimeError("TRIBE text events require pandas and neuralset.") from exc
-
-    words = re.findall(r"[A-Za-z0-9']+", text)
-    if not words:
+def _text_events_dataframe(model, text: str | None = None, path: Path | None = None):
+    if path is not None:
+        return model.get_events_dataframe(text_path=str(path))
+    if not text or not re.search(r"\w", text):
         raise RuntimeError("TRIBE text inference requires at least one word.")
-    seconds_per_word = 0.42
-    rows = []
-    for index, word in enumerate(words):
-        context_start = max(0, index - 80)
-        context = " ".join(words[context_start : index + 1])
-        rows.append(
-            {
-                "type": "Word",
-                "start": round(index * seconds_per_word, 3),
-                "duration": seconds_per_word,
-                "timeline": "default",
-                "subject": "default",
-                "text": word,
-                "language": "english",
-                "sentence": text,
-                "sentence_char": 0,
-                "context": context,
-                "modality": "read",
-            }
-        )
-    rows.append(
-        {
-            "type": "Text",
-            "start": 0,
-            "duration": round(len(words) * seconds_per_word, 3),
-            "timeline": "default",
-            "subject": "default",
-            "text": text,
-            "language": "english",
-            "context": text,
-            "modality": "read",
-        }
-    )
-    return standardize_events(pd.DataFrame(rows))
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", prefix="stimli-tribe-", encoding="utf-8", delete=False) as handle:
+            handle.write(text)
+            temp_path = Path(handle.name)
+        return model.get_events_dataframe(text_path=str(temp_path))
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
