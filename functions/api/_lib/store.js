@@ -116,6 +116,20 @@ export async function deleteAsset(assetId, workspaceId = "public") {
   return rows.length > 0;
 }
 
+export async function clearDemoAssets(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    for (const [assetId, asset] of memoryStore.assets.entries()) {
+      if (workspaceForPayload(asset) === workspaceId && asset.metadata?.demo === true) {
+        memoryStore.assets.delete(assetId);
+      }
+    }
+    return;
+  }
+  await ensureTables(sql);
+  await sql`delete from stimli_assets where workspace_id = ${workspaceId} and payload->'metadata'->>'demo' = 'true'`;
+}
+
 export async function saveProject(project) {
   const sql = getSql();
   const workspaceId = workspaceForPayload(project);

@@ -929,6 +929,27 @@ test("demo seed consumes asset quota for every seeded asset", async () => {
   }
 });
 
+test("demo seed replaces prior demo assets in the workspace", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  const first = await call("POST", "/api/demo/seed", null, headers);
+  const second = await call("POST", "/api/demo/seed", null, headers);
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+
+  const firstIds = new Set(first.json.map((asset) => asset.id));
+  const secondIds = new Set(second.json.map((asset) => asset.id));
+  assert.equal(secondIds.size, 3);
+  assert.equal([...firstIds].some((id) => secondIds.has(id)), false);
+
+  const listed = await call("GET", "/api/assets", null, headers);
+  assert.equal(listed.statusCode, 200);
+  const demoAssets = listed.json.filter((asset) => asset.metadata?.demo === true);
+  assert.equal(demoAssets.length, 3);
+  assert.deepEqual(new Set(demoAssets.map((asset) => asset.id)), secondIds);
+});
+
 test("Pages preview deployments generate links on the request origin", async () => {
   withEnv({
     STIMLI_APP_URL: "https://stimli.pages.dev",

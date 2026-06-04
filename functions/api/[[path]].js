@@ -39,6 +39,7 @@ import {
   handleBillingWebhook
 } from "./_lib/billing.js";
 import {
+  clearDemoAssets,
   configureStore,
   deleteAsset,
   deleteBrandProfile,
@@ -1202,6 +1203,7 @@ async function buildReport(comparisonId, workspaceId) {
 }
 
 async function seedDemo(workspaceId, projectId = null) {
+  await clearDemoAssets(workspaceId);
   const samples = [
     {
       id: newId("asset"),
