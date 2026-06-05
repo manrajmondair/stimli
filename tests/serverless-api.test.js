@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { onRequest } from "../functions/api/[[path]].js";
+import { onRequest, UNLIMITED_USAGE_SENTINEL } from "../functions/api/[[path]].js";
 import { nowIso, resetRemoteBrainHealth } from "../functions/api/_lib/analysis.js";
 import { onInvoiceFailed, onInvoicePaid, onSubscriptionDeleted, stripeIdempotencyKey } from "../functions/api/_lib/billing.js";
 import {
@@ -45,6 +45,16 @@ const testEnv = {
 
 // Activate memory-mode storage for direct calls to saveUser / saveTeam etc.
 configureStore(testEnv);
+
+test("unlimited usage sentinel stays within Postgres int4 range", () => {
+  // The store binds limits into a `count::int + units <= $limit` comparison, so
+  // Postgres infers an int4 parameter. A sentinel above the int4 ceiling throws
+  // 22003 and 500s any creation that runs the gate without a finite cap (this is
+  // invisible in the memory-store tests, hence the explicit bound check here).
+  assert.ok(Number.isInteger(UNLIMITED_USAGE_SENTINEL));
+  assert.ok(UNLIMITED_USAGE_SENTINEL <= 2147483647, "sentinel must fit a Postgres int4");
+  assert.ok(UNLIMITED_USAGE_SENTINEL >= 1_000_000_000, "sentinel must still be effectively unlimited");
+});
 
 test("serves health from the Pages API", async () => {
   const response = await call("GET", "/api/health");

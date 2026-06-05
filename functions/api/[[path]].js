@@ -87,6 +87,14 @@ import {
 const assetTypes = new Set(["script", "landing_page", "image", "audio", "video"]);
 const DEMO_SEED_ASSET_UNITS = 3;
 
+// "Effectively unlimited" usage-limit sentinel used when a kind has no cap.
+// MUST stay within Postgres int4: the store binds limits into a
+// `count::int + units <= $limit` comparison, so Postgres infers an int4 param.
+// Number.MAX_SAFE_INTEGER overflowed int4 (error 22003) and 500'd any creation
+// that ran the gate without a finite monthly/hourly cap. 2e9 is well under the
+// int4 ceiling (2,147,483,647) yet far beyond any real usage count.
+export const UNLIMITED_USAGE_SENTINEL = 2_000_000_000;
+
 export async function onRequest(context) {
   const { request, env } = context;
   configureStore(env);
@@ -2299,7 +2307,8 @@ async function enforceUsageLimit(request, workspaceId, kind, quota, authContext 
   // Disabled tiers pass a huge limit so they never block. This closes the
   // check-then-insert race — without it two concurrent requests both pass the
   // pre-check and both write, overshooting the quota.
-  const huge = Number.MAX_SAFE_INTEGER;
+  //
+  const huge = UNLIMITED_USAGE_SENTINEL;
   const effMonthlyLimit = Number.isFinite(monthlyLimit) && monthlyLimit > 0 && quota?.period?.start ? monthlyLimit : huge;
   const effHourlyLimit = Number.isFinite(hourlyLimit) && hourlyLimit > 0 ? hourlyLimit : huge;
   const recorded = await saveUsageEventConditional(
