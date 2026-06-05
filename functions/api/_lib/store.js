@@ -40,6 +40,8 @@ let _sqlClient = null;
 let _initPromise = null;
 const STORE_SCHEMA_VERSION = "2026-06-04-production-bootstrap-v2";
 const STORE_INDEX_VERSION = "2026-06-04-production-indexes-v1";
+const STORE_INDEX_CLAIM_VERSION = `${STORE_INDEX_VERSION}:claim`;
+const STORE_INDEX_CLAIM_STALE_MS = 10 * 60 * 1000;
 
 export function configureStore(env) {
   const url = env?.POSTGRES_URL || env?.DATABASE_URL || "";
@@ -1633,14 +1635,20 @@ async function ensureTables(sql) {
 
     const indexesApplied = await sql`select version from stimli_schema_migrations where version = ${STORE_INDEX_VERSION} limit 1`;
     if (indexesApplied.length > 0) return;
-    for (const query of schemaIndexQueries(sql)) {
-      await query;
+    const claimedIndexes = await claimSchemaMigration(sql, STORE_INDEX_CLAIM_VERSION, STORE_INDEX_CLAIM_STALE_MS);
+    if (!claimedIndexes) return;
+    try {
+      for (const query of schemaIndexQueries(sql)) {
+        await query;
+      }
+      await sql`
+        insert into stimli_schema_migrations (version, applied_at)
+        values (${STORE_INDEX_VERSION}, ${new Date().toISOString()})
+        on conflict (version) do update set applied_at = excluded.applied_at
+      `;
+    } finally {
+      await sql`delete from stimli_schema_migrations where version = ${STORE_INDEX_CLAIM_VERSION}`.catch(() => {});
     }
-    await sql`
-      insert into stimli_schema_migrations (version, applied_at)
-      values (${STORE_INDEX_VERSION}, ${new Date().toISOString()})
-      on conflict (version) do update set applied_at = excluded.applied_at
-    `;
   })();
   try {
     return await _initPromise;
@@ -1652,6 +1660,27 @@ async function ensureTables(sql) {
     _initPromise = null;
     throw error;
   }
+}
+
+async function claimSchemaMigration(sql, version, staleMs) {
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const staleIso = new Date(now - staleMs).toISOString();
+  const rows = await sql`
+    with stale as (
+      delete from stimli_schema_migrations
+      where version = ${version} and applied_at < ${staleIso}
+      returning version
+    ),
+    claimed as (
+      insert into stimli_schema_migrations (version, applied_at)
+      values (${version}, ${nowIso})
+      on conflict (version) do nothing
+      returning version
+    )
+    select exists(select 1 from claimed) as claimed
+  `;
+  return Boolean(rows[0]?.claimed);
 }
 
 function schemaBootstrapQueries(sql) {

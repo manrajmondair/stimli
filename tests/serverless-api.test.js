@@ -109,8 +109,11 @@ test("postgres bootstrap migrates columns used by current production code", () =
     "stimli_schema_migrations",
     "STORE_SCHEMA_VERSION",
     "STORE_INDEX_VERSION",
+    "STORE_INDEX_CLAIM_VERSION",
+    "STORE_INDEX_CLAIM_STALE_MS",
     "schemaBackfillQueries(sql)",
     "schemaIndexQueries(sql)",
+    "claimSchemaMigration(sql, STORE_INDEX_CLAIM_VERSION, STORE_INDEX_CLAIM_STALE_MS)",
     "select version from stimli_schema_migrations where version = ${STORE_SCHEMA_VERSION}",
     "select version from stimli_schema_migrations where version = ${STORE_INDEX_VERSION}",
     "create index concurrently if not exists",
@@ -137,6 +140,24 @@ test("postgres bootstrap migrates columns used by current production code", () =
     false,
     "index creation should run outside the request-time bootstrap transaction"
   );
+});
+
+test("postgres index bootstrap uses a stale-safe migration claim", () => {
+  const source = readFileSync(new URL("../functions/api/_lib/store.js", import.meta.url), "utf8");
+  const ensureTablesStart = source.indexOf("async function ensureTables");
+  const indexCheck = source.indexOf("const indexesApplied", ensureTablesStart);
+  const indexClaim = source.indexOf("claimSchemaMigration(sql, STORE_INDEX_CLAIM_VERSION", indexCheck);
+  const indexQueries = source.indexOf("schemaIndexQueries(sql)", indexClaim);
+  const finalLedger = source.indexOf("values (${STORE_INDEX_VERSION}", indexQueries);
+  const claimCleanup = source.indexOf("delete from stimli_schema_migrations where version = ${STORE_INDEX_CLAIM_VERSION}", finalLedger);
+
+  assert.ok(indexCheck > -1, "missing index ledger check");
+  assert.ok(indexClaim > indexCheck, "index claim should follow final ledger check");
+  assert.ok(indexQueries > indexClaim, "index creation should run only after claiming");
+  assert.ok(finalLedger > indexQueries, "final index ledger should be written after index creation");
+  assert.ok(claimCleanup > finalLedger, "claim row should be cleaned after the index pass");
+  assert.match(source, /delete from stimli_schema_migrations[\s\S]+where version = \$\{version\} and applied_at < \$\{staleIso\}/);
+  assert.match(source, /insert into stimli_schema_migrations \(version, applied_at\)[\s\S]+on conflict \(version\) do nothing/);
 });
 
 test("postgres invite acceptance only consumes an invite after seat resolution", () => {
