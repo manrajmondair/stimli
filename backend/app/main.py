@@ -368,9 +368,17 @@ def seed_demo(request: Request) -> list[Asset]:
 
 
 def _md_cell(value: str) -> str:
-    # Escape pipes and flatten newlines so a user-controlled variant name can't
-    # break the Markdown table layout.
-    return str(value or "").replace("\r", " ").replace("\n", " ").replace("|", "\\|").strip()
+    # Flatten newlines and escape the backslash escape character (first, so a
+    # literal "\" can't slip past) and pipes, so a user-controlled variant name
+    # can't break the Markdown table layout. Mirrors the serverless mdCell().
+    return (
+        str(value or "")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .strip()
+    )
 
 
 def _text_from_filename(name: str) -> str:
