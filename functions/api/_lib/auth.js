@@ -12,7 +12,6 @@ import { createClerkClient, verifyToken } from "@clerk/backend";
 import { newId, nowIso } from "./analysis.js";
 import {
   ensureTeamWithOwner,
-  getTeam,
   getTeamMember,
   getUser,
   getUserByEmail,

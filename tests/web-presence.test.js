@@ -24,11 +24,13 @@ function pngDimensions(path) {
 }
 
 test("robots.txt keeps crawlers out of the API, app, and tokened links", () => {
-  const robots = readPublic("robots.txt");
+  // Compare against trimmed lines rather than building a regex from each path
+  // (which only escaped "/" and tripped CodeQL's incomplete-sanitization rule).
+  const lines = readPublic("robots.txt").split(/\r?\n/).map((line) => line.trim());
   for (const path of ["/api/", "/app", "/share/", "/invite/"]) {
-    assert.match(robots, new RegExp(`^Disallow: ${path.replace(/[/]/g, "\\/")}\\s*$`, "m"), `expected Disallow ${path}`);
+    assert.ok(lines.includes(`Disallow: ${path}`), `expected Disallow ${path}`);
   }
-  assert.match(robots, /^Sitemap: https:\/\/stimli\.pages\.dev\/sitemap\.xml\s*$/m);
+  assert.ok(lines.includes("Sitemap: https://stimli.pages.dev/sitemap.xml"));
 });
 
 test("sitemap.xml is well-formed and lists the public marketing pages", () => {
