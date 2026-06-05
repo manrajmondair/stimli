@@ -485,6 +485,8 @@ test("returns a structured 402 with quota_exceeded when the monthly cap is reach
     assert.equal(blocked.json.details.plan, "research");
     assert.ok(blocked.json.details.reset_at, "expected a reset_at timestamp");
     assert.ok(blocked.json.details.upgrade_url, "expected an upgrade_url");
+    // The monthly quota block advertises when the cap resets so clients back off.
+    assert.ok(Number(blocked.headers["retry-after"]) > 0, "expected a positive Retry-After header");
   } finally {
     withEnv({
       STIMLI_RESEARCH_COMPARISON_LIMIT_PER_MONTH: undefined,
@@ -2557,6 +2559,8 @@ test("rate limits comparison creation per workspace and client", async () => {
     );
     assert.equal(allowed.statusCode, 200);
     assert.equal(blocked.statusCode, 429);
+    // Hourly throttle responses carry a Retry-After hint derived from the window.
+    assert.ok(Number(blocked.headers["retry-after"]) > 0, "expected a positive Retry-After header");
   } finally {
     withEnv({ STIMLI_COMPARISON_LIMIT_PER_HOUR: undefined });
   }

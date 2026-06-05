@@ -247,8 +247,31 @@ export async function onRequest(context) {
     const body = { detail: message };
     if (error.code) body.code = error.code;
     if (error.details && typeof error.details === "object") body.details = error.details;
-    return sendJson(status, body, headers, cookies);
+    // Standard HTTP back-off hint on throttle/quota responses so well-behaved
+    // clients (and our own retries) wait the right amount instead of hammering.
+    const retryAfter = retryAfterSeconds(error);
+    const responseHeaders = retryAfter !== null ? { ...headers, "Retry-After": String(retryAfter) } : headers;
+    return sendJson(status, body, responseHeaders, cookies);
   }
+}
+
+function retryAfterSeconds(error) {
+  const details = error?.details;
+  if (!details || typeof details !== "object") return null;
+  if (error.code === "rate_limited") {
+    const windowMs = Number(details.window_ms);
+    if (Number.isFinite(windowMs) && windowMs > 0) {
+      return Math.max(1, Math.ceil(windowMs / 1000));
+    }
+    return null;
+  }
+  if (error.code === "quota_exceeded" && details.reset_at) {
+    const resetMs = Date.parse(details.reset_at);
+    if (Number.isFinite(resetMs)) {
+      return Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
+    }
+  }
+  return null;
 }
 
 async function handleProjects(request, segments, workspaceId, authContext, headers, cookies) {
@@ -2078,6 +2101,9 @@ function baseHeaders(request, env) {
   }
   headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,DELETE,OPTIONS";
   headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Stimli-Workspace, X-Stimli-Team";
+  // Retry-After isn't a CORS-safelisted response header, so a cross-origin API
+  // consumer can't read our throttle hint unless we expose it explicitly.
+  headers["Access-Control-Expose-Headers"] = "Retry-After";
   headers["Cache-Control"] = "no-store";
   headers["X-Content-Type-Options"] = "nosniff";
   headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
