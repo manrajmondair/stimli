@@ -161,6 +161,60 @@ describe("TeamView team switcher", () => {
     expect(screen.getByText("Ada Analyst")).toBeInTheDocument();
   });
 
+  it("does not render Invalid Date for malformed team timestamps", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+        if (u.includes("/teams/members")) {
+          return json([
+            {
+              user_id: "u2",
+              name: "Ada Analyst",
+              email: "ada@example.com",
+              role: "analyst",
+              created_at: "not-a-date"
+            }
+          ]);
+        }
+        if (u.includes("/teams/invites")) {
+          return json([
+            {
+              id: "invite_bad_date",
+              email: "newhire@example.com",
+              role: "viewer",
+              expires_at: "",
+              accepted_at: null,
+              created_at: "not-a-date"
+            }
+          ]);
+        }
+        if (u.includes("/audit")) {
+          return json([
+            {
+              id: "audit_bad_date",
+              action: "team.invite.created",
+              actor_email: "owner@example.com",
+              target_type: "invite",
+              target_id: "invite_bad_date",
+              created_at: "not-a-date"
+            }
+          ]);
+        }
+        return json([]);
+      })
+    );
+
+    render(<TeamView session={multiTeamSession as never} onUpdate={vi.fn()} />);
+
+    expect(await screen.findByText("Ada Analyst")).toBeInTheDocument();
+    expect(await screen.findByText("newhire@example.com")).toBeInTheDocument();
+    expect(screen.getAllByText("team.invite.created").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/invalid date/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4);
+  });
+
   it("does not confirm member removal when Enter is pressed on the cancel button", async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const u = String(url);

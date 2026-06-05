@@ -118,6 +118,21 @@ function displayBrainProvider(provider: string | null | undefined) {
   }
 }
 
+function displayDate(value: string | null | undefined) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
+}
+
+function displayDateTime(value: string | null | undefined) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+}
+
+function displayShortMonthDay(value: string | null | undefined) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 const ASSET_TYPE_LABEL: Record<AssetType, string> = {
   script: "Script",
   landing_page: "Landing page",
@@ -1001,7 +1016,7 @@ function UsageBadge({ usage }: { usage: UsageSnapshot }) {
     : "var(--butter)";
   const resetIso = usage.period?.end;
   const resetLabel = resetIso
-    ? new Date(resetIso).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    ? displayShortMonthDay(resetIso)
     : null;
   return (
     <div className="usage-badge" role="region" aria-label="Workspace usage">
@@ -1693,7 +1708,7 @@ function LibraryView() {
                   />
                 </label>
                 <span className="meta">
-                  {ASSET_TYPE_LABEL[asset.type]} · {new Date(asset.created_at).toLocaleDateString()}
+                  {ASSET_TYPE_LABEL[asset.type]} · {displayDate(asset.created_at)}
                 </span>
                 <h4>{asset.name}</h4>
                 <p>
@@ -2398,7 +2413,7 @@ function OutcomesView() {
                       <strong>{row.asset_name || row.asset_id.slice(0, 12)}</strong>
                       <span className="meta" style={{ display: "block", marginTop: 2 }}>
                         {row.comparison_objective || row.comparison_id.slice(0, 12)} ·{" "}
-                        {new Date(row.created_at).toLocaleDateString()}
+                        {displayDate(row.created_at)}
                       </span>
                     </div>
                     <div style={{ textAlign: "right", fontSize: 12 }}>
@@ -2543,7 +2558,7 @@ function LogOutcomeModal({
           >
             {comparisons.map((c) => (
               <option key={c.id} value={c.id}>
-                {(c.objective || c.id).slice(0, 64)} · {new Date(c.created_at).toLocaleDateString()}
+                {(c.objective || c.id).slice(0, 64)} · {displayDate(c.created_at)}
               </option>
             ))}
           </select>
@@ -2982,8 +2997,8 @@ export function TeamView({
                         <td>
                           <span className="claim-pill">{invite.role}</span>
                         </td>
-                        <td>{new Date(invite.expires_at).toLocaleDateString()}</td>
-                        <td>{new Date(invite.created_at).toLocaleDateString()}</td>
+                        <td>{displayDate(invite.expires_at)}</td>
+                        <td>{displayDate(invite.created_at)}</td>
                         {canManageMembers ? (
                         <td style={{ textAlign: "right" }}>
                           <button
@@ -3050,7 +3065,7 @@ export function TeamView({
                             <span className="claim-pill">{member.role}</span>
                           )}
                         </td>
-                        <td>{new Date(member.created_at).toLocaleDateString()}</td>
+                        <td>{displayDate(member.created_at)}</td>
                         {canManageMembers ? (
                         <td style={{ textAlign: "right" }}>
                           {isSelf ? (
@@ -3214,7 +3229,7 @@ function AuditLogPanel({ audit }: { audit: AuditEvent[] }) {
                   <tbody>
                     {visible.map((event) => (
                       <tr key={event.id}>
-                        <td>{new Date(event.created_at).toLocaleString()}</td>
+                        <td>{displayDateTime(event.created_at)}</td>
                         <td>{event.actor_email || "—"}</td>
                         <td>
                           <code>{event.action}</code>
