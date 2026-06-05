@@ -2316,6 +2316,15 @@ function OutcomesView() {
 
       {loading && !summary ? (
         <div className="banner">Loading…</div>
+      ) : error && !hasOutcomes ? (
+        <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
+          <BrainBlob size={120} color="var(--tomato)" eyes />
+          <h4>Couldn't load outcomes.</h4>
+          <p>The error above has the details. Check your connection and try again.</p>
+          <button className="btn primary" onClick={refresh} disabled={loading}>
+            Try again
+          </button>
+        </div>
       ) : !hasOutcomes ? (
         <div className="panel-card empty" style={{ paddingTop: 60, paddingBottom: 60 }}>
           <BrainBlob size={120} color="var(--plum)" eyes mouth />
