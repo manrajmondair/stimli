@@ -131,6 +131,8 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
   }));
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
+  const [lastShareUrl, setLastShareUrl] = useState<string | null>(null);
+  const [shareCopyState, setShareCopyState] = useState<"idle" | "copied">("idle");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [newClaim, setNewClaim] = useState("");
   const [newForbidden, setNewForbidden] = useState("");
@@ -530,6 +532,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
     try {
       const link = await createShareLink(comparison.id);
       const url = link.url || `${window.location.origin}${link.path}`;
+      setLastShareUrl(url);
       // navigator.clipboard fails on insecure contexts (http://), inside some
       // iframes, and on a few mobile browsers. Detect failure and tell the
       // user — silently swallowing the rejection makes them think the copy
@@ -539,10 +542,13 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
         try {
           await navigator.clipboard.writeText(url);
           copied = true;
+          setShareCopyState("copied");
         } catch {
           copied = false;
+          setShareCopyState("idle");
         }
       }
+      if (!copied) setShareCopyState("idle");
       flash(
         copied
           ? { kind: "success", message: "Share link copied to clipboard." }
@@ -550,6 +556,19 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
       );
     } catch (err) {
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not share." });
+    }
+  }
+
+  async function copyLastShareUrl() {
+    if (!lastShareUrl) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(lastShareUrl);
+      setShareCopyState("copied");
+      flash({ kind: "success", message: "Share link copied to clipboard." });
+    } catch {
+      setShareCopyState("idle");
+      flash({ kind: "error", message: "Could not copy. Select the link manually." });
     }
   }
 
@@ -848,6 +867,15 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
         <div className="error-toast" style={toast.kind === "success" ? { background: "var(--pistachio-ink)" } : toast.kind === "info" ? { background: "var(--ink)" } : {}}>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)}>×</button>
+        </div>
+      ) : null}
+
+      {lastShareUrl ? (
+        <div className="invite-banner" role="status" aria-label="Share link">
+          <code>{lastShareUrl}</code>
+          <button className="btn cream small" onClick={copyLastShareUrl} type="button">
+            {shareCopyState === "copied" ? "Copied" : "Copy"}
+          </button>
         </div>
       ) : null}
 

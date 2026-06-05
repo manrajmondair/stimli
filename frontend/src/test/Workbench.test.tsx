@@ -148,6 +148,63 @@ describe("Workbench", () => {
     expect(await screen.findByText(/Ship Demo A/i)).toBeInTheDocument();
   });
 
+  it("keeps a generated share link visible when clipboard copy fails", async () => {
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn(async () => { throw new Error("blocked"); }) },
+      configurable: true
+    });
+    const demoAssets = [
+      { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
+      { id: "asset_d2", type: "script", name: "Demo B", extracted_text: "A modern holistic ecosystem." }
+    ];
+    const result = makeComparison("cmp_share", "demo run", "Demo A");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = (init?.method || "GET").toUpperCase();
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+        if (u.includes("/reports/cmp_share/share") && method === "POST") {
+          return json({
+            token: "share_token",
+            path: "/share/share_token",
+            api_path: "/api/share/share_token",
+            url: "https://stimli.test/share/share_token",
+            expires_at: "2026-07-01T00:00:00.000Z"
+          });
+        }
+        if (u.includes("/demo/seed") && method === "POST") return json(demoAssets);
+        if (u.includes("/comparisons") && method === "POST") return json(result);
+        if (u.includes("/comparisons")) return json([]);
+        if (u.includes("/assets")) return json([]);
+        if (u.includes("/brand-profiles")) return json([]);
+        return json([]);
+      })
+    );
+
+    try {
+      render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+      const demoButtons = await screen.findAllByRole("button", { name: /demo set/i });
+      fireEvent.click(demoButtons[0]);
+      expect((await screen.findAllByText(/Demo A/)).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole("button", { name: /^Compare/i }));
+      await screen.findByText(/Ship Demo A/i);
+
+      fireEvent.click(screen.getByRole("button", { name: /share/i }));
+
+      const shareBanner = await screen.findByRole("status", { name: /share link/i });
+      expect(within(shareBanner).getByText("https://stimli.test/share/share_token")).toBeInTheDocument();
+      expect(within(shareBanner).getByRole("button", { name: /copy/i })).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        value: originalClipboard,
+        configurable: true
+      });
+    }
+  });
+
   it("does not submit malformed outcome metrics", async () => {
     const demoAssets = [
       { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },

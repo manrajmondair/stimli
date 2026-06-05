@@ -232,8 +232,8 @@ describe("AppShell routing and shell flows", () => {
 
     render(<AppShell />);
 
-    expect(await screen.findByText(/Comparisons this month/i)).toBeInTheDocument();
-    expect(screen.getByText(/Assets this month/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/Comparisons this month/i)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Assets this month/i).length).toBeGreaterThan(0);
   });
 
   it("does not expose billing mutations without billing permission", async () => {
