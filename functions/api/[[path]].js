@@ -1411,6 +1411,21 @@ async function refreshComparison(comparison, workspaceId) {
     return completed;
   }
 
+  // Still processing. The frontend polls this endpoint, so persist only when a
+  // job's meaningful state actually moved — otherwise every poll was a Neon
+  // write of an unchanged row. updated_at churns on each remote read even when
+  // nothing happened, so it's excluded from the comparison.
+  const priorJobs = Array.isArray(comparison.jobs) ? comparison.jobs : [];
+  const jobStateUnchanged =
+    updatedJobs.length === priorJobs.length &&
+    updatedJobs.every((job, index) => {
+      const prev = priorJobs[index] || {};
+      return prev.status === job.status && (prev.error || null) === (job.error || null) && prev.attempt === job.attempt;
+    });
+  if (jobStateUnchanged) {
+    return comparison;
+  }
+
   const processing = {
     ...comparison,
     jobs: updatedJobs,

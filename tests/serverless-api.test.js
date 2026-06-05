@@ -2582,6 +2582,57 @@ test("cancels processing comparisons and remote jobs", async () => {
   }
 });
 
+test("polling a processing comparison stays consistent across repeated reads", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const started = new Map();
+  let jobIndex = 0;
+  resetRemoteBrainHealth();
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "k" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `poll_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      started.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      // Stable "running" on every poll — the job never advances.
+      return jsonResponse({ ...started.get(body.job_id), status: "running" });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+  try {
+    const a = await call("POST", "/api/assets", { asset_type: "audio", name: "Poll A", text: "Stop wasting spend." }, headers);
+    const b = await call("POST", "/api/assets", { asset_type: "audio", name: "Poll B", text: "A modern solution." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [a.json.asset.id, b.json.asset.id], objective: "Poll consistency." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+
+    // First read advances queued -> running (a real change, persisted); the
+    // second read sees no change and returns the same state via the write-skip
+    // fast path. Both must report identical processing job state.
+    const first = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    const second = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(first.json.status, "processing");
+    assert.equal(second.json.status, "processing");
+    assert.deepEqual(
+      first.json.jobs.map((job) => job.status),
+      second.json.jobs.map((job) => job.status)
+    );
+    assert.ok(second.json.jobs.every((job) => job.status === "running"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
 test("cancelling a completed comparison is a no-op and preserves the result", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
