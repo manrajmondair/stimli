@@ -91,6 +91,21 @@ def test_json_asset_upload_matches_serverless_shape():
     assert "file_path" not in asset
 
 
+def test_json_asset_upload_preserves_zero_duration():
+    response = client.post(
+        "/assets",
+        json={
+            "asset_type": "video",
+            "name": "Zero duration JSON",
+            "text": "Zero should remain explicit.",
+            "duration_seconds": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["asset"]["duration_seconds"] == 0
+
+
 def test_workspace_header_scopes_assets_comparisons_and_learning():
     suffix = uuid4().hex[:8]
     headers_a = {"x-stimli-workspace": f"backend_ws_a_{suffix}"}

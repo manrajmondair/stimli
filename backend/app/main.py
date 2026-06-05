@@ -68,7 +68,7 @@ async def create_asset(request: Request) -> AssetUploadResponse:
         name=_string_field(fields.get("name")) or None,
         text=_string_field(fields.get("text")) or None,
         url=_string_field(fields.get("url")) or None,
-        duration_seconds=fields.get("duration_seconds") or fields.get("durationSeconds"),
+        duration_seconds=_first_present(fields, "duration_seconds", "durationSeconds"),
         file=file,
     )
 
@@ -430,6 +430,13 @@ def _string_field(value: Any) -> str:
     if isinstance(value, (int, float, bool)):
         return str(value)
     return ""
+
+
+def _first_present(fields: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in fields:
+            return fields[name]
+    return None
 
 
 def _normalize_source_url(url: str | None, asset_type: AssetType) -> str | None:
