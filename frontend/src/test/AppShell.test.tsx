@@ -196,6 +196,62 @@ describe("AppShell routing and shell flows", () => {
     expect(screen.getByText(/Assets this month/i)).toBeInTheDocument();
   });
 
+  it("does not expose billing mutations without billing permission", async () => {
+    setPath("/app/billing");
+    const limitedSession = {
+      ...session,
+      role: "admin",
+      permissions: ["workspace:write", "members:manage"]
+    };
+    const subscription = {
+      plan: "growth",
+      status: "active",
+      current_period_start: "2026-06-01T00:00:00.000Z",
+      current_period_end: "2026-07-01T00:00:00.000Z",
+      cancel_at_period_end: false,
+      trial_end: null
+    };
+    const activeUsage = {
+      ...usage,
+      subscription,
+      billing_configured: true,
+      commercial_use_enabled: true
+    };
+    const activeBillingStatus = {
+      ...billingStatus,
+      billing_configured: true,
+      commercial_use_enabled: true,
+      subscription,
+      plans: billingStatus.plans.map((plan) => (plan.id === "growth" ? { ...plan, configured: true } : plan))
+    };
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (u.includes("/auth/session")) return json(limitedSession);
+      if (u.includes("/billing/usage")) return json(activeUsage);
+      if (u.includes("/billing/status")) return json(activeBillingStatus);
+      if (u.includes("/billing/checkout") && method === "POST") return json({ url: "https://checkout.test" });
+      if (u.includes("/billing/portal") && method === "POST") return json({ url: "https://portal.test" });
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AppShell />);
+
+    expect(await screen.findByRole("heading", { name: /plans & usage/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /manage subscription/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /billing access required/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /billing access required/i }));
+
+    const mutationCalls = fetchMock.mock.calls.filter(([url, init]) => {
+      const path = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      return method === "POST" && (path.includes("/billing/checkout") || path.includes("/billing/portal"));
+    });
+    expect(mutationCalls).toHaveLength(0);
+  });
+
   it("updates the URL when a sidebar view changes", async () => {
     setPath("/app/billing");
     render(<AppShell />);

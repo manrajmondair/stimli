@@ -83,6 +83,22 @@ function removeLocalStorage(key: string) {
   }
 }
 
+function sessionHasPermission(session: AuthSession | null, permission: string) {
+  return Boolean(session?.permissions?.includes(permission));
+}
+
+function canManageTeamMembers(session: AuthSession | null) {
+  return sessionHasPermission(session, "members:manage") || session?.role === "owner" || session?.role === "admin";
+}
+
+function canManageBilling(session: AuthSession | null) {
+  return sessionHasPermission(session, "billing:manage") || session?.role === "owner";
+}
+
+function canReadAudit(session: AuthSession | null) {
+  return sessionHasPermission(session, "audit:read") || session?.role === "owner" || session?.role === "admin";
+}
+
 const ASSET_TYPE_LABEL: Record<AssetType, string> = {
   script: "Script",
   landing_page: "Landing page",
@@ -480,6 +496,7 @@ export function AppShell() {
           <BillingView
             usage={usage}
             notice={billingNotice}
+            canManageBilling={canManageBilling(session)}
             onUsageRefresh={() => getBillingUsage().then(setUsage).catch(() => undefined)}
           />
         ) : workspaceLoading : null}
@@ -1012,10 +1029,12 @@ function UsageMeter({ label, used, limit, ratio }: { label: string; used: number
 function BillingView({
   usage,
   notice,
+  canManageBilling,
   onUsageRefresh
 }: {
   usage: UsageSnapshot | null;
   notice: BillingBanner | null;
+  canManageBilling: boolean;
   onUsageRefresh: () => void;
 }) {
   const [status, setStatus] = useState<BillingStatus | null>(null);
@@ -1068,6 +1087,10 @@ function BillingView({
   }, [notice]);
 
   async function handleSelectPlan(plan: Plan) {
+    if (!canManageBilling) {
+      setBanner({ kind: "warn", message: "Your role cannot manage billing." });
+      return;
+    }
     if (busyPlan) return;
     setBusyPlan(plan.id);
     try {
@@ -1085,6 +1108,10 @@ function BillingView({
   }
 
   async function handleManageSubscription() {
+    if (!canManageBilling) {
+      setBanner({ kind: "warn", message: "Your role cannot manage billing." });
+      return;
+    }
     if (portalBusy) return;
     setPortalBusy(true);
     try {
@@ -1149,7 +1176,7 @@ function BillingView({
           </span>
         </div>
         <div className="wb-top-right">
-          {customerExists && billingConfigured ? (
+          {canManageBilling && customerExists && billingConfigured ? (
             <button type="button" className="btn ghost" onClick={handleManageSubscription} disabled={portalBusy}>
               {portalBusy ? "Opening…" : "Manage subscription"}
             </button>
@@ -1173,6 +1200,7 @@ function BillingView({
             current={plan.id === currentPlanId}
             busy={busyPlan === plan.id}
             billingConfigured={billingConfigured}
+            canManageBilling={canManageBilling}
             onSelect={() => handleSelectPlan(plan)}
           />
         ))}
@@ -1236,21 +1264,25 @@ function PlanCard({
   current,
   busy,
   billingConfigured,
+  canManageBilling,
   onSelect
 }: {
   plan: Plan;
   current: boolean;
   busy: boolean;
   billingConfigured: boolean;
+  canManageBilling: boolean;
   onSelect: () => void;
 }) {
   const price = plan.price_cents_monthly ?? 0;
   const priceLabel = price > 0 ? `$${(price / 100).toFixed(0)}` : "Free";
-  const canUpgrade = !current && plan.id !== "research" && plan.configured && billingConfigured;
+  const canUpgrade = canManageBilling && !current && plan.id !== "research" && plan.configured && billingConfigured;
   const cta = current
     ? "Current plan"
     : plan.id === "research"
     ? "Default plan"
+    : !canManageBilling
+    ? "Billing access required"
     : !plan.configured
     ? "Coming soon"
     : !billingConfigured
@@ -2592,19 +2624,21 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   const [confirmRevoke, setConfirmRevoke] = useState<TeamInvite | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { toast, show, dismiss } = useLocalToast();
+  const canManageMembers = canManageTeamMembers(session);
+  const showAudit = canReadAudit(session);
 
   useEffect(() => {
     if (!signedIn) return;
     void refresh();
-  }, [signedIn, session?.team?.id]);
+  }, [signedIn, session?.team?.id, canManageMembers, showAudit]);
 
   async function refresh() {
     setError(null);
     try {
       const [membersList, invitesList, events] = await Promise.all([
-        listTeamMembers(),
-        listTeamInvites(),
-        listAuditEvents()
+        canManageMembers ? listTeamMembers() : Promise.resolve([]),
+        canManageMembers ? listTeamInvites() : Promise.resolve([]),
+        showAudit ? listAuditEvents() : Promise.resolve([])
       ]);
       setMembers(membersList);
       setInvites(invitesList);
@@ -2615,6 +2649,12 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   }
 
   async function invite() {
+    if (!canManageMembers) {
+      const message = "Your role cannot manage team members.";
+      setError(message);
+      show("error", message);
+      return;
+    }
     const email = inviteEmail.trim();
     if (!email) {
       const message = "Invite email is required.";
@@ -2661,6 +2701,10 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   }
 
   async function changeRole(member: TeamMember, role: TeamRole) {
+    if (!canManageMembers) {
+      show("error", "Your role cannot manage team members.");
+      return;
+    }
     if (member.role === role) return;
     setBusy(true);
     try {
@@ -2675,6 +2719,11 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   }
 
   async function performRemove(member: TeamMember) {
+    if (!canManageMembers) {
+      show("error", "Your role cannot manage team members.");
+      setConfirmRemove(null);
+      return;
+    }
     setBusy(true);
     try {
       await removeTeamMember(member.user_id);
@@ -2689,6 +2738,11 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   }
 
   async function performRevoke(invite: TeamInvite) {
+    if (!canManageMembers) {
+      show("error", "Your role cannot manage team members.");
+      setConfirmRevoke(null);
+      return;
+    }
     setBusy(true);
     try {
       await revokeTeamInvite(invite.id);
@@ -2753,7 +2807,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
               <span className="dot" style={{ background: "var(--ink)" }} />
               {members.length} {members.length === 1 ? "member" : "members"}
             </span>
-            {pendingInvites.length > 0 ? (
+            {canManageMembers && pendingInvites.length > 0 ? (
               <span className="pill">
                 <span className="dot" style={{ background: "var(--butter)" }} />
                 {pendingInvites.length} pending {pendingInvites.length === 1 ? "invite" : "invites"}
@@ -2798,6 +2852,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
       </header>
       {error ? <div className="banner error">{error}</div> : null}
       <div className="wb-grid wb-grid-sidebar">
+        {canManageMembers ? (
         <section className="panel-card">
           <div className="panel-head">
             <h3>Invite collaborator</h3>
@@ -2846,9 +2901,16 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
             ) : null}
           </div>
         </section>
+        ) : (
+          <section className="panel-card empty">
+            <BrainBlob size={88} color="var(--ink)" eyes mouth />
+            <h4>Team administration is limited on your role.</h4>
+            <p>Ask an owner or admin to change members, roles, or pending invites.</p>
+          </section>
+        )}
 
         <section className="wb-col">
-          {pendingInvites.length > 0 ? (
+          {canManageMembers && pendingInvites.length > 0 ? (
             <div className="panel-card">
               <div className="panel-head">
                 <h3>Pending invites</h3>
@@ -2862,7 +2924,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                       <th>Role</th>
                       <th>Expires</th>
                       <th>Sent</th>
-                      <th aria-label="actions" />
+                      {canManageMembers ? <th aria-label="actions" /> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -2874,6 +2936,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                         </td>
                         <td>{new Date(invite.expires_at).toLocaleDateString()}</td>
                         <td>{new Date(invite.created_at).toLocaleDateString()}</td>
+                        {canManageMembers ? (
                         <td style={{ textAlign: "right" }}>
                           <button
                             className="btn cream small"
@@ -2888,6 +2951,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                             Revoke
                           </button>
                         </td>
+                        ) : null}
                       </tr>
                     ))}
                   </tbody>
@@ -2909,7 +2973,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                     <th>Email</th>
                     <th>Role</th>
                     <th>Joined</th>
-                    <th aria-label="actions" />
+                    {canManageMembers ? <th aria-label="actions" /> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -2920,21 +2984,26 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                         <td>{member.name || <em style={{ color: "var(--ink-soft)" }}>—</em>}</td>
                         <td>{member.email}</td>
                         <td>
-                          <select
-                            className="member-role-select"
-                            value={member.role}
-                            onChange={(e) => changeRole(member, e.target.value as TeamRole)}
-                            disabled={busy || isSelf}
-                            title={isSelf ? "Change your own role from your account settings" : ""}
-                          >
-                            {ROLE_OPTIONS.map((role) => (
-                              <option key={role} value={role}>
-                                {role}
-                              </option>
-                            ))}
-                          </select>
+                          {canManageMembers ? (
+                            <select
+                              className="member-role-select"
+                              value={member.role}
+                              onChange={(e) => changeRole(member, e.target.value as TeamRole)}
+                              disabled={busy || isSelf}
+                              title={isSelf ? "Change your own role from your account settings" : ""}
+                            >
+                              {ROLE_OPTIONS.map((role) => (
+                                <option key={role} value={role}>
+                                  {role}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="claim-pill">{member.role}</span>
+                          )}
                         </td>
                         <td>{new Date(member.created_at).toLocaleDateString()}</td>
+                        {canManageMembers ? (
                         <td style={{ textAlign: "right" }}>
                           {isSelf ? (
                             <span className="hint" style={{ fontSize: 11 }}>that's you</span>
@@ -2953,6 +3022,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                             </button>
                           )}
                         </td>
+                        ) : null}
                       </tr>
                     );
                   })}
@@ -2961,11 +3031,11 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
             </div>
           </div>
 
-          <AuditLogPanel audit={audit} />
+          {showAudit ? <AuditLogPanel audit={audit} /> : null}
         </section>
       </div>
 
-      <ConfirmDialog
+      {canManageMembers ? <ConfirmDialog
         open={Boolean(confirmRemove)}
         title="Remove this member?"
         confirmLabel="Remove member"
@@ -2979,9 +3049,9 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
         onCancel={() => setConfirmRemove(null)}
         onConfirm={() => confirmRemove && performRemove(confirmRemove)}
         busy={busy}
-      />
+      /> : null}
 
-      <ConfirmDialog
+      {canManageMembers ? <ConfirmDialog
         open={Boolean(confirmRevoke)}
         title="Revoke this invite?"
         confirmLabel="Revoke invite"
@@ -2994,7 +3064,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
         onCancel={() => setConfirmRevoke(null)}
         onConfirm={() => confirmRevoke && performRevoke(confirmRevoke)}
         busy={busy}
-      />
+      /> : null}
 
       <ToastBar toast={toast} onDismiss={dismiss} />
     </>

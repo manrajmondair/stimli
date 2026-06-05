@@ -94,6 +94,37 @@ describe("TeamView team switcher", () => {
     expect(inviteCreates).toHaveLength(0);
   });
 
+  it("hides member-management controls from read-only team roles", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/audit")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const readOnlySession = {
+      ...multiTeamSession,
+      role: "viewer" as const,
+      permissions: ["workspace:read"]
+    };
+
+    render(<TeamView session={readOnlySession as never} onUpdate={vi.fn()} />);
+
+    expect(screen.getByText(/team administration is limited/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create invite link/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /remove/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /revoke/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /role/i })).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      const protectedTeamReads = fetchMock.mock.calls.filter(([url]) => {
+        const path = String(url);
+        return path.includes("/teams/members") || path.includes("/teams/invites");
+      });
+      expect(protectedTeamReads).toHaveLength(0);
+    });
+  });
+
   it("preserves the current member list when a refresh fails", async () => {
     let memberLoads = 0;
     const fetchMock = vi.fn(async (url: string | URL) => {
