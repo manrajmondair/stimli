@@ -13,8 +13,8 @@
   "dependencies": {
     "@clerk/clerk-react": "^5.61.6",
     "@vitejs/plugin-react": "^4.3.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "vite": "^6.0.5"
   },
   "devDependencies": {
