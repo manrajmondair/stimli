@@ -325,23 +325,26 @@ h1, h2, h3, .display {
   text-align: center;
   line-height: 1;
   pointer-events: none;
-  padding: 0 16%;
+  /* A 5-point star's fillable inner area is only ~1/3 of its bounding box, so
+     the label has to be small and tightly centered to sit inside the
+     silhouette rather than spilling over the points. */
+  padding: 0 26%;
   transform: rotate(-12deg);
   transform-origin: center;
 }
 .sticker-bubble strong {
   display: block;
-  font-size: 32px;
+  font-size: 20px;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
 }
 .sticker-bubble span {
   display: block;
-  margin-top: 4px;
+  margin-top: 2px;
   font-family: var(--body);
   font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  font-size: 8px;
+  letter-spacing: 0.01em;
   text-transform: lowercase;
   opacity: 0.85;
 }
