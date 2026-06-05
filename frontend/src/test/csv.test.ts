@@ -60,4 +60,18 @@ describe("buildOutcomesCsv", () => {
     // A plain field is not quoted.
     expect(row).toContain(",plain,");
   });
+
+  it("neutralizes spreadsheet formulas in user-controlled text fields", () => {
+    const csv = buildOutcomesCsv([
+      outcome({
+        asset_name: "=IMPORTXML(\"https://example.com\")",
+        comparison_objective: " @calc",
+        notes: "+SUM(1,2)"
+      })
+    ]);
+    const row = csv.split("\r\n")[1];
+    expect(row).toContain('\'=IMPORTXML(""https://example.com"")');
+    expect(row).toContain(",' @calc,");
+    expect(row).toContain("\"'+SUM(1,2)\"");
+  });
 });

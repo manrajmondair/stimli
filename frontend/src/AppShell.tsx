@@ -3752,16 +3752,21 @@ export function buildOutcomesCsv(outcomes: WorkspaceOutcome[]): string {
   return [headers, ...rows]
     .map((cells) =>
       cells
-        .map((cell) => {
-          const value = cell == null ? "" : String(cell);
-          if (/[",\n\r]/.test(value)) {
-            return `"${value.split('"').join('""')}"`;
-          }
-          return value;
-        })
+        .map(formatCsvCell)
         .join(",")
     )
     .join("\r\n");
+}
+
+function formatCsvCell(cell: string | number): string {
+  let value = cell == null ? "" : String(cell);
+  if (typeof cell === "string" && /^[\s]*[=+\-@]/.test(value)) {
+    value = `'${value}`;
+  }
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.split('"').join('""')}"`;
+  }
+  return value;
 }
 
 function exportOutcomesCsv(outcomes: WorkspaceOutcome[]): void {
