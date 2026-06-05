@@ -1422,6 +1422,42 @@ test("calibrates predicted winners against logged outcomes", async () => {
   assert.equal(summary.json.calibration.alignment_rate, 1);
 });
 
+test("confidence bins count every evaluated comparison, not just the recent five", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const assetIds = seeded.json.slice(0, 2).map((asset) => asset.id);
+
+  // Six comparisons each carrying one logged outcome — more than the
+  // calibration summary's 5-row "recent" window, so this exercises the bug
+  // where confidence bins were derived from that capped slice.
+  const total = 6;
+  for (let i = 0; i < total; i += 1) {
+    const comparison = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: assetIds, objective: `Calibration run ${i}` },
+      headers
+    );
+    const predicted = comparison.json.recommendation.winner_asset_id;
+    await call(
+      "POST",
+      `/api/comparisons/${comparison.json.id}/outcomes`,
+      { asset_id: predicted, spend: 100, impressions: 10000, clicks: 500, conversions: 40, revenue: 900, notes: "" },
+      headers
+    );
+  }
+
+  const summary = await call("GET", "/api/learning/summary", null, headers);
+  assert.equal(summary.json.calibration.evaluated_comparisons, total);
+  assert.equal(summary.json.calibration.recent.length, 5);
+
+  const calibration = await call("GET", "/api/validation/calibration", null, headers);
+  assert.equal(calibration.statusCode, 200);
+  const binnedPredictions = calibration.json.confidence_bins.reduce((sum, bin) => sum + bin.predictions, 0);
+  assert.equal(binnedPredictions, total);
+});
+
 test("deletes a comparison and cascades its outcomes and share link", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

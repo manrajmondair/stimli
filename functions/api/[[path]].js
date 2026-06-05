@@ -1548,7 +1548,12 @@ function learningSummary(outcomes, comparisons = []) {
   };
 }
 
-function calibrationSummary(outcomes, comparisons) {
+// Pairs every completed comparison that has at least one logged outcome with
+// its strongest actual outcome, returning one evaluation per comparison. Shared
+// by calibrationSummary (which slices to the 5 most recent for display) and
+// confidenceBins (which needs the full set so observed accuracy isn't silently
+// capped at 5 samples).
+function calibrationEvaluations(outcomes, comparisons) {
   const outcomesByComparison = new Map();
   for (const outcome of outcomes) {
     if (!outcomesByComparison.has(outcome.comparison_id)) {
@@ -1557,7 +1562,7 @@ function calibrationSummary(outcomes, comparisons) {
     outcomesByComparison.get(outcome.comparison_id).push(outcome);
   }
 
-  const evaluations = comparisons
+  return comparisons
     .filter((comparison) => comparison.status === "complete" && comparison.recommendation?.winner_asset_id)
     .map((comparison) => {
       const comparisonOutcomes = outcomesByComparison.get(comparison.id) || [];
@@ -1577,7 +1582,10 @@ function calibrationSummary(outcomes, comparisons) {
       };
     })
     .filter(Boolean);
+}
 
+function calibrationSummary(outcomes, comparisons) {
+  const evaluations = calibrationEvaluations(outcomes, comparisons);
   const aligned = evaluations.filter((evaluation) => evaluation.aligned).length;
   return {
     evaluated_comparisons: evaluations.length,
@@ -2592,15 +2600,19 @@ async function runBenchmark(benchmarkId, workspaceId) {
 }
 
 function confidenceBins(outcomes, comparisons) {
-  const calibration = calibrationSummary(outcomes, comparisons);
+  // Bin every evaluated comparison, not just the 5 most recent — observed
+  // accuracy per confidence band is only meaningful across the full history.
+  const evaluations = calibrationEvaluations(outcomes, comparisons);
+  const confidenceByComparison = new Map(
+    comparisons.map((item) => [item.id, item?.recommendation?.confidence || 0])
+  );
   const bins = [
     { label: "50-65%", min: 0.5, max: 0.65, predictions: 0, aligned: 0 },
     { label: "65-80%", min: 0.65, max: 0.8, predictions: 0, aligned: 0 },
     { label: "80-95%", min: 0.8, max: 0.95, predictions: 0, aligned: 0 }
   ];
-  for (const evaluation of calibration.recent) {
-    const comparison = comparisons.find((item) => item.id === evaluation.comparison_id);
-    const confidence = comparison?.recommendation?.confidence || 0;
+  for (const evaluation of evaluations) {
+    const confidence = confidenceByComparison.get(evaluation.comparison_id) || 0;
     const bin = bins.find((item) => confidence >= item.min && confidence < item.max) || bins[bins.length - 1];
     bin.predictions += 1;
     bin.aligned += evaluation.aligned ? 1 : 0;
