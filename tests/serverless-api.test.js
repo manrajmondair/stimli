@@ -2735,6 +2735,28 @@ test("rate limiting prefers Cloudflare client IP over spoofable forwarded header
   }
 });
 
+test("project and brand-profile creation are rate limited per client", async () => {
+  withEnv({ STIMLI_PROJECT_LIMIT_PER_HOUR: "2", STIMLI_BRAND_PROFILE_LIMIT_PER_HOUR: "2" });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, "cf-connecting-ip": "203.0.113.91", "user-agent": "stimli-create-rate-test" };
+  try {
+    assert.equal((await call("POST", "/api/projects", { name: "Project One" }, headers)).statusCode, 200);
+    assert.equal((await call("POST", "/api/projects", { name: "Project Two" }, headers)).statusCode, 200);
+    const blockedProject = await call("POST", "/api/projects", { name: "Project Three" }, headers);
+    assert.equal(blockedProject.statusCode, 429);
+    assert.equal(blockedProject.json.code, "rate_limited");
+    assert.ok(Number(blockedProject.headers["retry-after"]) > 0);
+
+    assert.equal((await call("POST", "/api/brand-profiles", { name: "Brand One" }, headers)).statusCode, 200);
+    assert.equal((await call("POST", "/api/brand-profiles", { name: "Brand Two" }, headers)).statusCode, 200);
+    const blockedBrand = await call("POST", "/api/brand-profiles", { name: "Brand Three" }, headers);
+    assert.equal(blockedBrand.statusCode, 429);
+    assert.equal(blockedBrand.json.code, "rate_limited");
+  } finally {
+    withEnv({ STIMLI_PROJECT_LIMIT_PER_HOUR: undefined, STIMLI_BRAND_PROFILE_LIMIT_PER_HOUR: undefined });
+  }
+});
+
 test("uses hosted extraction for media assets before filename fallback", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;

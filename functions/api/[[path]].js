@@ -295,6 +295,10 @@ async function handleProjects(request, segments, workspaceId, authContext, heade
     if (name.length < 2) {
       throw httpError(400, "Project name is required.");
     }
+    // Projects aren't a billed quota, but the POST is anonymous-writable and
+    // creates a persistent row — guard it with the per-client/per-workspace
+    // hourly bucket so one IP can't flood the shared table across workspaces.
+    await enforceCreationRateLimit(request, workspaceId, "project", authContext, "STIMLI_PROJECT_LIMIT_PER_HOUR");
     const project = {
       id: newId("project"),
       name: name.slice(0, 120),
@@ -643,6 +647,9 @@ async function handleBrandProfiles(request, segments, authContext, workspaceId, 
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const payload = await parseJson(request);
     const profile = normalizeBrandProfile({ ...payload, id: newId("brand"), created_at: nowIso() }, workspaceId);
+    // Anonymous-writable persistent-row endpoint — same hourly abuse guard as
+    // project creation so a single client can't flood the shared table.
+    await enforceCreationRateLimit(request, workspaceId, "brand_profile", authContext, "STIMLI_BRAND_PROFILE_LIMIT_PER_HOUR");
     await saveBrandProfile(profile);
     await audit(workspaceId, authContext.user, "brand_profile.created", "brand_profile", profile.id, { name: profile.name });
     return sendJson(200, profile, headers, cookies);
@@ -2241,12 +2248,26 @@ async function resolveComparisonBrief(payload, workspaceId) {
   };
 }
 
+// Abuse guard for anonymous-writable endpoints that create cheap, non-billed
+// rows (projects, brand profiles). Reuses the atomic usage-event machinery with
+// an explicit hourly cap and a stub quota — no plan lookup, no monthly quota —
+// so the per-client and per-workspace hourly buckets still apply.
+async function enforceCreationRateLimit(request, workspaceId, kind, authContext, limitEnvName) {
+  const env = globalThis.__stimliEnv || {};
+  const hourlyLimit = positiveNumber(env[limitEnvName], 120);
+  await enforceUsageLimit(request, workspaceId, kind, { hourly: {}, monthly: {}, plan: {} }, authContext, { hourlyLimit });
+}
+
 async function enforceUsageLimit(request, workspaceId, kind, quota, authContext = null, options = {}) {
   const env = globalThis.__stimliEnv || {};
   if (env.STIMLI_DISABLE_RATE_LIMITS === "1") return;
   const units = Math.max(1, Math.floor(Number(options.units) || 1));
 
-  const hourlyLimit = quota?.hourly?.[kind];
+  // Most kinds (asset, comparison) draw their hourly cap from the plan quota.
+  // Kinds that aren't part of the billing plan — cheap metadata rows like
+  // projects and brand profiles — pass an explicit hourlyLimit so they still
+  // get the per-client/per-workspace abuse guard without a monthly quota.
+  const hourlyLimit = Number.isFinite(Number(options.hourlyLimit)) ? Number(options.hourlyLimit) : quota?.hourly?.[kind];
   const monthlyLimit = quota?.monthly?.[kind];
   const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
   const hourlySince = new Date(Date.now() - windowMs).toISOString();
