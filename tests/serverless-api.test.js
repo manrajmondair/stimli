@@ -670,6 +670,40 @@ test("rejects invalid numeric asset and outcome fields", async () => {
   assert.match(invalidOutcome.json.detail, /clicks must be a whole number/i);
 });
 
+test("normalizes outcome notes before persistence", async () => {
+  const workspace = `ws_outcome_notes_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", {}, headers);
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    { objective: "outcome notes guard", asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id) },
+    headers
+  );
+  const winner = comparison.json.recommendation.winner_asset_id;
+
+  const objectNotes = await call(
+    "POST",
+    `/api/comparisons/${comparison.json.id}/outcomes`,
+    { asset_id: winner, spend: 1, impressions: 10, clicks: 2, conversions: 1, revenue: 5, notes: { token: "private-note" } },
+    headers
+  );
+  assert.equal(objectNotes.statusCode, 200);
+  assert.equal(objectNotes.json.notes, "");
+  assert.equal(JSON.stringify(objectNotes.json).includes("private-note"), false);
+
+  const longNotes = `${" shipped ".repeat(200)}tail`;
+  const scalarNotes = await call(
+    "POST",
+    `/api/comparisons/${comparison.json.id}/outcomes`,
+    { asset_id: winner, spend: 1, impressions: 10, clicks: 2, conversions: 1, revenue: 5, notes: longNotes },
+    headers
+  );
+  assert.equal(scalarNotes.statusCode, 200);
+  assert.equal(scalarNotes.json.notes.length, 1000);
+  assert.equal(scalarNotes.json.notes, longNotes.trim().slice(0, 1000));
+});
+
 test("normalizes scalar JSON asset fields without crashing on malformed string fields", async () => {
   const response = await call(
     "POST",

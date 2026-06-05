@@ -1150,7 +1150,7 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
         clicks: outcomeMetric(payload.clicks, "clicks", { integer: true }),
         conversions: outcomeMetric(payload.conversions, "conversions", { integer: true }),
         revenue: outcomeMetric(payload.revenue, "revenue"),
-        notes: payload.notes || "",
+        notes: stringField(payload.notes).trim().slice(0, 1000),
         workspace_id: workspaceId,
         created_at: nowIso()
       };
