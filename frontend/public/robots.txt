@@ -1,0 +1,11 @@
+# Stimli - https://stimli.pages.dev
+# The marketing and trust pages are indexable. The authenticated workbench and
+# the API carry no SEO value, and /share and /invite URLs embed private tokens
+# that must never land in a search index — keep crawlers out of all of them.
+User-agent: *
+Disallow: /api/
+Disallow: /app
+Disallow: /share/
+Disallow: /invite/
+
+Sitemap: https://stimli.pages.dev/sitemap.xml
