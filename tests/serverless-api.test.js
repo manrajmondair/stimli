@@ -254,6 +254,23 @@ test("rejects oversized JSON payloads before handler processing", async () => {
   }
 });
 
+test("rejects non-object JSON payloads before handler processing", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  for (const body of ["null", "[]", '"name"']) {
+    const response = await onRequest({
+      request: new Request("http://stimli.test/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-stimli-workspace": workspace },
+        body
+      }),
+      env: testEnv,
+      params: {}
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).detail, /JSON payload must be an object/);
+  }
+});
+
 test("rebindUserId migrates a legacy user row onto a new id and cascades memberships", async () => {
   // Reproduces the regression where ensureStimliUser would INSERT a new row
   // for a Clerk id while a legacy row with the same email already existed,

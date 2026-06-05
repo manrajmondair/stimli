@@ -2089,7 +2089,11 @@ async function parseJson(request) {
     if (bytes > maxBytes) {
       throw httpError(413, `JSON payload exceeds the ${maxBytes} byte limit.`);
     }
-    return JSON.parse(body);
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw httpError(400, "JSON payload must be an object.");
+    }
+    return parsed;
   } catch (err) {
     if (err?.statusCode || err?.status) throw err;
     throw httpError(400, "Invalid JSON payload.");
