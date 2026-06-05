@@ -3497,8 +3497,13 @@ export function SharedReportPage({ token }: { token: string }) {
     );
   }
 
-  const winner = report.variants.find((variant) => variant.asset.id === report.recommendation.winner_asset_id);
-  const ranked = [...report.variants].sort((a, b) => a.rank - b.rank);
+  // The public share endpoint can serve a partial payload (CDN edge truncation /
+  // schema drift), so guard the array reads — a missing field must not
+  // white-screen the page. Mirrors SharedComplianceBlock's defensive handling.
+  const variants = Array.isArray(report.variants) ? report.variants : [];
+  const reasons = Array.isArray(report.recommendation?.reasons) ? report.recommendation.reasons : [];
+  const winner = variants.find((variant) => variant.asset.id === report.recommendation?.winner_asset_id);
+  const ranked = [...variants].sort((a, b) => a.rank - b.rank);
   const variantColors = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(--plum)"];
   const neuralVariants: NeuralVariant[] = ranked.map((variant, idx) => ({
     id: variant.asset.id,
@@ -3546,7 +3551,7 @@ export function SharedReportPage({ token }: { token: string }) {
               </span>
             </div>
             <ul className="shared-report-reasons">
-              {report.recommendation.reasons.map((reason, idx) => (
+              {reasons.map((reason, idx) => (
                 <li key={`${idx}-${reason.slice(0, 24)}`}>{reason}</li>
               ))}
             </ul>
