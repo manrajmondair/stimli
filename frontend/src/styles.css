@@ -186,6 +186,28 @@ h1, h2, h3, .display {
   padding-bottom: 80px;
 }
 
+/* Keyboard bypass-blocks (WCAG 2.4.1): hidden until focused, then it slides in
+   at the top-left so a keyboard user can jump straight to #main-content. */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 100;
+  padding: 10px 16px;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 0 0 10px 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 0;
+  outline: 2px solid var(--tomato);
+  outline-offset: 2px;
+}
+
 .landing-nav {
   position: relative;
   z-index: 5;

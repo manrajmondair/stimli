@@ -6,6 +6,7 @@ const clerkConfigured = Boolean(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
 export function Landing() {
   return (
     <div className="landing-root paper-bg">
+      <a className="skip-link" href="#main-content">Skip to content</a>
       <MarbleBlob color="var(--butter-soft)" size={520} rot={20} style={{ top: -120, right: -120 }} />
       <MarbleBlob color="var(--pistachio-soft)" size={420} rot={-10} style={{ top: 360, left: -160 }} />
       <MarbleBlob color="var(--tomato-soft)" size={360} rot={15} style={{ top: 1080, right: -80 }} />
@@ -29,7 +30,7 @@ export function Landing() {
         </div>
       </nav>
 
-      <main className="landing-main">
+      <main className="landing-main" id="main-content">
       <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow">

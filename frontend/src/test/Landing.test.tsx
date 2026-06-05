@@ -25,6 +25,13 @@ describe("Landing", () => {
     expect(screen.getByRole("contentinfo")).toBeInTheDocument();
     // The hero heading lives inside the main landmark, not the nav/footer.
     expect(main.querySelector("h1")).not.toBeNull();
+    expect(main).toHaveAttribute("id", "main-content");
+  });
+
+  it("offers a keyboard skip link targeting the main content", () => {
+    render(<Landing />);
+    const skip = screen.getByRole("link", { name: /skip to content/i });
+    expect(skip).toHaveAttribute("href", "#main-content");
   });
 
   it("renders the four signal cards", () => {
