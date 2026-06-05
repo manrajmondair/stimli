@@ -441,6 +441,17 @@ export function AppShell() {
     }
   }
 
+  async function handleTeamSwitch(teamId: string) {
+    setActiveTeam(teamId);
+    setUsage(null);
+    await refreshSession();
+    try {
+      setUsage(await getBillingUsage());
+    } catch {
+      /* usage will refresh again on the next view transition */
+    }
+  }
+
   // Clerk's useUser() is the source of truth for "is the user signed in".
   // session carries the backend-derived team + permissions for UI scoping;
   // when the API call hasn't returned yet we still show the user as signed
@@ -490,7 +501,7 @@ export function AppShell() {
         {view === "brands" ? workspaceReady ? <BrandsView key={workspaceKey} workspaceKey={workspaceKey} /> : workspaceLoading : null}
         {view === "outcomes" ? workspaceReady ? <OutcomesView key={workspaceKey} /> : workspaceLoading : null}
         {view === "team" ? (
-          <TeamView session={session} onUpdate={refreshSession} />
+          <TeamView session={session} onUpdate={refreshSession} onTeamSwitch={handleTeamSwitch} />
         ) : null}
         {view === "billing" ? workspaceReady ? (
           <BillingView
@@ -2600,7 +2611,15 @@ function validateOutcomeMetrics(input: Record<OutcomeMetricField, string>): {
 
 const ROLE_OPTIONS: TeamRole[] = ["owner", "admin", "analyst", "viewer"];
 
-export function TeamView({ session, onUpdate }: { session: AuthSession | null; onUpdate: () => Promise<void> }) {
+export function TeamView({
+  session,
+  onUpdate,
+  onTeamSwitch
+}: {
+  session: AuthSession | null;
+  onUpdate: () => Promise<void>;
+  onTeamSwitch?: (teamId: string) => Promise<void> | void;
+}) {
   // Clerk is the source of truth for "is the user signed in" — when the
   // backend session lookup is still pending (or has briefly failed), we
   // shouldn't pretend the user is anonymous and hide the team UI.
@@ -2626,6 +2645,10 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
   const { toast, show, dismiss } = useLocalToast();
   const canManageMembers = canManageTeamMembers(session);
   const showAudit = canReadAudit(session);
+  const switchTeam = onTeamSwitch ?? (async (teamId: string) => {
+    setActiveTeam(teamId);
+    await onUpdate();
+  });
 
   useEffect(() => {
     if (!signedIn) return;
@@ -2822,10 +2845,7 @@ export function TeamView({ session, onUpdate }: { session: AuthSession | null; o
                   onChange={(e) => {
                     const next = e.target.value;
                     if (!next || next === session.team?.id) return;
-                    setActiveTeam(next);
-                    // Reload so every view re-fetches under the newly active
-                    // team's workspace.
-                    window.location.reload();
+                    void switchTeam(next);
                   }}
                   style={{ border: 0, background: "transparent", font: "inherit", color: "inherit", cursor: "pointer" }}
                 >

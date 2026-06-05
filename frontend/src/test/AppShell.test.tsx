@@ -145,6 +145,46 @@ describe("AppShell routing and shell flows", () => {
     expect(await screen.findByRole("heading", { name: /plans & usage/i })).toBeInTheDocument();
   });
 
+  it("switches teams in-place and refreshes session-scoped data", async () => {
+    setPath("/app/team");
+    vi.stubGlobal("Clerk", { session: { getToken: vi.fn(async () => "test-token") } });
+    const teamA = { id: "team_a", name: "Personal Team", created_at: new Date().toISOString() };
+    const teamB = { id: "team_b", name: "Team B", created_at: new Date().toISOString() };
+    const currentSession = {
+      ...session,
+      team: teamB,
+      role: "owner",
+      permissions: ["workspace:write", "members:manage", "billing:manage", "audit:read"],
+      teams: [teamA, teamB]
+    };
+    const switchedSession = { ...currentSession, team: teamA };
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const headers = (init?.headers || {}) as Record<string, string>;
+      const workspace = headers["X-Stimli-Workspace"];
+      if (u.includes("/auth/session")) return json(workspace === "team_a" ? switchedSession : currentSession);
+      if (u.includes("/billing/usage")) return json(usage);
+      if (u.includes("/teams/members")) return json([]);
+      if (u.includes("/teams/invites")) return json([]);
+      if (u.includes("/audit")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AppShell />);
+    const switcher = (await screen.findByLabelText(/active team/i)) as HTMLSelectElement;
+    expect(switcher.value).toBe("team_b");
+
+    fireEvent.change(switcher, { target: { value: "team_a" } });
+
+    await waitFor(() => expect(window.localStorage.getItem("stimli.team_workspace")).toBe("team_a"));
+    await waitFor(() => expect((screen.getByLabelText(/active team/i) as HTMLSelectElement).value).toBe("team_a"));
+    expect(fetchMock.mock.calls.some(([url, init]) => {
+      const headers = (init?.headers || {}) as Record<string, string>;
+      return String(url).includes("/auth/session") && headers["X-Stimli-Workspace"] === "team_a";
+    })).toBe(true);
+  });
+
   it("does not load workspace views until the signed-in team session is ready", async () => {
     setPath("/app/library");
     const sessionResolver: { current?: (response: Response) => void } = {};

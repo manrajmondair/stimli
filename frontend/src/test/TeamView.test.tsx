@@ -58,12 +58,14 @@ describe("TeamView team switcher", () => {
     expect(screen.getByRole("option", { name: "Team B" })).toBeInTheDocument();
   });
 
-  it("persists the chosen team and reloads on switch", () => {
-    render(<TeamView session={multiTeamSession as never} onUpdate={vi.fn()} />);
+  it("persists the chosen team and refreshes without reloading on switch", async () => {
+    const onUpdate = vi.fn(async () => undefined);
+    render(<TeamView session={multiTeamSession as never} onUpdate={onUpdate} />);
     const switcher = screen.getByLabelText(/active team/i);
     fireEvent.change(switcher, { target: { value: "team_a" } });
     expect(window.localStorage.getItem("stimli.team_workspace")).toBe("team_a");
-    expect(reloadMock).toHaveBeenCalled();
+    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+    expect(reloadMock).not.toHaveBeenCalled();
   });
 
   it("renders a static team name (no switcher) for a single-team user", () => {

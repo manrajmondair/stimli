@@ -622,8 +622,8 @@ function setAuthenticatedWorkspace(teamId: string | null) {
 
 // Switch the active team workspace. Subsequent requests send this team id as
 // X-Stimli-Workspace, which the API resolves to the active team when the signed-
-// in user is a verified member. Callers should reload so every view re-fetches
-// under the new workspace.
+// in user is a verified member. Callers should refetch session-scoped data so
+// every view remounts under the new workspace.
 export function setActiveTeam(teamId: string | null) {
   setAuthenticatedWorkspace(teamId);
 }
