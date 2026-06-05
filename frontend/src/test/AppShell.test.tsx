@@ -480,6 +480,78 @@ describe("AppShell routing and shell flows", () => {
     expect(await screen.findByRole("button", { name: /accept invite as owner@example.com/i })).toBeInTheDocument();
   });
 
+  it("shows a retry state when signed-in invite session lookup fails", async () => {
+    clerkMock.state.isSignedIn = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/invites/invite-token")) {
+          return json({
+            id: "invite_1",
+            team_id: "team_1",
+            team_name: "Owner Team",
+            email: "owner@example.com",
+            role: "analyst",
+            expires_at: "2026-07-01T00:00:00.000Z",
+            accepted_at: null,
+            created_at: "2026-06-01T00:00:00.000Z"
+          });
+        }
+        if (u.includes("/auth/session")) {
+          return json({ detail: "Session temporarily unavailable." }, 503);
+        }
+        return json({});
+      })
+    );
+
+    render(<InvitePage token="invite-token" />);
+
+    expect(await screen.findByText(/session temporarily unavailable/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry account check/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /checking account/i })).not.toBeInTheDocument();
+  });
+
+  it("blocks email-bound invites for the wrong signed-in account", async () => {
+    clerkMock.state.isSignedIn = true;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (u.includes("/invites/invite-token") && method === "GET") {
+        return json({
+          id: "invite_1",
+          team_id: "team_1",
+          team_name: "Owner Team",
+          email: "owner@example.com",
+          role: "analyst",
+          expires_at: "2026-07-01T00:00:00.000Z",
+          accepted_at: null,
+          created_at: "2026-06-01T00:00:00.000Z"
+        });
+      }
+      if (u.includes("/auth/session")) {
+        return json({ ...session, user: { ...session.user, email: "other@example.com" } });
+      }
+      if (u.includes("/invites/invite-token/accept") && method === "POST") {
+        return json(session);
+      }
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<InvitePage token="invite-token" />);
+
+    expect(await screen.findByText(/you are signed in as/i)).toBeInTheDocument();
+    expect(screen.getByText(/other@example.com/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /accept invite/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /switch account/i }));
+    expect(clerkMock.signOut).toHaveBeenCalledWith({ redirectUrl: "/invite/invite-token" });
+    const acceptCalls = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).includes("/invites/invite-token/accept") && (init?.method || "GET").toUpperCase() === "POST"
+    );
+    expect(acceptCalls).toHaveLength(0);
+  });
+
   it("shows an unavailable state for invalid invites instead of loading forever", async () => {
     clerkMock.state.isSignedIn = false;
     vi.stubGlobal(

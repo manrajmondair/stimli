@@ -99,6 +99,10 @@ function canReadAudit(session: AuthSession | null) {
   return sessionHasPermission(session, "audit:read") || session?.role === "owner" || session?.role === "admin";
 }
 
+function normalizeEmail(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase();
+}
+
 const ASSET_TYPE_LABEL: Record<AssetType, string> = {
   script: "Script",
   landing_page: "Landing page",
@@ -3261,6 +3265,8 @@ export function InvitePage({ token }: { token: string }) {
   const [invite, setInvite] = useState<TeamInvite | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [inviteLoading, setInviteLoading] = useState(true);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invitePath = `/invite/${encodeURIComponent(token)}`;
@@ -3277,14 +3283,35 @@ export function InvitePage({ token }: { token: string }) {
       .finally(() => setInviteLoading(false));
   }, [token]);
 
+  async function refreshInviteSession() {
+    setSessionLoading(true);
+    setSessionError(null);
+    try {
+      setSession(await getSession());
+    } catch (err) {
+      setSession(null);
+      setSessionError(err instanceof Error ? err.message : "Could not check your signed-in account.");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
   useEffect(() => {
-    if (!clerkLoaded || !isSignedIn) return;
-    getSession()
-      .then(setSession)
-      .catch(() => undefined);
+    if (!clerkLoaded) return;
+    if (!isSignedIn) {
+      setSession(null);
+      setSessionLoading(false);
+      setSessionError(null);
+      return;
+    }
+    void refreshInviteSession();
   }, [clerkLoaded, isSignedIn]);
 
   async function accept() {
+    if (signedInEmailMismatch) {
+      setError(`This invite is for ${invite?.email}. Switch accounts before accepting it.`);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -3305,7 +3332,19 @@ export function InvitePage({ token }: { token: string }) {
     }
     window.location.assign(invitePath);
   }
-  const checkingSignedInSession = Boolean(clerkLoaded && isSignedIn && !session);
+
+  function switchAccount() {
+    if (clerk?.signOut) {
+      void clerk.signOut({ redirectUrl: invitePath });
+      return;
+    }
+    window.location.assign(invitePath);
+  }
+
+  const checkingSignedInSession = Boolean(clerkLoaded && isSignedIn && sessionLoading && !session);
+  const inviteEmail = normalizeEmail(invite?.email);
+  const sessionEmail = normalizeEmail(session?.user?.email);
+  const signedInEmailMismatch = Boolean(inviteEmail && session?.authenticated && sessionEmail && inviteEmail !== sessionEmail);
 
   return (
     <div className="invite-page paper-bg">
@@ -3314,6 +3353,7 @@ export function InvitePage({ token }: { token: string }) {
         <span className="brand-word">stimli</span>
       </a>
       {error ? <div className="banner error">{error}</div> : null}
+      {sessionError ? <div className="banner error">{sessionError}</div> : null}
       {inviteLoading ? (
         <p>Loading invite…</p>
       ) : !invite ? (
@@ -3341,6 +3381,25 @@ export function InvitePage({ token }: { token: string }) {
             <button className="btn primary" disabled>
               Checking account…
             </button>
+          ) : sessionError ? (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button type="button" className="btn primary" onClick={refreshInviteSession}>
+                Retry account check
+              </button>
+              <button type="button" className="btn cream" onClick={switchAccount}>
+                Switch account
+              </button>
+            </div>
+          ) : signedInEmailMismatch ? (
+            <div>
+              <p className="hint" style={{ marginTop: 0 }}>
+                This invite is for <strong>{invite.email}</strong>. You are signed in as{" "}
+                <strong>{session?.user?.email}</strong>.
+              </p>
+              <button type="button" className="btn primary" onClick={switchAccount}>
+                Switch account
+              </button>
+            </div>
           ) : session?.authenticated ? (
             <button className="btn primary" onClick={accept} disabled={busy}>
               Accept invite as {session.user?.email}
