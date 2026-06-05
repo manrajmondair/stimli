@@ -268,4 +268,4 @@ Stimli is built on top of these tools, services, and models:
 - **TRIBE** (Facebook AI Research's brain-response model family) — the inference target the Modal adapter is built around, with [OpenAI Whisper](https://github.com/openai/whisper) and [Tesseract](https://github.com/tesseract-ocr/tesseract) for audio/image extraction.
 - **[React](https://react.dev)** + **[Vite](https://vitejs.dev)** and **[Vitest](https://vitest.dev)** — frontend and tests.
 
-Built for **CS 153 (Generative AI)** at **Stanford University**.
+Built for **CS 153 (Frontier Systems)** at **Stanford University**.
