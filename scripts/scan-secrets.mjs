@@ -34,11 +34,22 @@ export function findSecrets(text) {
   return hits;
 }
 
+// The scanner's own test fixtures intentionally contain credential-shaped
+// sample strings, so it must allowlist that file or it would flag itself. This
+// is the one designated place where fixture secrets are expected; keep real
+// credentials out of it.
+const ALLOWLISTED_FILES = new Set(["tests/scan-secrets.test.js"]);
+
 function trackedFiles() {
   return execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
     .split("\0")
     .filter(Boolean)
-    .filter((file) => !file.startsWith("node_modules/") && !file.startsWith("frontend/dist/"));
+    .filter(
+      (file) =>
+        !file.startsWith("node_modules/") &&
+        !file.startsWith("frontend/dist/") &&
+        !ALLOWLISTED_FILES.has(file)
+    );
 }
 
 function run() {
