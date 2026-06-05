@@ -1500,7 +1500,10 @@ function safeDiagnosticMessage(value) {
     )
     .replace(/\bsk-or-v1-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
     .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, "[redacted]")
-    .replace(/\bsk_(?:live|test)_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+    .replace(/\bsk_(?:live|test)_[A-Za-z0-9]{8,}\b/g, "[redacted]")
+    // Hugging Face tokens can surface in a Modal/TRIBE job error echoing env;
+    // strip them too since this message is returned to clients.
+    .replace(/\bhf_[A-Za-z0-9]{8,}\b/g, "[redacted]");
   return text.slice(0, 180);
 }
 

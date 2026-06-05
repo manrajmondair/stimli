@@ -2362,6 +2362,7 @@ test("failed remote job diagnostics are redacted before persistence", async () =
   const headers = { "x-stimli-workspace": workspace };
   const jobs = new Map();
   const fakeStripeKey = `sk_live_${"1234567890abcdef"}`;
+  const fakeHfToken = `hf_${"abcdefghijklmnopqrstuvwxyz0123456789"}`;
   let jobIndex = 0;
 
   withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
@@ -2378,7 +2379,7 @@ test("failed remote job diagnostics are redacted before persistence", async () =
         ...jobs.get(body.job_id),
         status: "failed",
         error:
-          `Failed callback https://user:pass@example.com/callback?token=abc&api_key=secret with ${fakeStripeKey}`
+          `Failed callback https://user:pass@example.com/callback?token=abc&api_key=secret with ${fakeStripeKey} and ${fakeHfToken}`
       });
     }
     return jsonResponse({ detail: "not found" }, 404);
@@ -2402,6 +2403,7 @@ test("failed remote job diagnostics are redacted before persistence", async () =
     assert.equal(JSON.stringify(failed.json).includes("token=abc"), false);
     assert.equal(JSON.stringify(failed.json).includes("api_key=secret"), false);
     assert.equal(JSON.stringify(failed.json).includes(fakeStripeKey), false);
+    assert.equal(JSON.stringify(failed.json).includes(fakeHfToken), false);
     assert.match(failed.json.jobs[0].error, /https:\/\/\[redacted\]@example\.com/);
     assert.match(failed.json.recommendation.reasons[0], /\[redacted\]/);
 
