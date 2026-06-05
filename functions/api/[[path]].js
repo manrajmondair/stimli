@@ -746,6 +746,7 @@ async function handleImports(request, segments, authContext, workspaceId, header
         const assetType = assetTypes.has(item.asset_type) ? item.asset_type : "script";
         const projectId = await resolveProjectId(item.project_id || payload.project_id, workspaceId);
         const sourceUrl = item.url ? requirePublicSourceUrl(item.url) : "";
+        const durationSeconds = optionalNonNegativeNumber(item.duration_seconds, "duration_seconds", { max: 24 * 60 * 60 });
         await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
         const asset = {
           id: newId("asset"),
@@ -754,7 +755,7 @@ async function handleImports(request, segments, authContext, workspaceId, header
           source_url: sourceUrl || null,
           file_path: null,
           extracted_text: String(item.text || item.notes || textFromFilename(item.name || sourceUrl || "Imported creative")).trim(),
-          duration_seconds: optionalNonNegativeNumber(item.duration_seconds, "duration_seconds", { max: 24 * 60 * 60 }),
+          duration_seconds: durationSeconds,
           metadata: { import_source: payload.source || "manual", import_platform: payload.platform || "csv" },
           workspace_id: workspaceId,
           project_id: projectId,

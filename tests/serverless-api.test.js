@@ -2931,6 +2931,53 @@ test("imports consume asset quota per imported asset", async () => {
   }
 });
 
+test("failed import rows do not consume asset quota", async () => {
+  withEnv({
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, "user-agent": "stimli-import-invalid-quota-test" };
+  try {
+    const failed = await call(
+      "POST",
+      "/api/imports",
+      {
+        platform: "csv",
+        source: "invalid-quota-test",
+        items: [{ asset_type: "script", name: "Bad import", text: "Should fail before quota.", duration_seconds: "nope" }]
+      },
+      headers
+    );
+
+    assert.equal(failed.statusCode, 200);
+    assert.equal(failed.json.job.status, "failed");
+    assert.equal(failed.json.assets.length, 0);
+    assert.match(failed.json.job.failures[0].error, /duration_seconds must be a non-negative number/i);
+    assert.equal(await countUsageEvents({ kind: "asset", workspaceId: workspace }), 0);
+
+    const imported = await call(
+      "POST",
+      "/api/imports",
+      {
+        platform: "csv",
+        source: "invalid-quota-test",
+        items: [{ asset_type: "script", name: "Good import", text: "This valid row should still fit." }]
+      },
+      headers
+    );
+
+    assert.equal(imported.statusCode, 200);
+    assert.equal(imported.json.job.status, "complete");
+    assert.equal(imported.json.assets.length, 1);
+  } finally {
+    withEnv({
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
 test("deletes an asset and removes it from the library listing", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
