@@ -6,11 +6,16 @@ import {
   createOutcome,
   createShareLink,
   createTextAsset,
+  deleteAsset,
+  deleteBrandProfile,
+  deleteComparison,
   extractErrorMessage,
   getComparison,
   getReport,
   getReportMarkdown,
   listProjects,
+  removeTeamMember,
+  revokeTeamInvite,
   StimliApiError,
   setActiveTeam
 } from "../api";
@@ -130,6 +135,66 @@ describe("parseResponse", () => {
       code: null,
       details: null
     } satisfies Partial<StimliApiError>);
+  });
+
+  it("keeps structured errors for delete-style responses", async () => {
+    const body = {
+      detail: "This item is still in use.",
+      code: "resource_busy",
+      details: { resource: "asset" }
+    };
+    const fetchMock = vi.fn(async () => {
+      return new Response(JSON.stringify(body), { status: 409, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const actions = [
+      () => deleteAsset("asset_1"),
+      () => deleteComparison("cmp_1"),
+      () => revokeTeamInvite("invite_1"),
+      () => removeTeamMember("user_1"),
+      () => deleteBrandProfile("brand_1")
+    ];
+
+    for (const action of actions) {
+      await expect(action()).rejects.toMatchObject({
+        name: "StimliApiError",
+        message: body.detail,
+        status: 409,
+        code: body.code,
+        details: body.details
+      } satisfies Partial<StimliApiError>);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(actions.length);
+  });
+
+  it("keeps structured errors for markdown response failures", async () => {
+    const details = { kind: "comparison", limit: 10, used: 10 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ detail: "Upgrade required.", code: "quota_exceeded", details }), {
+          status: 402,
+          headers: { "Content-Type": "application/json" }
+        });
+      })
+    );
+    const upgradeListener = vi.fn();
+    window.addEventListener("stimli:upgrade-required", upgradeListener);
+
+    try {
+      await expect(getReportMarkdown("cmp_1")).rejects.toMatchObject({
+        name: "StimliApiError",
+        message: "Upgrade required.",
+        status: 402,
+        code: "quota_exceeded",
+        details
+      } satisfies Partial<StimliApiError>);
+      expect(upgradeListener).toHaveBeenCalledTimes(1);
+      expect((upgradeListener.mock.calls[0][0] as CustomEvent).detail).toEqual({ code: "quota_exceeded", details });
+    } finally {
+      window.removeEventListener("stimli:upgrade-required", upgradeListener);
+    }
   });
 });
 

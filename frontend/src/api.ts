@@ -102,10 +102,7 @@ export async function deleteAsset(assetId: string): Promise<void> {
     method: "DELETE",
     headers: await workspaceHeaders()
   });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
-  }
+  await parseResponse<void>(response);
 }
 
 export async function createTextAsset(input: {
@@ -190,10 +187,7 @@ export async function deleteComparison(comparisonId: string): Promise<void> {
     method: "DELETE",
     headers: await workspaceHeaders()
   });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
-  }
+  await parseResponse<void>(response);
 }
 
 export async function getReport(comparisonId: string): Promise<Report> {
@@ -203,11 +197,7 @@ export async function getReport(comparisonId: string): Promise<Report> {
 
 export async function getReportMarkdown(comparisonId: string): Promise<string> {
   const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(comparisonId)}/markdown`, { headers: await workspaceHeaders() });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
-  }
-  return response.text();
+  return parseTextResponse(response);
 }
 
 export async function createShareLink(comparisonId: string): Promise<ShareLink> {
@@ -331,10 +321,7 @@ export async function revokeTeamInvite(inviteId: string): Promise<void> {
     method: "DELETE",
     headers: await workspaceHeaders()
   });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
-  }
+  await parseResponse<void>(response);
 }
 
 export async function removeTeamMember(userId: string): Promise<void> {
@@ -342,10 +329,7 @@ export async function removeTeamMember(userId: string): Promise<void> {
     method: "DELETE",
     headers: await workspaceHeaders()
   });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
-  }
+  await parseResponse<void>(response);
 }
 
 export async function listTeamMembers(): Promise<TeamMember[]> {
@@ -414,10 +398,7 @@ export async function deleteBrandProfile(id: string): Promise<void> {
     method: "DELETE",
     headers: await workspaceHeaders()
   });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
-  }
+  await parseResponse<void>(response);
 }
 
 export async function exportBrandProfile(id: string): Promise<{ schema: string; exported_at: string; profile: BrandProfile }> {
@@ -538,27 +519,49 @@ async function parseResponse<T>(response: Response): Promise<T> {
     }
   }
   if (!response.ok) {
-    const message = extractErrorMessage(raw) || `Request failed with ${response.status}`;
-    const code =
-      parsedJson && parsed && typeof parsed === "object" && "code" in parsed && typeof (parsed as { code: unknown }).code === "string"
-        ? ((parsed as { code: string }).code)
-        : null;
-    const details =
-      parsedJson && parsed && typeof parsed === "object" && "details" in parsed && typeof (parsed as { details: unknown }).details === "object"
-        ? ((parsed as { details: Record<string, unknown> }).details)
-        : null;
-    // Quota responses get a global event so the shell can swap to the Billing
-    // view without each call site having to remember to handle the case.
-    if (response.status === 402 && typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("stimli:upgrade-required", { detail: { code, details } }));
-    }
-    throw new StimliApiError(message, response.status, code, details);
+    throw structuredApiError(response, raw);
   }
   if (!raw) return null as T;
   if (!parsedJson) {
     throw new StimliApiError("Response was not valid JSON.", response.status, null, null);
   }
   return parsed as T;
+}
+
+async function parseTextResponse(response: Response): Promise<string> {
+  const raw = await response.text();
+  if (!response.ok) {
+    throw structuredApiError(response, raw);
+  }
+  return raw;
+}
+
+function structuredApiError(response: Response, raw: string): StimliApiError {
+  let parsed: unknown = null;
+  let parsedJson = false;
+  if (raw) {
+    try {
+      parsed = JSON.parse(raw);
+      parsedJson = true;
+    } catch {
+      /* keep parsed null */
+    }
+  }
+  const message = extractErrorMessage(raw) || `Request failed with ${response.status}`;
+  const code =
+    parsedJson && parsed && typeof parsed === "object" && "code" in parsed && typeof (parsed as { code: unknown }).code === "string"
+      ? ((parsed as { code: string }).code)
+      : null;
+  const details =
+    parsedJson && parsed && typeof parsed === "object" && "details" in parsed && typeof (parsed as { details: unknown }).details === "object"
+      ? ((parsed as { details: Record<string, unknown> }).details)
+      : null;
+  // Quota responses get a global event so the shell can swap to the Billing
+  // view without each call site having to remember to handle the case.
+  if (response.status === 402 && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("stimli:upgrade-required", { detail: { code, details } }));
+  }
+  return new StimliApiError(message, response.status, code, details);
 }
 
 export function extractErrorMessage(raw: string): string {
