@@ -226,7 +226,7 @@ def get_markdown_report(comparison_id: str, request: Request) -> Response:
     for variant in report.variants:
         scores = variant.analysis.scores
         lines.append(
-            f"| {variant.rank} | {variant.asset.name} | {scores.overall} | {scores.hook} | {scores.cta} | {scores.offer_strength} | {scores.audience_fit} |"
+            f"| {variant.rank} | {_md_cell(variant.asset.name)} | {scores.overall} | {scores.hook} | {scores.cta} | {scores.offer_strength} | {scores.audience_fit} |"
         )
     lines.extend(["", "## Edit Cards", ""])
     for suggestion in report.suggestions:
@@ -365,6 +365,12 @@ def seed_demo(request: Request) -> list[Asset]:
     for asset in samples:
         store.save_asset(asset, workspace_id)
     return samples
+
+
+def _md_cell(value: str) -> str:
+    # Escape pipes and flatten newlines so a user-controlled variant name can't
+    # break the Markdown table layout.
+    return str(value or "").replace("\r", " ").replace("\n", " ").replace("|", "\\|").strip()
 
 
 def _text_from_filename(name: str) -> str:

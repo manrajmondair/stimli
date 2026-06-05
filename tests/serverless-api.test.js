@@ -1249,6 +1249,37 @@ test("blocks demoting the team's last owner via a role change", async () => {
   assert.equal((await getTeamMember(owner.team.id, owner.user.id)).role, "owner");
 });
 
+test("markdown report escapes pipe characters in variant names", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const a = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Variant | A", text: "Stop weak hooks before launch. Try the starter kit today." },
+    headers
+  );
+  const b = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Variant B", text: "Upload creative and compare the strongest variant before spend." },
+    headers
+  );
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: [a.json.asset.id, b.json.asset.id], objective: "Markdown should stay well-formed." },
+    headers
+  );
+  const markdown = await call("GET", `/api/comparisons/${comparison.json.id}`, null, headers);
+  assert.equal(markdown.statusCode, 200);
+  const md = await call("GET", `/api/reports/${comparison.json.id}/markdown`, null, headers);
+  assert.equal(md.statusCode, 200);
+  assert.match(md.headers["content-type"], /text\/markdown/);
+  // The pipe in the name must be escaped, never left bare to split the row.
+  assert.ok(md.text.includes("Variant \\| A"), "expected the pipe in the variant name to be escaped");
+  assert.ok(!md.text.includes("| Variant | A |"), "a bare pipe must not break the table row");
+});
+
 test("full journey: seed, compare, report, share, outcome, calibrate, challenger, delete", async () => {
   // One integration test that walks the whole product loop so a regression in
   // how the features compose (not just each in isolation) is caught.

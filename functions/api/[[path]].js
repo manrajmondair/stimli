@@ -1963,7 +1963,9 @@ function reportToMarkdown(report) {
     "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ...report.variants.map((variant) => {
       const scores = variant.analysis.scores;
-      return `| ${variant.rank} | ${variant.asset.name} | ${scores.overall} | ${scores.hook} | ${scores.cta} | ${scores.offer_strength} | ${scores.audience_fit} |`;
+      // Escape the user-controlled variant name so a "|" in it can't break the
+      // Markdown table layout.
+      return `| ${variant.rank} | ${mdCell(variant.asset.name)} | ${scores.overall} | ${scores.hook} | ${scores.cta} | ${scores.offer_strength} | ${scores.audience_fit} |`;
     }),
     "",
     "## Edit Cards",
@@ -2743,6 +2745,12 @@ function httpError(statusCode, message) {
 
 function titleCase(value) {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+// Render a value safely inside a Markdown table cell: collapse newlines and
+// escape pipe characters so user-controlled text can't break the table.
+function mdCell(value) {
+  return String(value ?? "").replace(/\r?\n+/g, " ").replace(/\|/g, "\\|").trim();
 }
 
 function round(value, places = 1) {
