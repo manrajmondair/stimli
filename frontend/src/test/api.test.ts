@@ -11,6 +11,7 @@ import {
   getReport,
   getReportMarkdown,
   listProjects,
+  StimliApiError,
   setActiveTeam
 } from "../api";
 
@@ -112,6 +113,23 @@ describe("workspace storage fallback", () => {
     const signedInHeaders = fetchMock.mock.calls[1][1]?.headers as Record<string, string>;
     expect(signedInHeaders["X-Stimli-Workspace"]).toBe("team_cached");
     expect(signedInHeaders.Authorization).toBe("Bearer test-token");
+  });
+});
+
+describe("parseResponse", () => {
+  it("wraps invalid success JSON in a structured API error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } }))
+    );
+
+    await expect(listProjects()).rejects.toMatchObject({
+      name: "StimliApiError",
+      message: "Response was not valid JSON.",
+      status: 200,
+      code: null,
+      details: null
+    } satisfies Partial<StimliApiError>);
   });
 });
 

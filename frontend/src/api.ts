@@ -526,21 +526,25 @@ export class StimliApiError extends Error {
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const raw = await response.text();
-    let parsed: unknown = null;
+  const raw = await response.text();
+  let parsed: unknown = null;
+  let parsedJson = false;
+  if (raw) {
     try {
-      parsed = raw ? JSON.parse(raw) : null;
+      parsed = JSON.parse(raw);
+      parsedJson = true;
     } catch {
       /* keep parsed null */
     }
+  }
+  if (!response.ok) {
     const message = extractErrorMessage(raw) || `Request failed with ${response.status}`;
     const code =
-      parsed && typeof parsed === "object" && parsed && "code" in parsed && typeof (parsed as { code: unknown }).code === "string"
+      parsedJson && parsed && typeof parsed === "object" && "code" in parsed && typeof (parsed as { code: unknown }).code === "string"
         ? ((parsed as { code: string }).code)
         : null;
     const details =
-      parsed && typeof parsed === "object" && parsed && "details" in parsed && typeof (parsed as { details: unknown }).details === "object"
+      parsedJson && parsed && typeof parsed === "object" && "details" in parsed && typeof (parsed as { details: unknown }).details === "object"
         ? ((parsed as { details: Record<string, unknown> }).details)
         : null;
     // Quota responses get a global event so the shell can swap to the Billing
@@ -550,7 +554,11 @@ async function parseResponse<T>(response: Response): Promise<T> {
     }
     throw new StimliApiError(message, response.status, code, details);
   }
-  return response.json() as Promise<T>;
+  if (!raw) return null as T;
+  if (!parsedJson) {
+    throw new StimliApiError("Response was not valid JSON.", response.status, null, null);
+  }
+  return parsed as T;
 }
 
 export function extractErrorMessage(raw: string): string {
