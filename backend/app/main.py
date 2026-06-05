@@ -489,7 +489,14 @@ def _optional_non_negative_number(value: Any, label: str) -> float | None:
 
 
 def _non_negative_number(value: Any, label: str) -> float:
-    parsed = float(value)
+    # Form fields arrive as raw strings, so a non-numeric value (e.g. a
+    # duration_seconds of "abc") would make float() raise ValueError and the
+    # request 500. Coerce defensively and return a 400 instead, matching the
+    # serverless API's optionalNonNegativeNumber behavior.
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{label} must be a non-negative number.") from None
     if not math.isfinite(parsed) or parsed < 0:
         raise HTTPException(status_code=400, detail=f"{label} must be a non-negative number.")
     return parsed

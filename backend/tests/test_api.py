@@ -188,6 +188,17 @@ def test_script_upload_text_limit_rejects_and_cleanup(monkeypatch):
     assert after == before
 
 
+def test_non_numeric_duration_is_rejected_with_400():
+    # A bad duration_seconds form field must not crash the request with a 500 —
+    # it should be a clean 400, matching the serverless API.
+    response = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "Bad duration", "text": "Try it.", "duration_seconds": "soon"},
+    )
+    assert response.status_code == 400
+    assert "duration_seconds" in response.json()["detail"]
+
+
 def test_public_payloads_never_expose_file_paths():
     asset_a = client.post(
         "/assets",
