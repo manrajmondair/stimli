@@ -1255,6 +1255,12 @@ function IntakePanel({
                 <span>Upload file (optional)</span>
                 <input
                   type="file"
+                  // Clear the value on each open so re-selecting the SAME file
+                  // after a failed upload still fires onChange (browsers
+                  // suppress the change event for an identical re-selection).
+                  onClick={(e) => {
+                    (e.currentTarget as HTMLInputElement).value = "";
+                  }}
                   onChange={(e) => update("file", e.target.files?.[0] ?? null)}
                   accept={draft.type === "image" ? "image/*" : draft.type === "audio" ? "audio/*" : "video/*"}
                 />

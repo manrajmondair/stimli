@@ -2476,7 +2476,14 @@ function LogOutcomeModal({
     selected?.recommendation?.winner_asset_id || selected?.variants[0]?.asset.id || ""
   );
   useEffect(() => {
-    if (selected && !selected.variants.some((v) => v.asset.id === assetId)) {
+    if (!selected) {
+      // The chosen comparison is no longer in the list (e.g. deleted while the
+      // modal is open). Clear the stale asset id so submit() blocks with a clear
+      // message instead of POSTing an asset_id the backend will reject.
+      if (assetId) setAssetId("");
+      return;
+    }
+    if (!selected.variants.some((v) => v.asset.id === assetId)) {
       setAssetId(selected.recommendation?.winner_asset_id || selected.variants[0]?.asset.id || "");
     }
   }, [selected, assetId]);
