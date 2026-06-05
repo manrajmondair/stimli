@@ -64,6 +64,13 @@ test("Cloudflare deploy workflow verifies API health and SPA deep links", () => 
   assert.match(workflow, /<div id="root"/);
 });
 
+test("GitHub workflows opt into the current JavaScript action runtime", () => {
+  for (const file of [".github/workflows/ci.yml", ".github/workflows/deploy-pages.yml"]) {
+    const workflow = readProjectFile(file);
+    assert.match(workflow, /FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:\s*true/, `${file} should opt actions into Node 24`);
+  }
+});
+
 test("Cloudflare runtime secret check matches Wrangler secret list output", () => {
   const workflow = readProjectFile(".github/workflows/deploy-pages.yml");
   assert.match(workflow, /\^\[\[:space:\]\]\*-\[\[:space:\]\]\+\$\{name\}:/);
