@@ -2822,9 +2822,11 @@ function titleCase(value) {
 }
 
 // Render a value safely inside a Markdown table cell: collapse newlines and
-// escape pipe characters so user-controlled text can't break the table.
+// escape both the backslash escape character and pipes (backslash first, so a
+// literal "\" in the input can't slip past the escaping) — that way
+// user-controlled text can never break the table layout.
 function mdCell(value) {
-  return String(value ?? "").replace(/\r?\n+/g, " ").replace(/\|/g, "\\|").trim();
+  return String(value ?? "").replace(/\r?\n+/g, " ").replace(/[\\|]/g, "\\$&").trim();
 }
 
 function round(value, places = 1) {
