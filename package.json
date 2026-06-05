@@ -21,14 +21,14 @@
     "test:web": "npm run test --workspace stimli-frontend"
   },
   "dependencies": {
-    "@clerk/backend": "^3.4.8",
+    "@clerk/backend": "^3.5.0",
     "@neondatabase/serverless": "^1.1.0",
-    "stripe": "^22.1.1"
+    "stripe": "^22.2.0"
   },
   "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.60.3"
+    "@rollup/rollup-linux-x64-gnu": "^4.61.1"
   },
   "devDependencies": {
-    "wrangler": "^4.92.0"
+    "wrangler": "^4.98.0"
   }
 }
