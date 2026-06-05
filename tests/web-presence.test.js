@@ -12,6 +12,17 @@ function readPublic(path) {
   return readFileSync(new URL(`../frontend/public/${path}`, import.meta.url), "utf8");
 }
 
+function readPublicBytes(path) {
+  return readFileSync(new URL(`../frontend/public/${path}`, import.meta.url));
+}
+
+function pngDimensions(path) {
+  const bytes = readPublicBytes(path);
+  assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", `${path} must be a PNG`);
+  assert.equal(bytes.subarray(12, 16).toString("ascii"), "IHDR", `${path} must start with an IHDR chunk`);
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
 test("robots.txt keeps crawlers out of the API, app, and tokened links", () => {
   const robots = readPublic("robots.txt");
   for (const path of ["/api/", "/app", "/share/", "/invite/"]) {
@@ -46,7 +57,11 @@ test("web manifest is valid JSON with icons and required fields", () => {
     assert.match(icon.sizes, /^\d+x\d+$/);
     assert.equal(icon.type, "image/png");
     assert.match(icon.src, /^\/icon-\d+\.png$/);
+    const [width, height] = icon.sizes.split("x").map((value) => Number(value));
+    assert.deepEqual(pngDimensions(icon.src.slice(1)), { width, height });
   }
+  assert.deepEqual(pngDimensions("apple-touch-icon.png"), { width: 180, height: 180 });
+  assert.deepEqual(pngDimensions("og.png"), { width: 1200, height: 630 });
 });
 
 test("security.txt has the required RFC 9116 fields and an unexpired Expires", () => {
