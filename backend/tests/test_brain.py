@@ -95,3 +95,36 @@ def test_timeline_conversion_handles_dict_and_missing_segments():
 
     assert timeline[0].second == 2.3
     assert timeline[1].second == 1.0
+
+
+def test_fixture_provider_is_deterministic():
+    # The fixture provider backs "reproducible demos" — the same asset must
+    # always yield an identical predicted timeline.
+    asset = Asset(
+        id="asset_det",
+        type="script",
+        name="Hook",
+        extracted_text="Stop guessing. Try the kit today.",
+        created_at="2026-05-06T00:00:00+00:00",
+    )
+    provider = FixtureBrainResponseProvider()
+    first = provider.predict(asset)
+    second = provider.predict(asset)
+    assert len(first) == 12
+    shape = lambda timeline: [(p.second, p.attention, p.memory, p.cognitive_load) for p in timeline]
+    assert shape(first) == shape(second)
+
+
+def test_fixture_provider_varies_by_content():
+    provider = FixtureBrainResponseProvider()
+    hooky = Asset(id="a", type="script", name="A", extracted_text="Stop guessing. Try the kit today.", created_at="2026-05-06T00:00:00+00:00")
+    flat = Asset(id="b", type="script", name="B", extracted_text="A generic product story with no opener.", created_at="2026-05-06T00:00:00+00:00")
+    assert [p.attention for p in provider.predict(hooky)] != [p.attention for p in provider.predict(flat)]
+
+
+def test_timeline_conversion_falls_back_to_fixture_on_empty_or_invalid_predictions():
+    asset = Asset(id="empty", type="script", name="Empty", extracted_text="Try it.", created_at="2026-05-06T00:00:00+00:00")
+    # No rows, and a non-list payload, must both degrade to the 12-point fixture
+    # rather than producing an empty timeline (which would crash downstream means/maxes).
+    assert len(_predictions_to_timeline(asset, [], None)) == 12
+    assert len(_predictions_to_timeline(asset, "not-a-list", None)) == 12
