@@ -2129,6 +2129,9 @@ function baseHeaders(request, env) {
   }
   headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,DELETE,OPTIONS";
   headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Stimli-Workspace, X-Stimli-Team";
+  // Cache the preflight so cross-origin API consumers don't re-OPTIONS every
+  // call (browsers clamp this to their own max; 24h is the conventional value).
+  headers["Access-Control-Max-Age"] = "86400";
   // Retry-After and X-Request-Id aren't CORS-safelisted response headers, so a
   // cross-origin API consumer can't read our throttle hint or correlation id
   // unless we expose them explicitly.

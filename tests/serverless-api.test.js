@@ -220,6 +220,7 @@ test("allows credentialed local CORS without opening arbitrary origins", async (
   assert.equal(local.headers["access-control-allow-origin"], "http://localhost:5173");
   assert.equal(local.headers["access-control-allow-credentials"], "true");
   assert.match(local.headers["access-control-allow-headers"], /X-Stimli-Team/);
+  assert.equal(local.headers["access-control-max-age"], "86400");
 
   const blocked = await call("OPTIONS", "/api/health", null, { origin: "https://example.invalid" });
   assert.equal(blocked.statusCode, 204);
