@@ -99,6 +99,12 @@ export async function onRequest(context) {
 
   const cookies = new CookieSink();
   const headers = baseHeaders(request, env);
+  // Reuse Cloudflare's cf-ray when present so a request id in our logs and the
+  // X-Request-Id response header point at the same entry in CF's dashboard;
+  // fall back to a UUID for local/test runs. Lets a user who hit "Request
+  // failed" hand back an id we can grep for.
+  const requestId = request.headers.get("cf-ray") || crypto.randomUUID();
+  headers["X-Request-Id"] = requestId;
 
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers });
@@ -240,13 +246,16 @@ export async function onRequest(context) {
     const status = Number(error.statusCode || error.status || 500);
     const message = status >= 500 ? "Request failed" : error.message;
     if (status >= 500) {
-      console.error(error);
+      console.error(`[req ${requestId}]`, error);
     }
     // Pass through structured error metadata (code + details) so the frontend
     // can render quota-specific UX instead of treating every 4xx as a toast.
     const body = { detail: message };
     if (error.code) body.code = error.code;
     if (error.details && typeof error.details === "object") body.details = error.details;
+    // Surface the correlation id on opaque 5xx responses so a bug report can be
+    // tied back to the logged stack trace.
+    if (status >= 500) body.request_id = requestId;
     // Standard HTTP back-off hint on throttle/quota responses so well-behaved
     // clients (and our own retries) wait the right amount instead of hammering.
     const retryAfter = retryAfterSeconds(error);
@@ -2117,9 +2126,10 @@ function baseHeaders(request, env) {
   }
   headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,DELETE,OPTIONS";
   headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Stimli-Workspace, X-Stimli-Team";
-  // Retry-After isn't a CORS-safelisted response header, so a cross-origin API
-  // consumer can't read our throttle hint unless we expose it explicitly.
-  headers["Access-Control-Expose-Headers"] = "Retry-After";
+  // Retry-After and X-Request-Id aren't CORS-safelisted response headers, so a
+  // cross-origin API consumer can't read our throttle hint or correlation id
+  // unless we expose them explicitly.
+  headers["Access-Control-Expose-Headers"] = "Retry-After, X-Request-Id";
   headers["Cache-Control"] = "no-store";
   headers["X-Content-Type-Options"] = "nosniff";
   headers["Referrer-Policy"] = "strict-origin-when-cross-origin";

@@ -61,6 +61,34 @@ test("API responses include baseline security headers", async () => {
   assert.equal(response.headers["referrer-policy"], "strict-origin-when-cross-origin");
   assert.equal(response.headers["x-frame-options"], "DENY");
   assert.equal(response.headers["permissions-policy"], "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  // Every response carries a correlation id, exposed for cross-origin reads.
+  assert.ok(response.headers["x-request-id"], "expected an X-Request-Id header");
+  assert.match(response.headers["access-control-expose-headers"] || "", /X-Request-Id/);
+});
+
+test("a forced 5xx echoes the correlation id in the body and header", async () => {
+  // Break newId()'s randomUUID so a handler throws an unexpected error and the
+  // central catch maps it to an opaque 500. A cf-ray header is supplied so the
+  // request id itself (computed before the try) doesn't depend on randomUUID.
+  const ray = "test-ray-1234567890";
+  const original = globalThis.crypto.randomUUID;
+  globalThis.crypto.randomUUID = () => {
+    throw new Error("synthetic failure for request-id test");
+  };
+  try {
+    const response = await call(
+      "POST",
+      "/api/projects",
+      { name: "Trigger a 500" },
+      { "x-stimli-workspace": "ws_requestid_probe", "cf-ray": ray }
+    );
+    assert.equal(response.statusCode, 500);
+    assert.equal(response.json.detail, "Request failed");
+    assert.equal(response.json.request_id, ray, "5xx body should echo the cf-ray request id");
+    assert.equal(response.headers["x-request-id"], ray);
+  } finally {
+    globalThis.crypto.randomUUID = original;
+  }
 });
 
 test("health reports degraded when production persistence is missing", async () => {
