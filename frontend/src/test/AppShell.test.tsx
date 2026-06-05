@@ -236,6 +236,29 @@ describe("AppShell routing and shell flows", () => {
     expect(screen.getAllByText(/Assets this month/i).length).toBeGreaterThan(0);
   });
 
+  it("does not render Invalid Date for malformed billing periods", async () => {
+    setPath("/app/billing");
+    const malformedUsage = {
+      ...usage,
+      period: { ...usage.period, end: "not-a-date" }
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/auth/session")) return json(session);
+        if (u.includes("/billing/usage")) return json(malformedUsage);
+        if (u.includes("/billing/status")) return json(billingStatus);
+        return json([]);
+      })
+    );
+
+    render(<AppShell />);
+
+    expect(await screen.findByRole("heading", { name: /plans & usage/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+  });
+
   it("does not expose billing mutations without billing permission", async () => {
     setPath("/app/billing");
     const limitedSession = {

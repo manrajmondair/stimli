@@ -133,6 +133,11 @@ function displayShortMonthDay(value: string | null | undefined) {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function displayLongDate(value: string | null | undefined) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+}
+
 const ASSET_TYPE_LABEL: Record<AssetType, string> = {
   script: "Script",
   landing_page: "Landing page",
@@ -1269,7 +1274,7 @@ function BillingUsageSummary({ usage, onRefresh }: { usage: UsageSnapshot; onRef
   const assetLimit = usage.monthly_limits?.asset ?? usage.limits?.asset ?? 0;
   const compRatio = compLimit > 0 ? Math.min(1, monthlyComp / compLimit) : 0;
   const assetRatio = assetLimit > 0 ? Math.min(1, monthlyAsset / assetLimit) : 0;
-  const reset = period?.end ? new Date(period.end) : null;
+  const resetLabel = displayLongDate(period?.end);
   const subscription = usage.subscription;
 
   return (
@@ -1277,9 +1282,9 @@ function BillingUsageSummary({ usage, onRefresh }: { usage: UsageSnapshot; onRef
       <div className="billing-usage-head">
         <div>
           <strong>This billing period</strong>
-          {reset ? (
+          {resetLabel ? (
             <p className="hint">
-              Resets {reset.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
+              Resets {resetLabel}
               {period.source === "calendar_month" ? " (calendar month)" : ""}
             </p>
           ) : null}
