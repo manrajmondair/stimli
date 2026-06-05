@@ -63,7 +63,7 @@ export function Landing() {
             <a className="btn cream" href="#report">See a sample report</a>
           </div>
           <div className="hero-trust">
-            <span><span className="swatch" style={{ background: "var(--tomato)" }} />Real TRIBE brain models</span>
+            <span><span className="swatch" style={{ background: "var(--tomato)" }} />Brain-response scoring</span>
             <span><span className="swatch" style={{ background: "var(--pistachio)" }} />Private uploads</span>
             <span><span className="swatch" style={{ background: "var(--butter)" }} />Free to start</span>
           </div>

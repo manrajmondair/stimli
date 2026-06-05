@@ -26,4 +26,10 @@ describe("Landing", () => {
     expect(screen.getByText(/\$8\.4k/)).toBeInTheDocument();
     expect(screen.getByText(/5 modes/)).toBeInTheDocument();
   });
+
+  it("does not overstate hosted model availability in the hero trust strip", () => {
+    render(<Landing />);
+    expect(screen.getByText(/Brain-response scoring/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Real TRIBE brain models/i)).not.toBeInTheDocument();
+  });
 });

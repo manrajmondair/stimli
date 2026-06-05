@@ -103,6 +103,21 @@ function normalizeEmail(value: string | null | undefined) {
   return String(value || "").trim().toLowerCase();
 }
 
+function displayBrainProvider(provider: string | null | undefined) {
+  switch (provider) {
+    case "tribe-remote":
+      return "TRIBE v2";
+    case "web-heuristic-brain":
+      return "Stimli built-in";
+    case null:
+    case undefined:
+    case "":
+      return "Stimli";
+    default:
+      return "Stimli";
+  }
+}
+
 const ASSET_TYPE_LABEL: Record<AssetType, string> = {
   script: "Script",
   landing_page: "Landing page",
@@ -1688,7 +1703,7 @@ function LibraryView() {
                 <div className="row">
                   <span className="kicker">{asset.library?.extraction_status || "provided"}</span>
                   <span className="kicker">{asset.library?.text_length ?? previewText.length} chars</span>
-                  {asset.library?.has_private_blob ? <span className="kicker">in r2</span> : null}
+                  {asset.library?.has_private_blob ? <span className="kicker">private file</span> : null}
                 </div>
                 {isOpen ? <div className="asset-preview-body">{previewText || "(no extracted text)"}</div> : null}
                 <div className="list-card-actions">
@@ -3471,7 +3486,7 @@ export function SharedReportPage({ token }: { token: string }) {
     color: variantColors[idx % variantColors.length],
     timeline: variant.analysis.timeline ?? []
   }));
-  const provider = winner?.analysis.provider || ranked[0]?.analysis.provider || "stimli";
+  const provider = displayBrainProvider(winner?.analysis.provider || ranked[0]?.analysis.provider);
   const confidencePct = Math.round((report.recommendation.confidence ?? 0) * 100);
 
   return (

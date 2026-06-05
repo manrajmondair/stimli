@@ -27,7 +27,7 @@ vi.mock("@clerk/clerk-react", () => ({
   UserButton: () => null
 }));
 
-import { AppShell, InvitePage } from "../AppShell";
+import { AppShell, InvitePage, SharedReportPage } from "../AppShell";
 
 function setPath(path: string) {
   window.history.replaceState(null, "", path);
@@ -365,6 +365,29 @@ describe("AppShell routing and shell flows", () => {
     expect(screen.getByRole("button", { name: /delete 1/i })).toBeInTheDocument();
   });
 
+  it("uses user-facing copy for private stored library files", async () => {
+    setPath("/app/library");
+    const privateAsset = {
+      ...assets[0],
+      library: { ...assets[0].library, has_private_blob: true }
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/auth/session")) return json(session);
+        if (u.includes("/billing/usage")) return json(usage);
+        if (u.includes("/library/assets")) return json({ assets: [privateAsset], total: 1 });
+        return json([]);
+      })
+    );
+
+    render(<AppShell />);
+
+    expect(await screen.findByText(/private file/i)).toBeInTheDocument();
+    expect(screen.queryByText(/in r2/i)).not.toBeInTheDocument();
+  });
+
   it("prunes deleted selections and expanded rows on library refresh", async () => {
     setPath("/app/library");
     let libraryCalls = 0;
@@ -568,6 +591,70 @@ describe("AppShell routing and shell flows", () => {
       String(url).includes("/invites/invite-token/accept") && (init?.method || "GET").toUpperCase() === "POST"
     );
     expect(acceptCalls).toHaveLength(0);
+  });
+
+  it("maps shared report provider ids to user-facing labels", async () => {
+    const report = {
+      comparison_id: "cmp_shared",
+      title: "Shared Report",
+      executive_summary: "Ship the winner.",
+      recommendation: {
+        winner_asset_id: "asset_a",
+        verdict: "ship",
+        confidence: 0.82,
+        headline: "Ship the built-in winner.",
+        reasons: ["Strong hook."]
+      },
+      variants: [
+        {
+          asset: { id: "asset_a", type: "script", name: "Variant A", extracted_text: "A", metadata: {}, created_at: "2026-06-01T00:00:00.000Z" },
+          analysis: {
+            asset_id: "asset_a",
+            provider: "web-heuristic-brain",
+            status: "complete",
+            scores: {
+              overall: 82,
+              hook: 82,
+              clarity: 82,
+              cta: 82,
+              brand_cue: 82,
+              pacing: 82,
+              offer_strength: 82,
+              audience_fit: 82,
+              neural_attention: 82,
+              memory: 82,
+              cognitive_load: 32
+            },
+            timeline: [
+              { second: 0, attention: 0.7, memory: 0.6, cognitive_load: 0.4, note: "" },
+              { second: 3, attention: 0.8, memory: 0.7, cognitive_load: 0.45, note: "" }
+            ],
+            feature_vector: {},
+            summary: ""
+          },
+          rank: 1,
+          delta_from_best: 0
+        }
+      ],
+      suggestions: [],
+      next_steps: [],
+      brief: {},
+      learning_summary: null,
+      compliance: null
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        if (String(url).includes("/share/share-token")) return json(report);
+        return json({});
+      })
+    );
+
+    render(<SharedReportPage token="share-token" />);
+
+    expect(await screen.findByText(/per second · Stimli built-in/i)).toBeInTheDocument();
+    expect(screen.getByText(/Built on the/i)).toHaveTextContent(/Stimli built-in/);
+    expect(screen.queryByText(/web-heuristic-brain/i)).not.toBeInTheDocument();
   });
 
   it("shows an unavailable state for invalid invites instead of loading forever", async () => {
