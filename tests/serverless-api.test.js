@@ -2520,6 +2520,34 @@ test("cancels processing comparisons and remote jobs", async () => {
   }
 });
 
+test("cancelling a completed comparison is a no-op and preserves the result", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  // No TRIBE_CONTROL_URL is set, so text comparisons complete synchronously.
+  const created = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id), objective: "Should complete then resist cancel." },
+    headers
+  );
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.json.status, "complete");
+  const winner = created.json.recommendation.winner_asset_id;
+  assert.ok(winner, "expected a winner on the completed comparison");
+
+  const cancelled = await call("POST", `/api/comparisons/${created.json.id}/cancel`, null, headers);
+  assert.equal(cancelled.statusCode, 200);
+  // The completed result must survive — cancel must not wipe status or winner.
+  assert.equal(cancelled.json.status, "complete");
+  assert.equal(cancelled.json.recommendation.winner_asset_id, winner);
+
+  // And the stored comparison is still complete on a fresh read.
+  const reread = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+  assert.equal(reread.json.status, "complete");
+  assert.equal(reread.json.recommendation.winner_asset_id, winner);
+});
+
 test("rate limits comparison creation per workspace and client", async () => {
   withEnv({ STIMLI_COMPARISON_LIMIT_PER_HOUR: "1" });
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;

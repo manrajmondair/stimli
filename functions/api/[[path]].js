@@ -1043,8 +1043,16 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments[2] === "cancel") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const existing = await getComparison(comparisonId, workspaceId);
+    if (!existing) {
+      throw httpError(404, "Comparison not found");
+    }
     const cancelled = await cancelComparison(comparisonId, workspaceId);
-    await audit(workspaceId, authContext.user, "comparison.cancelled", "comparison", comparisonId, {});
+    // Only record a cancel that actually stopped a processing comparison —
+    // cancel is a no-op on terminal states, so don't log a phantom event.
+    if (existing.status === "processing") {
+      await audit(workspaceId, authContext.user, "comparison.cancelled", "comparison", comparisonId, {});
+    }
     return sendJson(200, cancelled, headers, cookies);
   }
 
@@ -1408,6 +1416,12 @@ async function cancelComparison(comparisonId, workspaceId, reason = "Analysis wa
   const comparison = await getComparison(comparisonId, workspaceId);
   if (!comparison) {
     throw httpError(404, "Comparison not found");
+  }
+  // Never overwrite a terminal comparison. Cancelling a completed analysis would
+  // wipe its winner and scores, so cancel is a no-op once the comparison has
+  // reached complete/failed/cancelled — it just returns the current state.
+  if (comparison.status !== "processing") {
+    return publicComparison(comparison);
   }
   const jobs = Array.isArray(comparison.jobs) ? comparison.jobs : [];
   const updatedJobs = await Promise.all(
