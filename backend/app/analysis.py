@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from statistics import mean
 
-from app.brain import BrainResponseProvider, build_brain_provider
+from app.brain import BrainResponseProvider, FixtureBrainResponseProvider, build_brain_provider
 from app.models import AnalysisRun, Asset, Comparison, CreativeBrief, Recommendation, ScoreBreakdown, Suggestion, VariantResult
 
 
@@ -21,7 +21,7 @@ class CreativeAnalyzer:
     def analyze(self, asset: Asset, brief: CreativeBrief | None = None) -> AnalysisRun:
         brief = brief or CreativeBrief()
         words = _words(asset.extracted_text or asset.name or asset.source_url or "")
-        timeline = self.provider.predict(asset)
+        timeline = self.provider.predict(asset) or FixtureBrainResponseProvider().predict(asset)
         neural_attention = mean(point.attention for point in timeline)
         memory = mean(point.memory for point in timeline)
         cognitive_load = mean(point.cognitive_load for point in timeline)

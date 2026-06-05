@@ -45,6 +45,29 @@ def test_analysis_is_deterministic():
     assert first.timeline == second.timeline
 
 
+def test_analysis_uses_fixture_timeline_when_provider_returns_empty():
+    class EmptyProvider:
+        name = "empty-provider"
+
+        def predict(self, asset):
+            return []
+
+    analyzer = CreativeAnalyzer(provider=EmptyProvider())
+    asset = Asset(
+        id="a1",
+        type="script",
+        name="Empty provider",
+        extracted_text="Try the kit today.",
+        created_at="2026-05-06T00:00:00+00:00",
+    )
+
+    analysis = analyzer.analyze(asset)
+
+    assert analysis.provider == "empty-provider"
+    assert len(analysis.timeline) == 12
+    assert analysis.feature_vector["peak_attention"] > 0
+
+
 def test_comparison_requires_at_least_two_assets():
     analyzer = CreativeAnalyzer()
     asset = Asset(
