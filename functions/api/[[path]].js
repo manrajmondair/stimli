@@ -2840,6 +2840,12 @@ function positiveNumber(value, fallback) {
 }
 
 function nonNegativeNumber(value, fallback) {
+  // Treat unset / blank as "use the default". Without this, Number("") === 0
+  // (and 0 >= 0) would turn an empty-string env var into 0 — e.g. a blank
+  // STIMLI_*_TTL_DAYS would expire invites/share links immediately instead of
+  // falling back to the intended default.
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string" && value.trim() === "") return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
