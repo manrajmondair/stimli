@@ -1568,6 +1568,9 @@ function publicAsset(asset) {
   delete metadata.blob_url;
   delete metadata.blob_download_url;
   delete metadata.r2_signed_url;
+  delete metadata.r2_key;
+  delete metadata.blob_pathname;
+  delete metadata.r2_bucket;
   return { ...asset, metadata };
 }
 

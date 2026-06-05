@@ -1996,6 +1996,56 @@ test("normalizes stored source URLs and rejects credentialed URLs", async () => 
   assert.equal(JSON.stringify(storedJob).includes("duration-token"), false);
 });
 
+test("public asset payloads redact private storage keys", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const storedKeys = [];
+  const form = new FormData();
+  form.append("asset_type", "image");
+  form.append("name", "Private creative");
+  form.append("text", "Visual notes for a private file upload.");
+  form.append("file", new Blob(["image-bytes"], { type: "image/png" }), "private-image.png");
+
+  const response = await onRequest({
+    request: new Request("http://stimli.test/api/assets", {
+      method: "POST",
+      headers,
+      body: form
+    }),
+    env: {
+      ...testEnv,
+      STIMLI_MEDIA: {
+        put: async (key, bytes, options) => {
+          storedKeys.push(key);
+          assert.equal(bytes.length, "image-bytes".length);
+          assert.equal(options.httpMetadata.contentType, "image/png");
+        },
+        delete: async () => undefined
+      }
+    },
+    params: {}
+  });
+  const created = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(storedKeys.length, 1);
+  assert.equal(JSON.stringify(created).includes(storedKeys[0]), false);
+  assert.equal("r2_key" in created.asset.metadata, false);
+  assert.equal("blob_pathname" in created.asset.metadata, false);
+  assert.equal("r2_bucket" in created.asset.metadata, false);
+  assert.equal(created.asset.metadata.blob_size, "image-bytes".length);
+
+  const listed = await call("GET", "/api/assets", null, headers);
+  assert.equal(listed.statusCode, 200);
+  assert.equal(JSON.stringify(listed.json).includes(storedKeys[0]), false);
+
+  const library = await call("GET", "/api/library/assets", null, headers);
+  assert.equal(library.statusCode, 200);
+  const libraryAsset = library.json.assets.find((asset) => asset.id === created.asset.id);
+  assert.ok(libraryAsset);
+  assert.equal(libraryAsset.library.has_private_blob, true);
+  assert.equal(JSON.stringify(libraryAsset).includes(storedKeys[0]), false);
+});
+
 test("oversized direct uploads are rejected before persistence or quota consumption", async () => {
   withEnv({
     STIMLI_MAX_DIRECT_UPLOAD_BYTES: "4",
