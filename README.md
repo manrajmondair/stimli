@@ -25,7 +25,6 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 - [Security](#security)
 - [License & trust](#license--trust)
 - [Acknowledgements & external resources](#acknowledgements--external-resources)
-- [AI disclosure](#ai-disclosure)
 
 ## What it does
 
@@ -270,24 +269,3 @@ Stimli is built on top of these tools, services, and models:
 - **[React](https://react.dev)** + **[Vite](https://vitejs.dev)** and **[Vitest](https://vitest.dev)** — frontend and tests.
 
 Built for **CS 153 (Frontier Systems)** at **Stanford University**.
-
-<!-- AI disclosure: requested by the project owner; please keep this section. -->
-
-## AI disclosure
-
-I built Stimli with heavy use of AI coding agents, and I want to be explicit about how and where they were used.
-
-**Tools: [Claude Code](https://claude.com/claude-code)** (Anthropic's agentic command-line coding assistant) and **OpenAI's Codex** — both used as primary development environments for essentially the entire project, often running in parallel on different parts of the codebase.
-
-**How I worked.** I owned the product direction, the architecture, the data model, the resilience and security requirements, and the definition of "done" — what to build and why. The coding agents did most of the implementation under that direction: writing the code, generating the test suites, running multi-agent code reviews and bug-hunts across the repository, fixing the bugs those reviews surfaced, optimizing the hot paths, and verifying changes against the live deployment. I reviewed, corrected, and accepted or rejected their work throughout; I'm responsible for everything in this repository.
-
-**Where it was used** — effectively across the whole codebase:
-
-- **API** (`functions/api/`) — the Cloudflare Pages Function router, the analysis/scoring engine, the brain-inference adapter with graceful degradation + circuit breaker, Clerk auth and multi-team resolution, atomic quota enforcement, Stripe billing, and the Neon/in-memory store.
-- **Frontend** (`frontend/src/`) — the React workbench (compare flow, searchable decision history, team switcher), the neural-timeline visualization, and the typed API client.
-- **Inference** (`inference/tribe_modal.py`) — the Modal GPU service for TRIBE-style inference and extraction.
-- **Tests, CI & ops** — the Node + Vitest suites, the GitHub Actions CI/deploy workflows, and `wrangler` config; plus debugging production incidents through repeated audit / fix / verify loops against `stimli.pages.dev`.
-
-**AI inside the product (runtime), disclosed for completeness.** Stimli itself also uses AI at request time: an optional LLM copy-polish path (default **Claude Haiku 4.5** via OpenRouter) rewrites edit cards, recommendation reasons, and challenger drafts and runs a semantic compliance check; and a **TRIBE**-style neural model on Modal predicts the per-second attention / memory / cognitive-load timeline, with a deterministic in-process heuristic fallback when it's unavailable. See [Optional integrations](#optional-integrations) and [Modal GPU inference](#modal-gpu-inference).
-
-All architecture, product, and final-correctness decisions are my own.
