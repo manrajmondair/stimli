@@ -1257,6 +1257,7 @@ function BillingView({
             plan={plan}
             current={plan.id === currentPlanId}
             busy={busyPlan === plan.id}
+            anyBusy={Boolean(busyPlan)}
             billingConfigured={billingConfigured}
             canManageBilling={canManageBilling}
             onSelect={() => handleSelectPlan(plan)}
@@ -1321,6 +1322,7 @@ function PlanCard({
   plan,
   current,
   busy,
+  anyBusy,
   billingConfigured,
   canManageBilling,
   onSelect
@@ -1328,6 +1330,7 @@ function PlanCard({
   plan: Plan;
   current: boolean;
   busy: boolean;
+  anyBusy: boolean;
   billingConfigured: boolean;
   canManageBilling: boolean;
   onSelect: () => void;
@@ -1378,7 +1381,7 @@ function PlanCard({
         type="button"
         className={`btn ${current ? "ghost" : "primary"}`}
         onClick={onSelect}
-        disabled={!canUpgrade || busy}
+        disabled={!canUpgrade || busy || anyBusy}
       >
         {busy ? "Redirecting…" : cta}
       </button>
