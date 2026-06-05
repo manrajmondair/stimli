@@ -1554,7 +1554,7 @@ function withJobStatuses(variants, jobs) {
 }
 
 function comparisonExpired(comparison) {
-  const maxAgeMs = Number(globalThis.__stimliEnv?.STIMLI_COMPARISON_JOB_TIMEOUT_MS || 20 * 60 * 1000);
+  const maxAgeMs = nonNegativeNumber(globalThis.__stimliEnv?.STIMLI_COMPARISON_JOB_TIMEOUT_MS, 20 * 60 * 1000);
   const created = Date.parse(comparison.created_at || "");
   return Number.isFinite(created) && Date.now() - created > maxAgeMs;
 }
@@ -2505,7 +2505,7 @@ async function retryComparisonJob(jobId, workspaceId, actor, env) {
   if (!comparison) throw httpError(404, "Job not found.");
   const job = comparison.jobs.find((item) => item.job_id === jobId);
   if (!["failed", "cancelled"].includes(job.status)) throw httpError(409, "Only failed or cancelled jobs can be retried.");
-  const maxRetries = Number(env.STIMLI_MODAL_JOB_RETRIES || 2);
+  const maxRetries = Math.floor(nonNegativeNumber(env.STIMLI_MODAL_JOB_RETRIES, 2));
   const attempt = Number(job.attempt || 0) + 1;
   if (attempt > maxRetries) throw httpError(409, "Retry limit reached for this job.");
   const asset = await getAsset(job.asset_id, workspaceId);

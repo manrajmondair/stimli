@@ -2709,6 +2709,47 @@ test("polling a processing comparison stays consistent across repeated reads", a
   }
 });
 
+test("malformed comparison timeout env still cancels stale processing jobs", async () => {
+  const { saveComparison } = await import("../functions/api/_lib/store.js");
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const comparisonId = `cmp_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  withEnv({
+    TRIBE_CONTROL_URL: "https://modal.test/control",
+    TRIBE_API_KEY: "test-key",
+    STIMLI_COMPARISON_JOB_TIMEOUT_MS: "not-a-number"
+  });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "cancel") return jsonResponse({ job_id: body.job_id, status: "cancelled" });
+    if (body.action === "status") return jsonResponse({ job_id: body.job_id, status: "running" });
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+  try {
+    await saveComparison({
+      id: comparisonId,
+      workspace_id: workspace,
+      status: "processing",
+      objective: "Cancel stale processing comparison.",
+      brief: {},
+      variants: [],
+      jobs: [{ job_id: "stale_job_1", asset_id: "asset_missing", status: "running", provider: "tribe-v2" }],
+      recommendation: { winner_asset_id: null, verdict: "revise", confidence: 0, headline: "Analyzing", reasons: [] },
+      suggestions: [],
+      created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    });
+
+    const refreshed = await call("GET", `/api/comparisons/${comparisonId}`, null, { "x-stimli-workspace": workspace });
+
+    assert.equal(refreshed.statusCode, 200);
+    assert.equal(refreshed.json.status, "cancelled");
+    assert.match(refreshed.json.recommendation.reasons[0], /timed out/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined, STIMLI_COMPARISON_JOB_TIMEOUT_MS: undefined });
+  }
+});
+
 test("cancelling a completed comparison is a no-op and preserves the result", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };
@@ -3231,6 +3272,53 @@ test("retries failed hosted inference jobs from admin controls", async () => {
   } finally {
     globalThis.fetch = originalFetch;
     withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
+test("malformed modal retry limit uses the default cap", async () => {
+  const { saveComparison } = await import("../functions/api/_lib/store.js");
+  const originalFetch = globalThis.fetch;
+  const owner = await testAccount("Retry Limit Team", "owner");
+  const headers = { cookie: owner.cookie };
+  let startCalled = false;
+  withEnv({
+    TRIBE_CONTROL_URL: "https://modal.test/control",
+    TRIBE_API_KEY: "test-key",
+    STIMLI_MODAL_JOB_RETRIES: "not-a-number"
+  });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      startCalled = true;
+      return jsonResponse({ job_id: "retry_should_not_start", asset_id: body.asset.id, status: "queued", provider: "tribe-v2" });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+  try {
+    const asset = await call("POST", "/api/assets", { asset_type: "audio", name: "Retry cap asset", text: "Try today." }, headers);
+    assert.equal(asset.statusCode, 200);
+    const jobId = `retry_cap_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+    await saveComparison({
+      id: `cmp_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+      workspace_id: owner.team.id,
+      status: "failed",
+      objective: "Retry cap should block.",
+      brief: {},
+      variants: [],
+      jobs: [{ job_id: jobId, asset_id: asset.json.asset.id, status: "failed", provider: "tribe-v2", attempt: 2 }],
+      recommendation: { winner_asset_id: null, verdict: "revise", confidence: 0, headline: "Failed", reasons: [] },
+      suggestions: [],
+      created_at: nowIso()
+    });
+
+    const retried = await call("POST", `/api/admin/jobs/${jobId}/retry`, null, headers);
+
+    assert.equal(retried.statusCode, 409);
+    assert.match(retried.json.detail, /Retry limit reached/i);
+    assert.equal(startCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined, STIMLI_MODAL_JOB_RETRIES: undefined });
   }
 });
 
