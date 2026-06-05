@@ -188,6 +188,31 @@ def test_script_upload_text_limit_rejects_and_cleanup(monkeypatch):
     assert after == before
 
 
+def test_markdown_report_escapes_pipes_in_variant_names():
+    suffix = uuid4().hex[:8]
+    headers = {"x-stimli-workspace": f"md_escape_{suffix}"}
+    a = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "Variant | A", "text": "Stop weak hooks. Try the kit today."},
+        headers=headers,
+    )
+    b = client.post(
+        "/assets",
+        data={"asset_type": "script", "name": "Variant B", "text": "Compare the strongest variant before spend."},
+        headers=headers,
+    )
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [a.json()["asset"]["id"], b.json()["asset"]["id"]], "objective": "Markdown stays well-formed."},
+        headers=headers,
+    )
+    markdown = client.get(f"/reports/{comparison.json()['id']}/markdown", headers=headers)
+    assert markdown.status_code == 200
+    # The pipe in the name must be escaped so it can't split the table row.
+    assert "Variant \\| A" in markdown.text
+    assert "| Variant | A |" not in markdown.text
+
+
 def test_non_numeric_duration_is_rejected_with_400():
     # A bad duration_seconds form field must not crash the request with a 500 —
     # it should be a clean 400, matching the serverless API.
