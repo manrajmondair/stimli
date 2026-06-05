@@ -347,6 +347,24 @@ describe("AppShell routing and shell flows", () => {
     warnSpy.mockRestore();
   });
 
+  it("clears library selections that are hidden by search", async () => {
+    setPath("/app/library");
+    render(<AppShell />);
+    await screen.findByText("Persisted A");
+    await screen.findByText("Persisted B");
+
+    fireEvent.click(screen.getByLabelText("Select Persisted A"));
+    fireEvent.click(screen.getByLabelText("Select Persisted B"));
+    expect(screen.getByRole("region", { name: /bulk actions/i })).toHaveTextContent(/2\s*assets selected/i);
+
+    fireEvent.change(screen.getByLabelText(/search library/i), { target: { value: "Persisted A" } });
+
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: /bulk actions/i })).toHaveTextContent(/1\s*asset selected/i);
+    });
+    expect(screen.getByRole("button", { name: /delete 1/i })).toBeInTheDocument();
+  });
+
   it("prunes deleted selections and expanded rows on library refresh", async () => {
     setPath("/app/library");
     let libraryCalls = 0;

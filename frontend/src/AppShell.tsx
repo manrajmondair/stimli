@@ -1470,6 +1470,15 @@ function LibraryView() {
     });
   }, [items, filter, query]);
 
+  useEffect(() => {
+    const visibleIds = new Set(visible.map((asset) => asset.id));
+    setSelected((current) => {
+      if (current.size === 0) return current;
+      const next = new Set([...current].filter((id) => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visible]);
+
   function toggleSelected(id: string) {
     setSelected((current) => {
       const next = new Set(current);
