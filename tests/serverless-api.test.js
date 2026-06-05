@@ -379,6 +379,43 @@ test("billing usage exposes both hourly and monthly buckets with a reset window"
   assert.equal(typeof response.json.monthly_usage.comparison, "number");
 });
 
+test("malformed numeric env values fall back for request date math", async () => {
+  withEnv({
+    STIMLI_RATE_LIMIT_WINDOW_MS: "not-a-number",
+    STIMLI_SHARE_LINK_TTL_DAYS: "not-a-number",
+    STIMLI_INVITE_TTL_DAYS: "not-a-number"
+  });
+  const account = await testAccount("Date Env Team", "owner");
+  const headers = { cookie: account.cookie };
+  try {
+    const usage = await call("GET", "/api/billing/usage", null, headers);
+    assert.equal(usage.statusCode, 200);
+
+    const invite = await call("POST", "/api/teams/invites", { email: "date-env-invite@example.com", role: "analyst" }, headers);
+    assert.equal(invite.statusCode, 200);
+    assert.equal(Number.isFinite(Date.parse(invite.json.expires_at)), true);
+
+    const seeded = await call("POST", "/api/demo/seed", null, headers);
+    assert.equal(seeded.statusCode, 200);
+    const comparison = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id), objective: "Share with malformed ttl env." },
+      headers
+    );
+    assert.equal(comparison.statusCode, 200);
+    const share = await call("POST", `/api/reports/${comparison.json.id}/share`, null, headers);
+    assert.equal(share.statusCode, 200);
+    assert.equal(Number.isFinite(Date.parse(share.json.expires_at)), true);
+  } finally {
+    withEnv({
+      STIMLI_RATE_LIMIT_WINDOW_MS: undefined,
+      STIMLI_SHARE_LINK_TTL_DAYS: undefined,
+      STIMLI_INVITE_TTL_DAYS: undefined
+    });
+  }
+});
+
 test("checkout redirects existing subscribers to the billing portal instead of creating duplicates", async () => {
   const account = await testAccount("Existing Subscriber Team", "owner");
   const createdAt = nowIso();

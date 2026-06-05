@@ -349,6 +349,7 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
       assertCanGrantRole(authContext, role);
       const quota = await getQuotaForWorkspace(authContext.team.id);
       const token = randomBase64url(24);
+      const inviteTtlDays = nonNegativeNumber(env.STIMLI_INVITE_TTL_DAYS, 14);
       const invite = {
         id: newId("invite"),
         token_hash: await sha256Hex(token),
@@ -357,7 +358,7 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
         email: normalizeInviteEmail(payload.email),
         role,
         created_by: authContext.user.id,
-        expires_at: new Date(Date.now() + Number(env.STIMLI_INVITE_TTL_DAYS || 14) * 24 * 60 * 60 * 1000).toISOString(),
+        expires_at: new Date(Date.now() + inviteTtlDays * 24 * 60 * 60 * 1000).toISOString(),
         created_at: nowIso()
       };
       // Seat enforcement: paid plans cap active members plus unaccepted,
@@ -520,7 +521,7 @@ async function handleBilling(request, segments, authContext, workspaceId, header
     // monthly billing-cycle bucket (real SaaS quota) so the frontend can
     // render a clear "33 / 500 comparisons this month, resets May 31" UX.
     const env = globalThis.__stimliEnv || {};
-    const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
+    const windowMs = positiveNumber(env.STIMLI_RATE_LIMIT_WINDOW_MS, 60 * 60 * 1000);
     const hourlySince = new Date(Date.now() - windowMs).toISOString();
     const [status, quota, comparisonHour, assetHour] = await Promise.all([
       billingStatus(authContext.team),
@@ -1213,7 +1214,7 @@ async function createShareLink(request, comparisonId, workspaceId, env) {
   await requireCompleteComparison(comparisonId, workspaceId);
   const token = randomBase64url(18);
   const tokenHash = await sha256Hex(token);
-  const ttlDays = Number((globalThis.__stimliEnv && globalThis.__stimliEnv.STIMLI_SHARE_LINK_TTL_DAYS) || 14);
+  const ttlDays = nonNegativeNumber(globalThis.__stimliEnv?.STIMLI_SHARE_LINK_TTL_DAYS, 14);
   const link = {
     token_hash: tokenHash,
     workspace_id: workspaceId,
@@ -2275,7 +2276,7 @@ async function enforceUsageLimit(request, workspaceId, kind, quota, authContext 
   // get the per-client/per-workspace abuse guard without a monthly quota.
   const hourlyLimit = Number.isFinite(Number(options.hourlyLimit)) ? Number(options.hourlyLimit) : quota?.hourly?.[kind];
   const monthlyLimit = quota?.monthly?.[kind];
-  const windowMs = Number(env.STIMLI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
+  const windowMs = positiveNumber(env.STIMLI_RATE_LIMIT_WINDOW_MS, 60 * 60 * 1000);
   const hourlySince = new Date(Date.now() - windowMs).toISOString();
   const bucketKey = await clientBucketKey(request, workspaceId, authContext);
 
@@ -2570,10 +2571,10 @@ function governancePolicy() {
   return {
     private_uploads: true,
     public_share_links: true,
-    share_link_ttl_days: Number(env.STIMLI_SHARE_LINK_TTL_DAYS || 14),
+    share_link_ttl_days: nonNegativeNumber(env.STIMLI_SHARE_LINK_TTL_DAYS, 14),
     deletion_workflow: "request_review",
     export_scope: "workspace",
-    retention_days: Number(env.STIMLI_RETENTION_DAYS || 365),
+    retention_days: positiveNumber(env.STIMLI_RETENTION_DAYS, 365),
     commercial_license_mode: env.STIMLI_TRIBE_COMMERCIAL_LICENSE === "1" ? "commercial-ready" : "research-only"
   };
 }
@@ -2820,6 +2821,11 @@ function round(value, places = 1) {
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonNegativeNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function optionalNonNegativeNumber(value, label, options = {}) {
