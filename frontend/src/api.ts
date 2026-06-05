@@ -173,12 +173,12 @@ export async function listComparisons(): Promise<Comparison[]> {
 }
 
 export async function getComparison(comparisonId: string): Promise<Comparison> {
-  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}`, { headers: await workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function cancelComparison(comparisonId: string): Promise<Comparison> {
-  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/cancel`, {
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}/cancel`, {
     method: "POST",
     headers: await workspaceHeaders()
   });
@@ -197,12 +197,12 @@ export async function deleteComparison(comparisonId: string): Promise<void> {
 }
 
 export async function getReport(comparisonId: string): Promise<Report> {
-  const response = await fetch(`${API_BASE}/reports/${comparisonId}`, { headers: await workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(comparisonId)}`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 
 export async function getReportMarkdown(comparisonId: string): Promise<string> {
-  const response = await fetch(`${API_BASE}/reports/${comparisonId}/markdown`, { headers: await workspaceHeaders() });
+  const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(comparisonId)}/markdown`, { headers: await workspaceHeaders() });
   if (!response.ok) {
     const message = await response.text();
     throw new Error(extractErrorMessage(message) || `Request failed with ${response.status}`);
@@ -211,7 +211,7 @@ export async function getReportMarkdown(comparisonId: string): Promise<string> {
 }
 
 export async function createShareLink(comparisonId: string): Promise<ShareLink> {
-  const response = await fetch(`${API_BASE}/reports/${comparisonId}/share`, {
+  const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(comparisonId)}/share`, {
     method: "POST",
     headers: await workspaceHeaders()
   });
@@ -224,7 +224,7 @@ export async function getSharedReport(token: string): Promise<Report> {
 }
 
 export async function createOutcome(comparisonId: string, outcome: OutcomeCreate): Promise<Outcome> {
-  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/outcomes`, {
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}/outcomes`, {
     method: "POST",
     headers: await jsonHeaders(),
     body: JSON.stringify(outcome)
@@ -236,7 +236,7 @@ export async function createChallenger(
   comparisonId: string,
   input: { source_asset_id?: string | null; focus: "hook" | "cta" | "offer" | "clarity" }
 ): Promise<ChallengerResponse> {
-  const response = await fetch(`${API_BASE}/comparisons/${comparisonId}/challengers`, {
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}/challengers`, {
     method: "POST",
     headers: await jsonHeaders(),
     body: JSON.stringify(input)

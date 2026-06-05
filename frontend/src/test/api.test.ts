@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { activeTeamId, createTextAsset, extractErrorMessage, listProjects, setActiveTeam } from "../api";
+import {
+  activeTeamId,
+  cancelComparison,
+  createChallenger,
+  createOutcome,
+  createShareLink,
+  createTextAsset,
+  extractErrorMessage,
+  getComparison,
+  getReport,
+  getReportMarkdown,
+  listProjects,
+  setActiveTeam
+} from "../api";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -116,5 +129,49 @@ describe("createTextAsset", () => {
 
     const body = fetchMock.mock.calls[0][1]?.body as FormData;
     expect(body.get("duration_seconds")).toBe("0");
+  });
+});
+
+describe("comparison path params", () => {
+  it("encodes comparison ids for all nested comparison and report routes", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/markdown")) {
+        return new Response("# report", { status: 200, headers: { "Content-Type": "text/markdown" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const comparisonId = "cmp/with space";
+    const encoded = encodeURIComponent(comparisonId);
+
+    await getComparison(comparisonId);
+    await cancelComparison(comparisonId);
+    await getReport(comparisonId);
+    await getReportMarkdown(comparisonId);
+    await createShareLink(comparisonId);
+    await createOutcome(comparisonId, {
+      asset_id: "asset_1",
+      spend: 0,
+      impressions: 0,
+      clicks: 0,
+      conversions: 0,
+      revenue: 0,
+      notes: ""
+    });
+    await createChallenger(comparisonId, { focus: "hook" });
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      `/api/comparisons/${encoded}`,
+      `/api/comparisons/${encoded}/cancel`,
+      `/api/reports/${encoded}`,
+      `/api/reports/${encoded}/markdown`,
+      `/api/reports/${encoded}/share`,
+      `/api/comparisons/${encoded}/outcomes`,
+      `/api/comparisons/${encoded}/challengers`
+    ]);
   });
 });
