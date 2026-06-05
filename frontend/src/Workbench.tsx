@@ -110,6 +110,8 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
   const [selected, setSelected] = useState<string[]>([]);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [recentComparisons, setRecentComparisons] = useState<Comparison[]>([]);
+  const [confirmRecentDeleteId, setConfirmRecentDeleteId] = useState<string | null>(null);
+  const [deletingRecentId, setDeletingRecentId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [activeVariantIdx, setActiveVariantIdx] = useState(0);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -143,6 +145,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
   const [defaultBrandId, setDefaultBrandId] = useState<string | null>(() => readLocalStorage(defaultBrandStorageKeyValue));
   const [defaultBrandName, setDefaultBrandName] = useState<string | null>(null);
   const progressTimerRef = useRef<number | null>(null);
+  const deletingRecentRef = useRef<string | null>(null);
   // Monotonic token identifying the active poll loop. Cancel / continue-in-
   // background / re-compare / unmount bump it; the loop bails as soon as its
   // captured token no longer matches, so a finished job can't hijack the screen
@@ -703,15 +706,27 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
   }
 
   async function handleDeleteRecent(comparisonId: string) {
-    if (!window.confirm("Delete this decision? This can't be undone.")) return;
+    if (deletingRecentRef.current) return;
+    setConfirmRecentDeleteId(comparisonId);
+  }
+
+  async function performDeleteRecent() {
+    const comparisonId = confirmRecentDeleteId;
+    if (!comparisonId || deletingRecentRef.current) return;
+    deletingRecentRef.current = comparisonId;
+    setDeletingRecentId(comparisonId);
     try {
       await deleteComparison(comparisonId);
       setRecentComparisons((current) => current.filter((c) => c.id !== comparisonId));
       // If we're currently viewing the deleted comparison, clear back to inventory.
       if (comparison?.id === comparisonId) reCompare();
       flash({ kind: "success", message: "Decision deleted." });
+      setConfirmRecentDeleteId(null);
     } catch (err) {
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not delete decision." });
+    } finally {
+      deletingRecentRef.current = null;
+      setDeletingRecentId(null);
     }
   }
 
@@ -726,6 +741,10 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
   }, [comparison]);
 
   const activeVariant = ranked[activeVariantIdx] ?? ranked[0];
+  const pendingRecentDelete = useMemo(
+    () => recentComparisons.find((item) => item.id === confirmRecentDeleteId) || null,
+    [recentComparisons, confirmRecentDeleteId]
+  );
 
   return (
     <>
@@ -840,6 +859,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
           recents={recentComparisons}
           onOpenRecent={openRecent}
           onDeleteRecent={handleDeleteRecent}
+          deletingRecentId={deletingRecentId}
         />
         <ResultsColumn
           step={step}
@@ -884,6 +904,15 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
           assetName={comparison.variants.find((v) => v.asset.id === outcomeFor)?.asset.name ?? "this variant"}
           onClose={() => setOutcomeFor(null)}
           onSubmit={submitOutcome}
+        />
+      ) : null}
+
+      {pendingRecentDelete ? (
+        <DecisionDeleteDialog
+          decision={pendingRecentDelete}
+          busy={Boolean(deletingRecentId)}
+          onCancel={() => setConfirmRecentDeleteId(null)}
+          onConfirm={performDeleteRecent}
         />
       ) : null}
     </>
@@ -1036,6 +1065,59 @@ function OutcomeModal({
           </button>
           <button className="btn primary" onClick={submit} disabled={busy}>
             {busy ? "Saving…" : "Save outcome"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DecisionDeleteDialog({
+  decision,
+  busy,
+  onCancel,
+  onConfirm
+}: {
+  decision: Comparison;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const titleId = `delete-decision-${decision.id}`;
+  const winner = decision.variants.find((variant) => variant.asset.id === decision.recommendation.winner_asset_id);
+  const label = winner?.asset.name || decision.objective || "this decision";
+
+  useEffect(() => {
+    cancelRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !busy) onCancel();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onCancel]);
+
+  return (
+    <div className="auth-overlay" onClick={busy ? undefined : onCancel} role="presentation">
+      <div
+        className="auth-modal confirm-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <h2 id={titleId} style={{ marginTop: 0 }}>
+          Delete this decision?
+        </h2>
+        <p className="lead">
+          <strong>{label}</strong> will be removed from recent decisions. This cannot be undone.
+        </p>
+        <div className="form-actions" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy} ref={cancelRef}>
+            Cancel
+          </button>
+          <button type="button" className="btn primary danger" onClick={onConfirm} disabled={busy}>
+            {busy ? "Deleting..." : "Delete decision"}
           </button>
         </div>
       </div>
@@ -1355,7 +1437,8 @@ function InventoryPanel({
   onSeed,
   recents,
   onOpenRecent,
-  onDeleteRecent
+  onDeleteRecent,
+  deletingRecentId
 }: {
   assets: Asset[];
   selected: string[];
@@ -1364,6 +1447,7 @@ function InventoryPanel({
   recents: Comparison[];
   onOpenRecent: (comparisonId: string) => void;
   onDeleteRecent: (comparisonId: string) => void;
+  deletingRecentId: string | null;
 }) {
   const [recentQuery, setRecentQuery] = useState("");
   const query = recentQuery.trim().toLowerCase();
@@ -1528,13 +1612,14 @@ function InventoryPanel({
                 <button
                   className="recent-delete"
                   onClick={() => onDeleteRecent(recent.id)}
+                  disabled={deletingRecentId === recent.id}
                   title="Delete this decision"
                   aria-label={`Delete decision: ${headline}`}
                   style={{
                     border: 0,
                     background: "transparent",
                     color: "var(--ink-soft)",
-                    cursor: "pointer",
+                    cursor: deletingRecentId === recent.id ? "wait" : "pointer",
                     padding: "0 10px",
                     fontSize: 16,
                     lineHeight: 1

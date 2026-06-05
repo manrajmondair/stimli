@@ -114,6 +114,73 @@ describe("Workbench", () => {
     expect(screen.getByLabelText(/delete decision: ship only winner/i)).toBeInTheDocument();
   });
 
+  it("cancels recent decision deletion without calling the API", async () => {
+    const comparison = makeComparison("cmp_cancel_delete", "only test", "Only winner");
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/comparisons/cmp_cancel_delete") && method === "DELETE") return json({ deleted: comparison.id });
+      if (u.includes("/comparisons")) return json([comparison]);
+      if (u.includes("/assets")) return json([]);
+      if (u.includes("/brand-profiles")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+    await screen.findByText(/Ship Only winner\./i);
+    fireEvent.click(screen.getByLabelText(/delete decision: ship only winner/i));
+    const dialog = await screen.findByRole("alertdialog", { name: /delete this decision/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: /delete this decision/i })).not.toBeInTheDocument());
+    const deleteCalls = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).includes("/comparisons/cmp_cancel_delete") && (init?.method || "GET").toUpperCase() === "DELETE"
+    );
+    expect(deleteCalls).toHaveLength(0);
+  });
+
+  it("only dispatches one recent decision delete when confirm is clicked twice", async () => {
+    const comparison = makeComparison("cmp_delete_once", "only test", "Only winner");
+    const pendingDelete: { resolve?: () => void } = {};
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/comparisons/cmp_delete_once") && method === "DELETE") {
+        return new Promise<Response>((resolve) => {
+          pendingDelete.resolve = () => resolve(json({ deleted: comparison.id }));
+        });
+      }
+      if (u.includes("/comparisons")) return json([comparison]);
+      if (u.includes("/assets")) return json([]);
+      if (u.includes("/brand-profiles")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+    await screen.findByText(/Ship Only winner\./i);
+    fireEvent.click(screen.getByLabelText(/delete decision: ship only winner/i));
+    const dialog = await screen.findByRole("alertdialog", { name: /delete this decision/i });
+    const confirm = within(dialog).getByRole("button", { name: /delete decision/i });
+
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      const deleteCalls = fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).includes("/comparisons/cmp_delete_once") && (init?.method || "GET").toUpperCase() === "DELETE"
+      );
+      expect(deleteCalls).toHaveLength(1);
+    });
+    pendingDelete.resolve?.();
+    expect(await screen.findByText(/decision deleted/i)).toBeInTheDocument();
+  });
+
   it("runs the core flow: load the demo set, then compare to a recommendation", async () => {
     const demoAssets = [
       { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
