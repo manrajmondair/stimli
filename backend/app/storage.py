@@ -43,6 +43,7 @@ class Store:
                 """
                 CREATE TABLE IF NOT EXISTS assets (
                     id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL DEFAULT 'public',
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
@@ -52,6 +53,7 @@ class Store:
                 """
                 CREATE TABLE IF NOT EXISTS comparisons (
                     id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL DEFAULT 'public',
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
@@ -61,6 +63,7 @@ class Store:
                 """
                 CREATE TABLE IF NOT EXISTS outcomes (
                     id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL DEFAULT 'public',
                     comparison_id TEXT NOT NULL,
                     asset_id TEXT NOT NULL,
                     payload TEXT NOT NULL,
@@ -68,74 +71,101 @@ class Store:
                 )
                 """
             )
+            self._ensure_column(conn, "assets", "workspace_id", "TEXT NOT NULL DEFAULT 'public'")
+            self._ensure_column(conn, "comparisons", "workspace_id", "TEXT NOT NULL DEFAULT 'public'")
+            self._ensure_column(conn, "outcomes", "workspace_id", "TEXT NOT NULL DEFAULT 'public'")
 
-    def save_asset(self, asset: Asset) -> Asset:
+    def save_asset(self, asset: Asset, workspace_id: str = "public") -> Asset:
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO assets (id, payload, created_at) VALUES (?, ?, ?)",
-                (asset.id, asset.model_dump_json(), asset.created_at),
+                "INSERT OR REPLACE INTO assets (id, workspace_id, payload, created_at) VALUES (?, ?, ?, ?)",
+                (asset.id, workspace_id, asset.model_dump_json(), asset.created_at),
             )
         return asset
 
-    def list_assets(self) -> list[Asset]:
+    def list_assets(self, workspace_id: str = "public") -> list[Asset]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload FROM assets ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT payload FROM assets WHERE workspace_id = ? ORDER BY created_at DESC",
+                (workspace_id,),
+            ).fetchall()
         return [Asset.model_validate_json(row["payload"]) for row in rows]
 
-    def get_asset(self, asset_id: str) -> Asset | None:
+    def get_asset(self, asset_id: str, workspace_id: str = "public") -> Asset | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT payload FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload FROM assets WHERE id = ? AND workspace_id = ?",
+                (asset_id, workspace_id),
+            ).fetchone()
         return Asset.model_validate_json(row["payload"]) if row else None
 
-    def delete_asset(self, asset_id: str) -> Asset | None:
+    def delete_asset(self, asset_id: str, workspace_id: str = "public") -> Asset | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT payload FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload FROM assets WHERE id = ? AND workspace_id = ?",
+                (asset_id, workspace_id),
+            ).fetchone()
             if row is None:
                 return None
-            conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+            conn.execute("DELETE FROM assets WHERE id = ? AND workspace_id = ?", (asset_id, workspace_id))
         return Asset.model_validate_json(row["payload"])
 
-    def save_comparison(self, comparison: Comparison) -> Comparison:
+    def save_comparison(self, comparison: Comparison, workspace_id: str = "public") -> Comparison:
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO comparisons (id, payload, created_at) VALUES (?, ?, ?)",
-                (comparison.id, comparison.model_dump_json(), comparison.created_at),
+                "INSERT OR REPLACE INTO comparisons (id, workspace_id, payload, created_at) VALUES (?, ?, ?, ?)",
+                (comparison.id, workspace_id, comparison.model_dump_json(), comparison.created_at),
             )
         return comparison
 
-    def get_comparison(self, comparison_id: str) -> Comparison | None:
+    def get_comparison(self, comparison_id: str, workspace_id: str = "public") -> Comparison | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT payload FROM comparisons WHERE id = ?", (comparison_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload FROM comparisons WHERE id = ? AND workspace_id = ?",
+                (comparison_id, workspace_id),
+            ).fetchone()
         return Comparison.model_validate_json(row["payload"]) if row else None
 
-    def list_comparisons(self) -> list[Comparison]:
+    def list_comparisons(self, workspace_id: str = "public") -> list[Comparison]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload FROM comparisons ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT payload FROM comparisons WHERE workspace_id = ? ORDER BY created_at DESC",
+                (workspace_id,),
+            ).fetchall()
         return [Comparison.model_validate_json(row["payload"]) for row in rows]
 
-    def save_outcome(self, outcome: Outcome) -> Outcome:
+    def save_outcome(self, outcome: Outcome, workspace_id: str = "public") -> Outcome:
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO outcomes (id, comparison_id, asset_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-                (outcome.id, outcome.comparison_id, outcome.asset_id, outcome.model_dump_json(), outcome.created_at),
+                "INSERT OR REPLACE INTO outcomes (id, workspace_id, comparison_id, asset_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (outcome.id, workspace_id, outcome.comparison_id, outcome.asset_id, outcome.model_dump_json(), outcome.created_at),
             )
         return outcome
 
-    def list_outcomes(self, comparison_id: str | None = None) -> list[Outcome]:
+    def list_outcomes(self, comparison_id: str | None = None, workspace_id: str = "public") -> list[Outcome]:
         with self._connect() as conn:
             if comparison_id:
                 rows = conn.execute(
-                    "SELECT payload FROM outcomes WHERE comparison_id = ? ORDER BY created_at DESC",
-                    (comparison_id,),
+                    "SELECT payload FROM outcomes WHERE comparison_id = ? AND workspace_id = ? ORDER BY created_at DESC",
+                    (comparison_id, workspace_id),
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT payload FROM outcomes ORDER BY created_at DESC").fetchall()
+                rows = conn.execute(
+                    "SELECT payload FROM outcomes WHERE workspace_id = ? ORDER BY created_at DESC",
+                    (workspace_id,),
+                ).fetchall()
         return [Outcome.model_validate_json(row["payload"]) for row in rows]
 
-    def clear_demo_assets(self) -> None:
+    def clear_demo_assets(self, workspace_id: str = "public") -> None:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload FROM assets").fetchall()
+            rows = conn.execute("SELECT payload FROM assets WHERE workspace_id = ?", (workspace_id,)).fetchall()
             for row in rows:
                 payload: dict[str, Any] = json.loads(row["payload"])
                 if payload.get("metadata", {}).get("demo") is True:
-                    conn.execute("DELETE FROM assets WHERE id = ?", (payload["id"],))
+                    conn.execute("DELETE FROM assets WHERE id = ? AND workspace_id = ?", (payload["id"], workspace_id))
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

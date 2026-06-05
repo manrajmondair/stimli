@@ -63,6 +63,7 @@ async def create_asset(request: Request) -> AssetUploadResponse:
     fields, file = await _parse_asset_request(request)
     asset_type = _asset_type_from_field(fields.get("asset_type") or fields.get("assetType"))
     return _create_asset_from_inputs(
+        workspace_id=_workspace_id(request),
         asset_type=asset_type,
         name=_string_field(fields.get("name")) or None,
         text=_string_field(fields.get("text")) or None,
@@ -74,6 +75,7 @@ async def create_asset(request: Request) -> AssetUploadResponse:
 
 def _create_asset_from_inputs(
     *,
+    workspace_id: str,
     asset_type: AssetType,
     name: str | None,
     text: str | None,
@@ -122,18 +124,18 @@ def _create_asset_from_inputs(
         metadata={"original_filename": file.filename if file else None, **extraction_metadata},
         created_at=now_iso(),
     )
-    store.save_asset(asset)
+    store.save_asset(asset, workspace_id)
     return AssetUploadResponse(asset=asset)
 
 
 @app.get("/assets", response_model=list[PublicAsset])
-def list_assets() -> list[Asset]:
-    return store.list_assets()
+def list_assets(request: Request) -> list[Asset]:
+    return store.list_assets(_workspace_id(request))
 
 
 @app.delete("/assets/{asset_id}")
-def delete_asset(asset_id: str) -> dict[str, str]:
-    asset = store.delete_asset(asset_id)
+def delete_asset(asset_id: str, request: Request) -> dict[str, str]:
+    asset = store.delete_asset(asset_id, _workspace_id(request))
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     _cleanup_uploaded_file(asset.file_path)
@@ -141,38 +143,40 @@ def delete_asset(asset_id: str) -> dict[str, str]:
 
 
 @app.post("/comparisons", response_model=Comparison)
-def create_comparison(payload: ComparisonCreate) -> Comparison:
+def create_comparison(payload: ComparisonCreate, request: Request) -> Comparison:
+    workspace_id = _workspace_id(request)
     asset_ids = list(dict.fromkeys(payload.asset_ids))
     if len(asset_ids) < 2:
         raise HTTPException(status_code=400, detail="At least two distinct asset_ids are required.")
     assets = []
     for asset_id in asset_ids:
-        asset = store.get_asset(asset_id)
+        asset = store.get_asset(asset_id, workspace_id)
         if asset is None:
             raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
         assets.append(asset)
     comparison = analyzer.compare(new_id("cmp"), payload.objective, assets, now_iso(), payload.brief)
-    store.save_comparison(comparison)
+    store.save_comparison(comparison, workspace_id)
     return comparison
 
 
 @app.get("/comparisons", response_model=list[Comparison])
-def list_comparisons() -> list[Comparison]:
-    return store.list_comparisons()
+def list_comparisons(request: Request) -> list[Comparison]:
+    return store.list_comparisons(_workspace_id(request))
 
 
 @app.get("/comparisons/{comparison_id}", response_model=Comparison)
-def get_comparison(comparison_id: str) -> Comparison:
-    comparison = store.get_comparison(comparison_id)
-    if comparison is None:
-        raise HTTPException(status_code=404, detail="Comparison not found")
-    return comparison
+def get_comparison(comparison_id: str, request: Request) -> Comparison:
+    return _get_comparison(comparison_id, _workspace_id(request))
 
 
 @app.get("/reports/{comparison_id}", response_model=Report)
-def get_report(comparison_id: str) -> Report:
-    comparison = get_comparison(comparison_id)
-    learning = _learning_summary(store.list_outcomes(comparison_id), [comparison])
+def get_report(comparison_id: str, request: Request) -> Report:
+    return _report_for_comparison(comparison_id, _workspace_id(request))
+
+
+def _report_for_comparison(comparison_id: str, workspace_id: str) -> Report:
+    comparison = _get_comparison(comparison_id, workspace_id)
+    learning = _learning_summary(store.list_outcomes(comparison_id, workspace_id), [comparison])
     winner = next((variant for variant in comparison.variants if variant.asset.id == comparison.recommendation.winner_asset_id), None)
     summary = (
         f"{comparison.recommendation.headline}. "
@@ -197,8 +201,8 @@ def get_report(comparison_id: str) -> Report:
 
 
 @app.get("/reports/{comparison_id}/markdown")
-def get_markdown_report(comparison_id: str) -> Response:
-    report = get_report(comparison_id)
+def get_markdown_report(comparison_id: str, request: Request) -> Response:
+    report = _report_for_comparison(comparison_id, _workspace_id(request))
     lines = [
         f"# {report.title}",
         "",
@@ -245,8 +249,9 @@ def get_markdown_report(comparison_id: str) -> Response:
 
 
 @app.post("/comparisons/{comparison_id}/challengers", response_model=ChallengerResponse)
-def create_challenger(comparison_id: str, payload: ChallengerCreate) -> ChallengerResponse:
-    comparison = get_comparison(comparison_id)
+def create_challenger(comparison_id: str, payload: ChallengerCreate, request: Request) -> ChallengerResponse:
+    workspace_id = _workspace_id(request)
+    comparison = _get_comparison(comparison_id, workspace_id)
     source_id = payload.source_asset_id or comparison.recommendation.winner_asset_id
     source_variant = next((variant for variant in comparison.variants if variant.asset.id == source_id), None)
     if source_variant is None:
@@ -267,13 +272,14 @@ def create_challenger(comparison_id: str, payload: ChallengerCreate) -> Challeng
         },
         created_at=now_iso(),
     )
-    store.save_asset(asset)
+    store.save_asset(asset, workspace_id)
     return ChallengerResponse(asset=asset, source_asset_id=source_variant.asset.id, focus=payload.focus)
 
 
 @app.post("/comparisons/{comparison_id}/outcomes", response_model=Outcome)
-def create_outcome(comparison_id: str, payload: OutcomeCreate) -> Outcome:
-    comparison = get_comparison(comparison_id)
+def create_outcome(comparison_id: str, payload: OutcomeCreate, request: Request) -> Outcome:
+    workspace_id = _workspace_id(request)
+    comparison = _get_comparison(comparison_id, workspace_id)
     variant_ids = {variant.asset.id for variant in comparison.variants}
     if payload.asset_id not in variant_ids:
         raise HTTPException(status_code=400, detail="Outcome asset must belong to the comparison.")
@@ -294,23 +300,26 @@ def create_outcome(comparison_id: str, payload: OutcomeCreate) -> Outcome:
         notes=payload.notes,
         created_at=now_iso(),
     )
-    return store.save_outcome(outcome)
+    return store.save_outcome(outcome, workspace_id)
 
 
 @app.get("/comparisons/{comparison_id}/outcomes", response_model=list[Outcome])
-def list_comparison_outcomes(comparison_id: str) -> list[Outcome]:
-    get_comparison(comparison_id)
-    return store.list_outcomes(comparison_id)
+def list_comparison_outcomes(comparison_id: str, request: Request) -> list[Outcome]:
+    workspace_id = _workspace_id(request)
+    _get_comparison(comparison_id, workspace_id)
+    return store.list_outcomes(comparison_id, workspace_id)
 
 
 @app.get("/learning/summary", response_model=LearningSummary)
-def learning_summary() -> LearningSummary:
-    return _learning_summary(store.list_outcomes(), store.list_comparisons())
+def learning_summary(request: Request) -> LearningSummary:
+    workspace_id = _workspace_id(request)
+    return _learning_summary(store.list_outcomes(workspace_id=workspace_id), store.list_comparisons(workspace_id))
 
 
 @app.post("/demo/seed", response_model=list[PublicAsset])
-def seed_demo() -> list[Asset]:
-    store.clear_demo_assets()
+def seed_demo(request: Request) -> list[Asset]:
+    workspace_id = _workspace_id(request)
+    store.clear_demo_assets(workspace_id)
     samples = [
         Asset(
             id=new_id("asset"),
@@ -354,13 +363,28 @@ def seed_demo() -> list[Asset]:
         ),
     ]
     for asset in samples:
-        store.save_asset(asset)
+        store.save_asset(asset, workspace_id)
     return samples
 
 
 def _text_from_filename(name: str) -> str:
     stem = Path(name).stem.replace("-", " ").replace("_", " ")
     return f"Creative asset named {stem}. Add transcript or visual notes for deeper scoring."
+
+
+def _get_comparison(comparison_id: str, workspace_id: str) -> Comparison:
+    comparison = store.get_comparison(comparison_id, workspace_id)
+    if comparison is None:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return comparison
+
+
+def _workspace_id(request: Request) -> str:
+    raw = request.headers.get("x-stimli-workspace") or request.headers.get("x-stimli-team") or "public"
+    workspace_id = raw.strip()
+    if not workspace_id:
+        return "public"
+    return workspace_id[:180]
 
 
 async def _parse_asset_request(request: Request) -> tuple[dict[str, Any], UploadFile | None]:

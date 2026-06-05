@@ -45,3 +45,36 @@ def test_delete_asset_returns_deleted_asset_and_removes_row(tmp_path):
     assert deleted == asset
     assert store.get_asset(asset.id) is None
     assert store.delete_asset(asset.id) is None
+
+
+def test_assets_are_scoped_by_workspace(tmp_path):
+    store = Store(tmp_path / "stimli.db")
+    asset_a = Asset(
+        id="asset_workspace_a",
+        type="script",
+        name="Workspace A",
+        extracted_text="Asset for workspace A.",
+        metadata={"demo": True},
+        created_at="2026-05-06T00:00:00+00:00",
+    )
+    asset_b = Asset(
+        id="asset_workspace_b",
+        type="script",
+        name="Workspace B",
+        extracted_text="Asset for workspace B.",
+        metadata={"demo": True},
+        created_at="2026-05-06T00:00:01+00:00",
+    )
+
+    store.save_asset(asset_a, "ws_a")
+    store.save_asset(asset_b, "ws_b")
+
+    assert store.get_asset(asset_a.id, "ws_a") == asset_a
+    assert store.get_asset(asset_a.id, "ws_b") is None
+    assert store.list_assets("ws_a") == [asset_a]
+    assert store.list_assets("ws_b") == [asset_b]
+
+    store.clear_demo_assets("ws_a")
+
+    assert store.get_asset(asset_a.id, "ws_a") is None
+    assert store.get_asset(asset_b.id, "ws_b") == asset_b

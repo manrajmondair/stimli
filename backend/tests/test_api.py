@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -87,6 +89,70 @@ def test_json_asset_upload_matches_serverless_shape():
     assert asset["extracted_text"] == "Compare variants before buying media."
     assert asset["duration_seconds"] == 12
     assert "file_path" not in asset
+
+
+def test_workspace_header_scopes_assets_comparisons_and_learning():
+    suffix = uuid4().hex[:8]
+    headers_a = {"x-stimli-workspace": f"backend_ws_a_{suffix}"}
+    headers_b = {"x-stimli-workspace": f"backend_ws_b_{suffix}"}
+
+    asset_a1 = client.post(
+        "/assets",
+        json={"asset_type": "script", "name": "A1", "text": "Stop weak hooks. Try the kit today."},
+        headers=headers_a,
+    )
+    asset_a2 = client.post(
+        "/assets",
+        json={"asset_type": "script", "name": "A2", "text": "Compare variants before launch."},
+        headers=headers_a,
+    )
+    asset_b = client.post(
+        "/assets",
+        json={"asset_type": "script", "name": "B1", "text": "A separate workspace asset."},
+        headers=headers_b,
+    )
+    assert asset_a1.status_code == 200
+    assert asset_a2.status_code == 200
+    assert asset_b.status_code == 200
+
+    listed_a = client.get("/assets", headers=headers_a)
+    listed_b = client.get("/assets", headers=headers_b)
+    assert {asset["id"] for asset in listed_a.json()} == {asset_a1.json()["asset"]["id"], asset_a2.json()["asset"]["id"]}
+    assert {asset["id"] for asset in listed_b.json()} == {asset_b.json()["asset"]["id"]}
+
+    cross_compare = client.post(
+        "/comparisons",
+        json={"asset_ids": [asset_a1.json()["asset"]["id"], asset_a2.json()["asset"]["id"]]},
+        headers=headers_b,
+    )
+    assert cross_compare.status_code == 404
+
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [asset_a1.json()["asset"]["id"], asset_a2.json()["asset"]["id"]]},
+        headers=headers_a,
+    )
+    assert comparison.status_code == 200
+    comparison_id = comparison.json()["id"]
+
+    assert client.get(f"/comparisons/{comparison_id}", headers=headers_b).status_code == 404
+    assert client.get(f"/reports/{comparison_id}", headers=headers_b).status_code == 404
+
+    winner_id = comparison.json()["recommendation"]["winner_asset_id"]
+    outcome = client.post(
+        f"/comparisons/{comparison_id}/outcomes",
+        json={"asset_id": winner_id, "spend": 10, "impressions": 100, "clicks": 10, "conversions": 1, "revenue": 50},
+        headers=headers_a,
+    )
+    assert outcome.status_code == 200
+    assert client.get(f"/comparisons/{comparison_id}/outcomes", headers=headers_b).status_code == 404
+
+    learning_a = client.get("/learning/summary", headers=headers_a)
+    learning_b = client.get("/learning/summary", headers=headers_b)
+    assert learning_a.json()["outcome_count"] == 1
+    assert learning_b.json()["outcome_count"] == 0
+
+    assert client.delete(f"/assets/{asset_a1.json()['asset']['id']}", headers=headers_b).status_code == 404
 
 
 def test_upload_limits_reject_and_cleanup(monkeypatch):
