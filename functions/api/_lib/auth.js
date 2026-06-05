@@ -91,19 +91,32 @@ export async function getAuthContext(request) {
     return anonymousContext(`ensureStimliUser-returned-null: ${clerkUserId}`);
   }
 
-  let personalTeam;
-  try {
-    personalTeam = await ensurePersonalTeam(user);
-  } catch (err) {
-    const msg = err && err.message ? err.message : String(err);
-    return anonymousContext(`ensurePersonalTeam-threw: ${msg}`);
+  // Fetch the user's teams once and reuse the list for the personal-team
+  // fallback, active-team resolution, and the session payload. This path runs
+  // on every authenticated request; previously listTeamsForUser ran twice here
+  // (once inside ensurePersonalTeam, once again below) plus a third time in
+  // authSessionPayload — pure round-trip latency on the hot path. The personal
+  // team is just the first membership, which is exactly what ensurePersonalTeam
+  // returns when the user already has a team.
+  let teams = await listTeamsForUser(user.id);
+  if (teams.length === 0) {
+    let created;
+    try {
+      created = await ensurePersonalTeam(user);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      return anonymousContext(`ensurePersonalTeam-threw: ${msg}`);
+    }
+    // listTeamsForUser entries carry a `role`; the freshly-created team is owned
+    // by this user, so present it in the same shape for the session payload.
+    teams = [{ ...created, role: "owner" }];
   }
+  const personalTeam = teams[0];
 
   // Honor an explicit active-team selection so a user who belongs to several
   // teams can actually operate on the one they've switched to — not just the
   // personal team. The selection only takes effect when the user is a verified
   // member of the requested team; otherwise we stay on the personal team.
-  const teams = await listTeamsForUser(user.id);
   let team = resolveActiveTeam(request, teams, personalTeam);
   let membership = await getTeamMember(team.id, user.id);
   if (!membership && team.id !== personalTeam.id) {
@@ -124,7 +137,8 @@ export async function getAuthContext(request) {
     membership,
     role: membership.role,
     permissions: permissionsForRole(membership.role),
-    workspace_id: team.id
+    workspace_id: team.id,
+    teams
   };
 }
 
@@ -168,7 +182,8 @@ async function synthesizeTestContext(testUserId, request) {
     membership,
     role: membership.role,
     permissions: permissionsForRole(membership.role),
-    workspace_id: team.id
+    workspace_id: team.id,
+    teams
   };
 }
 
@@ -189,7 +204,9 @@ export async function authSessionPayload(request) {
     team: context.team,
     role: context.role,
     permissions: context.permissions,
-    teams: await listTeamsForUser(context.user.id)
+    // getAuthContext already fetched the membership list — reuse it instead of
+    // a third listTeamsForUser round-trip per /auth/session call.
+    teams: context.teams || (await listTeamsForUser(context.user.id))
   };
 }
 
