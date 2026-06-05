@@ -25,7 +25,6 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 - [Security](#security)
 - [License & trust](#license--trust)
 - [Acknowledgements & external resources](#acknowledgements--external-resources)
-- [AI disclosure](#ai-disclosure)
 
 ## What it does
 
@@ -102,7 +101,7 @@ Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
 
 - `STIMLI_TRIBE_COMMERCIAL_LICENSE=1` flips the license badge to `commercial-ready` for surfaces that gate commerce on the brain provider's license terms.
 - `STIMLI_LANDING_PAGE_FETCH_ALLOWLIST=example.com,brand.com` allows direct serverless fetches for trusted landing-page hosts. Leave it empty to use safe fallback text instead of fetching URLs whose DNS cannot be pinned by the Worker runtime.
-- `OPENROUTER_API_KEY=sk-or-v1-…` turns on the LLM copy-polish path in `functions/api/_lib/copy_llm.js`. When set, templated edit cards, recommendation reasons, and challenger drafts are rewritten by an LLM grounded in the actual variant text + brief, and a semantic compliance check populates `comparison.compliance` with required-claim and forbidden-term hits. When unset, every path stays templated and deterministic. Default model is `anthropic/claude-haiku-4.5` (about $0.00004 per round-trip via OpenRouter); override with `STIMLI_LLM_MODEL` (any OpenRouter model id) and `STIMLI_LLM_TIMEOUT_MS` (default 8000).
+- `OPENROUTER_API_KEY=sk-or-v1-…` turns on the optional copy-polish path in `functions/api/_lib/copy_llm.js`. When set, templated edit cards, recommendation reasons, and challenger drafts are rewritten from the actual variant text + brief, and a semantic compliance check populates `comparison.compliance` with required-claim and forbidden-term hits. When unset, every path stays templated and deterministic. Override the model with `STIMLI_LLM_MODEL` and the timeout with `STIMLI_LLM_TIMEOUT_MS` (default 8000).
 
 ### Subscription billing (Stripe)
 
@@ -264,8 +263,8 @@ Stimli is built on top of these tools, services, and models:
 - **[Clerk](https://clerk.com)** — authentication ([`@clerk/backend`](https://www.npmjs.com/package/@clerk/backend)).
 - **[Stripe](https://stripe.com)** — subscription billing.
 - **[Modal](https://modal.com)** — on-demand GPU for the hosted inference + extraction service.
-- **[OpenRouter](https://openrouter.ai)** + **[Anthropic Claude](https://www.anthropic.com/claude)** — the runtime LLM copy-polish path (default `anthropic/claude-haiku-4.5`).
-- **TRIBE** (Facebook AI Research's brain-response model family) — the inference target the Modal adapter is built around, with [OpenAI Whisper](https://github.com/openai/whisper) and [Tesseract](https://github.com/tesseract-ocr/tesseract) for audio/image extraction.
+- **[OpenRouter](https://openrouter.ai)** — the optional runtime copy-polish path.
+- **TRIBE** — the brain-response inference target the Modal adapter is built around, with transcription and OCR extraction for media assets.
 - **[React](https://react.dev)** + **[Vite](https://vitejs.dev)** and **[Vitest](https://vitest.dev)** — frontend and tests.
 
 Built for **CS 153 (Frontier Systems)** at **Stanford University**.

@@ -429,12 +429,17 @@ async function onSubscriptionChanged(subscription, eventCreated = null) {
   }
 }
 
-async function onSubscriptionDeleted(subscription, eventCreated = null) {
+export async function onSubscriptionDeleted(subscription, eventCreated = null) {
   const teamId =
     subscription.metadata?.team_id ||
     (await getSubscriptionByStripeId(subscription.id))?.team_id;
   if (!teamId) return;
+  const existing = await getSubscription(teamId);
+  if (existing?.stripe_subscription_id && existing.stripe_subscription_id !== subscription.id) {
+    return;
+  }
   const record = {
+    ...(existing || {}),
     team_id: teamId,
     stripe_subscription_id: subscription.id,
     stripe_customer_id: stringValue(subscription.customer),
@@ -445,10 +450,10 @@ async function onSubscriptionDeleted(subscription, eventCreated = null) {
     cancel_at_period_end: false,
     trial_end: null,
     last_stripe_event_created: normalizedEventCreated(eventCreated),
-    created_at: nowIso(),
+    created_at: existing?.created_at || nowIso(),
     updated_at: nowIso()
   };
-  const saved = await saveSubscription(record);
+  const saved = await saveSubscription(record, { allowTerminalOverride: true });
   if (subscriptionWriteApplied(saved, eventCreated)) {
     await syncTeamPlan(teamId, "research", "cancelled");
   }
@@ -460,16 +465,19 @@ export async function onInvoicePaid(invoice, eventCreated = null) {
   const existing = await getSubscription(teamId);
   if (!existing) return;
   if (!invoiceMatchesCurrentSubscription(invoice, existing)) return;
+  if (invoiceWriteAlreadyApplied(existing, eventCreated)) return;
   const nextStatus = invoiceCanUpdateSubscriptionStatus(invoice, existing) ? "active" : existing.status;
+  const invoiceEventCreated = normalizedEventCreated(eventCreated);
   const saved = await saveSubscription({
     ...existing,
     status: nextStatus,
     last_invoice_paid_at: nowIso(),
     last_invoice_amount_paid: invoice.amount_paid || 0,
-    last_stripe_event_created: normalizedEventCreated(eventCreated),
+    last_invoice_event_created: invoiceEventCreated || existing.last_invoice_event_created || null,
+    last_stripe_event_created: existing.last_stripe_event_created || null,
     updated_at: nowIso()
-  });
-  if (nextStatus !== existing.status && subscriptionWriteApplied(saved, eventCreated)) {
+  }, { ignoreEventOrdering: true });
+  if (nextStatus !== existing.status && invoiceWriteApplied(saved, eventCreated)) {
     await syncTeamPlan(teamId, existing.plan, "active");
   }
 }
@@ -480,15 +488,18 @@ export async function onInvoiceFailed(invoice, eventCreated = null) {
   const existing = await getSubscription(teamId);
   if (!existing) return;
   if (!invoiceMatchesCurrentSubscription(invoice, existing)) return;
+  if (invoiceWriteAlreadyApplied(existing, eventCreated)) return;
   const nextStatus = invoiceCanUpdateSubscriptionStatus(invoice, existing) ? "past_due" : existing.status;
+  const invoiceEventCreated = normalizedEventCreated(eventCreated);
   const saved = await saveSubscription({
     ...existing,
     status: nextStatus,
     last_invoice_failed_at: nowIso(),
-    last_stripe_event_created: normalizedEventCreated(eventCreated),
+    last_invoice_event_created: invoiceEventCreated || existing.last_invoice_event_created || null,
+    last_stripe_event_created: existing.last_stripe_event_created || null,
     updated_at: nowIso()
-  });
-  if (nextStatus !== existing.status && subscriptionWriteApplied(saved, eventCreated)) {
+  }, { ignoreEventOrdering: true });
+  if (nextStatus !== existing.status && invoiceWriteApplied(saved, eventCreated)) {
     await syncTeamPlan(teamId, existing.plan, "past_due");
   }
 }
@@ -518,6 +529,19 @@ function subscriptionWriteApplied(saved, eventCreated) {
   const created = normalizedEventCreated(eventCreated);
   if (!created) return true;
   return Number(saved?.last_stripe_event_created) === created;
+}
+
+function invoiceWriteAlreadyApplied(subscription, eventCreated) {
+  const created = normalizedEventCreated(eventCreated);
+  if (!created) return false;
+  const existingCreated = Number(subscription?.last_invoice_event_created);
+  return Number.isFinite(existingCreated) && created <= existingCreated;
+}
+
+function invoiceWriteApplied(saved, eventCreated) {
+  const created = normalizedEventCreated(eventCreated);
+  if (!created) return true;
+  return Number(saved?.last_invoice_event_created) === created;
 }
 
 function invoiceMatchesCurrentSubscription(invoice, subscription) {

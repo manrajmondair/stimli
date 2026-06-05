@@ -14,7 +14,6 @@ backend/.data/
 backend/app/__pycache__/
 frontend/.vite/
 .env*.local
-.claude/
 .secrets/
 .wrangler/
 .dev.vars

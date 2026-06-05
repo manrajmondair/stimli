@@ -1414,21 +1414,22 @@ export async function listIntegrationJobs(workspaceId = "public") {
 // stimli_teams payload, gives us a sane place to track current_period_end,
 // cancel_at_period_end, trial_end, and the raw price id without rewriting the
 // team blob on every webhook.
-export async function saveSubscription(subscription) {
+export async function saveSubscription(subscription, options = {}) {
   const sql = getSql();
   const eventCreated = Number(subscription.last_stripe_event_created);
-  const hasEventCreated = Number.isFinite(eventCreated);
+  const hasEventCreated = Number.isFinite(eventCreated) && eventCreated > 0;
+  const ignoreEventOrdering = options.ignoreEventOrdering === true || options.allowTerminalOverride === true;
   if (!sql) {
     const existing = memoryStore.subscriptions.get(subscription.team_id) || null;
     const existingEventCreated = Number(existing?.last_stripe_event_created);
-    if (hasEventCreated && Number.isFinite(existingEventCreated) && eventCreated <= existingEventCreated) {
+    if (!ignoreEventOrdering && hasEventCreated && Number.isFinite(existingEventCreated) && eventCreated <= existingEventCreated) {
       return existing ? { ...existing, last_stripe_write_ignored: true } : existing;
     }
     memoryStore.subscriptions.set(subscription.team_id, subscription);
     return subscription;
   }
   await ensureTables(sql);
-  const rows = hasEventCreated
+  const rows = hasEventCreated && !ignoreEventOrdering
     ? await sql`
       insert into stimli_subscriptions (
         team_id, stripe_subscription_id, stripe_customer_id, plan, status,

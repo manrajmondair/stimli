@@ -16,7 +16,7 @@ import test from "node:test";
 
 import { onRequest } from "../functions/api/[[path]].js";
 import { nowIso, resetRemoteBrainHealth } from "../functions/api/_lib/analysis.js";
-import { onInvoiceFailed, onInvoicePaid, stripeIdempotencyKey } from "../functions/api/_lib/billing.js";
+import { onInvoiceFailed, onInvoicePaid, onSubscriptionDeleted, stripeIdempotencyKey } from "../functions/api/_lib/billing.js";
 import {
   configureStore,
   countUsageEvents,
@@ -880,20 +880,124 @@ test("invoice webhooks cannot revive a terminal subscription", async () => {
   assert.equal(stored.status, "cancelled");
   assert.equal(stored.plan, "research");
   assert.equal(stored.last_invoice_amount_paid, 4900);
-  assert.equal(stored.last_stripe_event_created, 201);
+  assert.equal(stored.last_invoice_event_created, 201);
+  assert.equal(stored.last_stripe_event_created, 200);
 
   await onInvoiceFailed({ customer: "cus_terminal_ordering", subscription: "sub_terminal_ordering" }, 202);
   stored = await getSubscription(teamId);
   assert.equal(stored.status, "cancelled");
   assert.equal(stored.plan, "research");
   assert.ok(stored.last_invoice_failed_at);
-  assert.equal(stored.last_stripe_event_created, 202);
+  assert.equal(stored.last_invoice_event_created, 202);
+  assert.equal(stored.last_stripe_event_created, 200);
 
   await onInvoicePaid({ customer: "cus_terminal_ordering", subscription: "sub_old_subscription", amount_paid: 9900 }, 203);
   stored = await getSubscription(teamId);
   assert.equal(stored.status, "cancelled");
   assert.equal(stored.last_invoice_amount_paid, 4900);
-  assert.equal(stored.last_stripe_event_created, 202);
+  assert.equal(stored.last_invoice_event_created, 202);
+  assert.equal(stored.last_stripe_event_created, 200);
+});
+
+test("invoice timestamps do not block subscription cancellations", async () => {
+  const teamId = `team_invoice_cancel_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_invoice_cancel",
+    stripe_customer_id: "cus_invoice_cancel",
+    plan: "growth",
+    status: "active",
+    current_period_start: createdAt,
+    current_period_end: createdAt,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 100,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+
+  await onInvoicePaid({ customer: "cus_invoice_cancel", subscription: "sub_invoice_cancel", amount_paid: 4900 }, 201);
+  let stored = await getSubscription(teamId);
+  assert.equal(stored.status, "active");
+  assert.equal(stored.plan, "growth");
+  assert.equal(stored.last_invoice_event_created, 201);
+  assert.equal(stored.last_stripe_event_created, 100);
+
+  await onSubscriptionDeleted({
+    id: "sub_invoice_cancel",
+    customer: "cus_invoice_cancel",
+    metadata: { team_id: teamId }
+  }, 200);
+
+  stored = await getSubscription(teamId);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.plan, "research");
+  assert.equal(stored.last_invoice_event_created, 201);
+  assert.equal(stored.last_stripe_event_created, 200);
+});
+
+test("subscription cancellations can clear invoice-polluted event ordering", async () => {
+  const teamId = `team_polluted_cancel_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_polluted_cancel",
+    stripe_customer_id: "cus_polluted_cancel",
+    plan: "growth",
+    status: "active",
+    current_period_start: createdAt,
+    current_period_end: createdAt,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_invoice_paid_at: createdAt,
+    last_invoice_amount_paid: 4900,
+    last_stripe_event_created: 201,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+
+  await onSubscriptionDeleted({
+    id: "sub_polluted_cancel",
+    customer: "cus_polluted_cancel",
+    metadata: { team_id: teamId }
+  }, 200);
+
+  const stored = await getSubscription(teamId);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.plan, "research");
+  assert.equal(stored.last_invoice_amount_paid, 4900);
+  assert.equal(stored.last_stripe_event_created, 200);
+});
+
+test("stale subscription deletes cannot cancel a replacement subscription", async () => {
+  const teamId = `team_replace_cancel_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const createdAt = nowIso();
+  await saveSubscription({
+    team_id: teamId,
+    stripe_subscription_id: "sub_new_active",
+    stripe_customer_id: "cus_replace_cancel",
+    plan: "growth",
+    status: "active",
+    current_period_start: createdAt,
+    current_period_end: createdAt,
+    cancel_at_period_end: false,
+    trial_end: null,
+    last_stripe_event_created: 300,
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+
+  await onSubscriptionDeleted({
+    id: "sub_old_active",
+    customer: "cus_replace_cancel",
+    metadata: { team_id: teamId }
+  }, 200);
+
+  const stored = await getSubscription(teamId);
+  assert.equal(stored.status, "active");
+  assert.equal(stored.plan, "growth");
+  assert.equal(stored.stripe_subscription_id, "sub_new_active");
 });
 
 test("creates free team invite links and switches invited users into the team", async () => {
@@ -1541,6 +1645,41 @@ test("landing page extraction validates redirects before following them", async 
   }
 });
 
+test("landing page extraction blocks redirects outside the direct-fetch allowlist", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  withEnv({ STIMLI_LANDING_PAGE_FETCH_ALLOWLIST: "example.com" });
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push(String(url));
+    assert.equal(options.redirect, "manual");
+    return new Response("", {
+      status: 302,
+      headers: { location: "https://offsite.test/final" }
+    });
+  };
+
+  try {
+    const created = await call(
+      "POST",
+      "/api/assets",
+      {
+        asset_type: "landing_page",
+        name: "Redirect offsite",
+        url: "https://example.com/offer"
+      },
+      { "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}` }
+    );
+
+    assert.equal(created.statusCode, 200);
+    assert.deepEqual(calls, ["https://example.com/offer"]);
+    assert.equal(created.json.asset.metadata.extraction_status, "blocked");
+    assert.equal(created.json.asset.metadata.extraction_error, "redirect_direct_fetch_not_allowed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ STIMLI_LANDING_PAGE_FETCH_ALLOWLIST: undefined });
+  }
+});
+
 test("normalizes stored source URLs and rejects credentialed URLs", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace, "user-agent": "stimli-url-normalization-test" };
@@ -1697,6 +1836,84 @@ test("oversized multipart text fields are rejected before persistence", async ()
   }
 });
 
+test("oversized script JSON text is rejected before persistence or quota consumption", async () => {
+  withEnv({
+    STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES: "4",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  try {
+    const created = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Too much JSON text", text: "hello" },
+      { "x-stimli-workspace": workspace, "user-agent": "stimli-json-script-limit-test" }
+    );
+    assert.equal(created.statusCode, 413);
+    assert.match(created.json.detail, /Script upload exceeds/);
+
+    const listed = await call("GET", "/api/assets", null, { "x-stimli-workspace": workspace });
+    assert.equal(listed.json.length, 0);
+
+    const valid = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Still allowed", text: "ok" },
+      { "x-stimli-workspace": workspace, "user-agent": "stimli-json-script-limit-test" }
+    );
+    assert.equal(valid.statusCode, 200);
+  } finally {
+    withEnv({
+      STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
+test("oversized script multipart text is rejected before persistence or quota consumption", async () => {
+  withEnv({
+    STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES: "4",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  try {
+    const form = new FormData();
+    form.append("asset_type", "script");
+    form.append("name", "Too much multipart text");
+    form.append("text", "hello");
+    const request = new Request("http://stimli.test/api/assets", {
+      method: "POST",
+      headers: { "x-stimli-workspace": workspace, "user-agent": "stimli-multipart-script-limit-test" },
+      body: form
+    });
+
+    const response = await onRequest({ request, env: testEnv, params: {} });
+    assert.equal(response.status, 413);
+    const payload = await response.json();
+    assert.match(payload.detail, /Script upload exceeds/);
+
+    const listed = await call("GET", "/api/assets", null, { "x-stimli-workspace": workspace });
+    assert.equal(listed.json.length, 0);
+
+    const valid = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Still allowed", text: "ok" },
+      { "x-stimli-workspace": workspace, "user-agent": "stimli-multipart-script-limit-test" }
+    );
+    assert.equal(valid.statusCode, 200);
+  } finally {
+    withEnv({
+      STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
 test("oversized script file text is rejected before persistence or quota consumption", async () => {
   withEnv({
     STIMLI_MAX_DIRECT_UPLOAD_BYTES: "64",
@@ -1727,7 +1944,7 @@ test("oversized script file text is rejected before persistence or quota consump
     const valid = await call(
       "POST",
       "/api/assets",
-      { asset_type: "script", name: "Still allowed", text: "Stop weak hooks. Try the kit today." },
+      { asset_type: "script", name: "Still allowed", text: "ok" },
       { "x-stimli-workspace": workspace, "user-agent": "stimli-script-limit-test" }
     );
     assert.equal(valid.statusCode, 200);

@@ -811,6 +811,9 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
       }
       extractedText = new TextDecoder().decode(file.bytes);
     }
+    if (assetType === "script") {
+      enforceScriptTextLimit(extractedText, env);
+    }
 
     const quota = await getQuotaForWorkspace(workspaceId);
     await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
@@ -1635,6 +1638,12 @@ async function extractLandingPageText(rawUrl, env = {}) {
             metadata: { extraction_status: "blocked", extraction_error: `redirect_${next.reason}`, status_code: response.status }
           };
         }
+        if (!directLandingPageFetchAllowed(next.url, env)) {
+          return {
+            text: landingPageFallbackText(next.url),
+            metadata: { extraction_status: "blocked", extraction_error: "redirect_direct_fetch_not_allowed", status_code: response.status }
+          };
+        }
         url = next.url;
         continue;
       }
@@ -1707,6 +1716,15 @@ function directLandingPageFetchAllowed(rawUrl, env = {}) {
     return allowedHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   } catch {
     return false;
+  }
+}
+
+function enforceScriptTextLimit(text, env = {}) {
+  if (!text) return;
+  const maxScriptTextBytes = positiveNumber(env.STIMLI_MAX_SCRIPT_UPLOAD_TEXT_BYTES, 1_000_000);
+  const byteLength = new TextEncoder().encode(text).byteLength;
+  if (byteLength > maxScriptTextBytes) {
+    throw httpError(413, `Script upload exceeds the ${maxScriptTextBytes} byte text limit.`);
   }
 }
 

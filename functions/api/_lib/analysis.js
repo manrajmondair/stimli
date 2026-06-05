@@ -7,9 +7,9 @@
 // remote provider is configured, hosted TRIBE timeline when it is.
 //
 // When OPENROUTER_API_KEY is set, the templated edit cards, recommendation
-// reasons, and challenger drafts are polished through copy_llm.js (OpenRouter
-// → Claude Haiku 4.5 by default). When it's unset, every output path is
-// purely deterministic so tests stay reproducible without a paid LLM.
+// reasons, and challenger drafts are polished through copy_llm.js. When it's
+// unset, every output path is purely deterministic so tests stay reproducible
+// without a paid LLM.
 
 import {
   checkCompliance,
