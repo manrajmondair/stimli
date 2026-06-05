@@ -1083,15 +1083,6 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
 
   if (request.method === "POST" && segments[2] === "challengers") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
-    // Always enforce the asset quota — /challengers creates a persistent
-    // asset (saveAsset below) just like a direct /assets upload, and we need
-    // the hourly abuse-protection bucket regardless of whether LLM polish
-    // actually runs. The previous "skip when LLM off" optimization let
-    // unauthenticated clients (allowAnonymous: true) flood the workspace
-    // with templated asset rows; consistency with /assets POST is the safer
-    // default.
-    const quota = await getQuotaForWorkspace(workspaceId);
-    await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);
     const payload = await parseJson(request);
     const sourceId = payload.source_asset_id || comparison.recommendation.winner_asset_id;
@@ -1100,6 +1091,12 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
       throw httpError(400, "Source asset must belong to the comparison.");
     }
     const focus = ["hook", "cta", "offer", "clarity"].includes(payload.focus) ? payload.focus : "hook";
+    // Always enforce the asset quota — /challengers creates a persistent
+    // asset (saveAsset below) just like a direct /assets upload, and we need
+    // the hourly abuse-protection bucket regardless of whether LLM polish
+    // actually runs.
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "asset", quota, authContext);
     const asset = {
       id: newId("asset"),
       type: sourceVariant.asset.type,

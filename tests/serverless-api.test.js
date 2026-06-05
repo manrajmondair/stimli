@@ -1378,6 +1378,35 @@ test("full journey: seed, compare, report, share, outcome, calibrate, challenger
   assert.equal(outcomesAfter.json.some((o) => o.comparison_id === cid), false);
 });
 
+test("invalid challenger requests do not consume asset quota", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  assert.equal(seeded.statusCode, 200);
+  const comparison = await call(
+    "POST",
+    "/api/comparisons",
+    {
+      asset_ids: seeded.json.slice(0, 2).map((asset) => asset.id),
+      objective: "Invalid challenger should not burn quota."
+    },
+    headers
+  );
+  assert.equal(comparison.statusCode, 200);
+  const before = await countUsageEvents({ kind: "asset", workspaceId: workspace });
+
+  const invalid = await call(
+    "POST",
+    `/api/comparisons/${comparison.json.id}/challengers`,
+    { source_asset_id: "asset_missing", focus: "hook" },
+    headers
+  );
+
+  assert.equal(invalid.statusCode, 400);
+  assert.match(invalid.json.detail, /Source asset must belong to the comparison/i);
+  assert.equal(await countUsageEvents({ kind: "asset", workspaceId: workspace }), before);
+});
+
 test("seeds assets and creates a comparison", async () => {
   const seeded = await call("POST", "/api/demo/seed");
   assert.equal(seeded.statusCode, 200);
