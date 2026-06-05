@@ -22,6 +22,7 @@ import {
   listTeamInvites,
   listTeamMembers,
   listWorkspaceOutcomes,
+  activeTeamId,
   openBillingPortal,
   removeTeamMember,
   revokeTeamInvite,
@@ -441,15 +442,19 @@ export function AppShell() {
   useEffect(() => {
     if (!clerkLoaded || !isSignedIn) return;
     let cancelled = false;
+    // Capture the team in scope at fetch time: getBillingUsage() sends whatever
+    // workspace header is globally active when it runs, so a response from a
+    // prior team must not overwrite the meters after a fast team switch.
+    const teamAtFetch = activeTeamId();
     getBillingUsage()
       .then((next) => {
-        if (!cancelled) setUsage(next);
+        if (!cancelled && activeTeamId() === teamAtFetch) setUsage(next);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [clerkLoaded, isSignedIn, view]);
+  }, [clerkLoaded, isSignedIn, view, session?.team?.id]);
 
   // Honor `?billing=upgrade` (sent by the structured 402 path) and
   // `?billing=success` (Stripe Checkout return) so the user lands directly on
@@ -485,7 +490,10 @@ export function AppShell() {
     setUsage(null);
     await refreshSession();
     try {
-      setUsage(await getBillingUsage());
+      const next = await getBillingUsage();
+      // Only apply if this is still the active team (guards against a slower,
+      // out-of-order response from a rapid second switch overwriting it).
+      if (activeTeamId() === teamId) setUsage(next);
     } catch {
       /* usage will refresh again on the next view transition */
     }
