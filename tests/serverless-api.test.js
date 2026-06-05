@@ -2543,8 +2543,9 @@ test("async job that completes with no timeline degrades to the heuristic instea
       return jsonResponse(job);
     }
     if (body.action === "status") {
-      // "complete" but with an empty timeline — the degenerate case.
-      return jsonResponse({ ...jobs.get(body.job_id), status: "complete", result: { provider: "tribe-v2", timeline: [] } });
+      // "complete" but with only malformed timeline entries — the degenerate
+      // case. This used to throw while normalizing the async job result.
+      return jsonResponse({ ...jobs.get(body.job_id), status: "complete", result: { provider: "tribe-v2", timeline: [null, "bad", 7, []] } });
     }
     return jsonResponse({ detail: "not found" }, 404);
   };

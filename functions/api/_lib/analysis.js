@@ -715,6 +715,7 @@ function normalizeTimeline(points) {
     return [];
   }
   return points
+    .filter((point) => point && typeof point === "object" && !Array.isArray(point))
     .map((point, index) => ({
       second: Number(point.second ?? point.time ?? index * 2),
       attention: clamp(Number(point.attention ?? point.neural_attention ?? 0.5), 0, 1),
