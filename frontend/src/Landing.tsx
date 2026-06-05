@@ -29,6 +29,7 @@ export function Landing() {
         </div>
       </nav>
 
+      <main className="landing-main">
       <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow">
@@ -271,6 +272,7 @@ export function Landing() {
           </div>
         </div>
       </section>
+      </main>
 
       <footer className="landing-foot">
         <span>© 2026 Stimli · pretest, don't guess</span>

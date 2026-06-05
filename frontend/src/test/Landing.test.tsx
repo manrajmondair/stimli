@@ -15,6 +15,18 @@ describe("Landing", () => {
     expect(ctas[0]).toHaveAttribute("href", "/app");
   });
 
+  it("exposes a main landmark distinct from the nav and footer", () => {
+    render(<Landing />);
+    // A <main> landmark lets screen-reader users skip straight to the primary
+    // content past the nav. nav and footer stay as their own landmarks.
+    const main = screen.getByRole("main");
+    expect(main).toBeInTheDocument();
+    expect(screen.getByRole("navigation")).toBeInTheDocument();
+    expect(screen.getByRole("contentinfo")).toBeInTheDocument();
+    // The hero heading lives inside the main landmark, not the nav/footer.
+    expect(main.querySelector("h1")).not.toBeNull();
+  });
+
   it("renders the four signal cards", () => {
     const { container } = render(<Landing />);
     const signalNames = Array.from(container.querySelectorAll(".signal-name")).map((el) => el.textContent);
