@@ -240,8 +240,8 @@ npm test
 
 Runs in order:
 
-1. **`npm run test:api`** — Node-native test suite (`node --test tests/serverless-api.test.js`) that drives `functions/api/[[path]].js` with Web Requests + a stub env. 75 tests covering health, CORS, Clerk auth + multi-team scoping, billing status/webhooks (signature rejection, idempotency), atomic quota + rate limits, demo seed, calibration, share links (including public state-leak protection), comparison delete + cascade, brain-inference resilience (degradation, circuit breaker, single-engine fairness), enterprise controls, and a full end-to-end journey.
-2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`. 24 tests covering error-message parsing, the Landing page, App routing + the lazy-route error boundary, the Workbench compare flow + searchable/deletable decision history, the team switcher, and the outcomes CSV builder.
+1. **`npm run test:api`** — Node-native test suite (`node --test tests/serverless-api.test.js`) that drives `functions/api/[[path]].js` with Web Requests + a stub env, covering health, CORS, Clerk auth + multi-team scoping, billing status/webhooks (signature rejection, idempotency), atomic quota + rate limits, demo seed, calibration, share links (including public state-leak protection), comparison delete + cascade, brain-inference resilience (degradation, circuit breaker, single-engine fairness), enterprise controls, and a full end-to-end journey.
+2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`, covering error-message parsing, the Landing page, App routing + the lazy-route error boundary, the Workbench compare flow + searchable/deletable decision history, the team switcher, and the outcomes CSV builder.
 3. **`npm run build`** — TypeScript build + production Vite bundle as a final correctness check.
 
 ## Contributing
