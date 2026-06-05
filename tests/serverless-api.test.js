@@ -3125,6 +3125,47 @@ test("failed import rows do not consume asset quota", async () => {
   }
 });
 
+test("import source and platform metadata are normalized before persistence", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const noisySource = `${"external ".repeat(40)}secret-tail`;
+  const imported = await call(
+    "POST",
+    "/api/imports",
+    {
+      platform: "unknown-platform",
+      source: noisySource,
+      items: [{ asset_type: "script", name: "Import metadata", text: "Compare variants before launch." }]
+    },
+    headers
+  );
+
+  assert.equal(imported.statusCode, 200);
+  assert.equal(imported.json.job.status, "complete");
+  assert.equal(imported.json.job.platform, "manual");
+  assert.equal(imported.json.job.source, noisySource.slice(0, 120));
+  assert.equal(imported.json.assets[0].metadata.import_platform, "manual");
+  assert.equal(imported.json.assets[0].metadata.import_source, noisySource.slice(0, 120));
+
+  const objectSource = await call(
+    "POST",
+    "/api/imports",
+    {
+      platform: { label: "csv" },
+      source: { label: "private-source" },
+      items: [{ asset_type: "script", name: "Object metadata", text: "A clean import row." }]
+    },
+    headers
+  );
+
+  assert.equal(objectSource.statusCode, 200);
+  assert.equal(objectSource.json.job.platform, "manual");
+  assert.equal(objectSource.json.job.source, "manual");
+  assert.equal(objectSource.json.assets[0].metadata.import_platform, "manual");
+  assert.equal(objectSource.json.assets[0].metadata.import_source, "manual");
+  assert.equal(JSON.stringify(objectSource.json).includes("private-source"), false);
+});
+
 test("deletes an asset and removes it from the library listing", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

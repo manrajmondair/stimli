@@ -739,6 +739,8 @@ async function handleImports(request, segments, authContext, workspaceId, header
     if (!items.length) {
       throw httpError(400, "Import items are required.");
     }
+    const importPlatform = normalizePlatform(payload.platform);
+    const importSource = normalizeImportSource(payload.source);
     const imported = [];
     const failed = [];
     const quota = await getQuotaForWorkspace(workspaceId);
@@ -757,7 +759,7 @@ async function handleImports(request, segments, authContext, workspaceId, header
           file_path: null,
           extracted_text: String(item.text || item.notes || textFromFilename(item.name || sourceUrl || "Imported creative")).trim(),
           duration_seconds: durationSeconds,
-          metadata: { import_source: payload.source || "manual", import_platform: payload.platform || "csv" },
+          metadata: { import_source: importSource, import_platform: importPlatform },
           workspace_id: workspaceId,
           project_id: projectId,
           created_at: nowIso()
@@ -770,8 +772,8 @@ async function handleImports(request, segments, authContext, workspaceId, header
     }
     const job = {
       id: newId("import"),
-      platform: normalizePlatform(payload.platform),
-      source: payload.source || "manual",
+      platform: importPlatform,
+      source: importSource,
       status: failed.length ? (imported.length ? "partial" : "failed") : "complete",
       total_items: items.length,
       imported_items: imported.length,
@@ -2620,6 +2622,11 @@ function mergeLists(first, second) {
 function normalizePlatform(value) {
   const platform = String(value || "manual").trim().toLowerCase();
   return ["manual", "meta", "tiktok", "youtube", "google", "csv", "urls"].includes(platform) ? platform : "manual";
+}
+
+function normalizeImportSource(value) {
+  const source = stringField(value).trim();
+  return source ? source.slice(0, 120) : "manual";
 }
 
 function benchmarkCatalog() {
