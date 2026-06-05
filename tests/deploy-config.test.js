@@ -68,7 +68,9 @@ test("GitHub workflows opt into the current JavaScript action runtime", () => {
   for (const file of [".github/workflows/ci.yml", ".github/workflows/deploy-pages.yml"]) {
     const workflow = readProjectFile(file);
     assert.match(workflow, /FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:\s*true/, `${file} should opt actions into Node 24`);
+    assert.doesNotMatch(workflow, /actions\/checkout@v4|actions\/setup-node@v4|actions\/setup-python@v5/);
   }
+  assert.match(readProjectFile(".github/workflows/deploy-pages.yml"), /cloudflare\/wrangler-action@v4/);
 });
 
 test("Cloudflare runtime secret check matches Wrangler secret list output", () => {
