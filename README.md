@@ -67,6 +67,7 @@ Manual deploy (from a clean checkout):
 
 ```bash
 npm install
+echo 'VITE_CLERK_PUBLISHABLE_KEY=pk_test_...' > frontend/.env.production.local
 npx wrangler login          # one-time
 npm run deploy:pages
 ```

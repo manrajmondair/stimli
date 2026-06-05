@@ -13,7 +13,7 @@
     "build": "npm run build --workspace stimli-frontend",
     "dev:frontend": "npm run dev --workspace stimli-frontend",
     "dev:pages": "npx wrangler pages dev frontend/dist --compatibility-flag=nodejs_compat --port=8788",
-    "deploy:pages": "npm run build && npx wrangler pages deploy frontend/dist --project-name=stimli --branch=main",
+    "deploy:pages": "node scripts/require-vite-env.mjs && npm run build && npx wrangler pages deploy frontend/dist --project-name=stimli --branch=main",
     "test": "npm run test:secrets && npm run test:api && npm run test:web && npm run test:backend && npm run build",
     "test:api": "node --test --test-concurrency=1 tests/**/*.test.js",
     "test:backend": "python3 -m pytest backend",

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { missingRequiredViteEnv, resolveViteEnvValue } from "../scripts/require-vite-env.mjs";
 
 function readProjectFile(path) {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -62,6 +65,22 @@ test("Cloudflare deploy workflow verifies API health and SPA deep links", () => 
     assert.ok(workflow.includes(path), `missing app shell smoke path: ${path}`);
   }
   assert.match(workflow, /<div id="root"/);
+});
+
+test("manual Pages deploy fails before building without the public Clerk key", () => {
+  const packageJson = JSON.parse(readProjectFile("package.json"));
+  assert.match(packageJson.scripts["deploy:pages"], /node scripts\/require-vite-env\.mjs && npm run build/);
+
+  const frontendDir = join(tmpdir(), `stimli-vite-env-${process.pid}-${Date.now()}`);
+  mkdirSync(frontendDir, { recursive: true });
+  assert.deepEqual(missingRequiredViteEnv({ env: {}, frontendDir }), ["VITE_CLERK_PUBLISHABLE_KEY"]);
+
+  writeFileSync(join(frontendDir, ".env.production.local"), "VITE_CLERK_PUBLISHABLE_KEY=pk_test_local\n");
+  assert.deepEqual(missingRequiredViteEnv({ env: {}, frontendDir }), []);
+  assert.deepEqual(resolveViteEnvValue("VITE_CLERK_PUBLISHABLE_KEY", { env: {}, frontendDir }), {
+    value: "pk_test_local",
+    source: "frontend/.env.production.local"
+  });
 });
 
 test("GitHub workflows opt into the current JavaScript action runtime", () => {
