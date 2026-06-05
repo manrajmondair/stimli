@@ -87,9 +87,9 @@ function friendlyProvider(provider: string | null | undefined): string {
     case null:
     case undefined:
     case "":
-      return "TRIBE v2";
+      return "Stimli";
     default:
-      return provider;
+      return "Stimli";
   }
 }
 
@@ -764,7 +764,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
             </span>
             <span className="pill">
               <span className="dot" style={{ background: "var(--butter)" }} />
-              Brain: {comparison?.variants?.[0]?.analysis?.provider ? friendlyProvider(comparison.variants[0].analysis.provider) : (remoteProvider ?? "TRIBE v2")}
+              Brain: {comparison?.variants?.[0]?.analysis?.provider ? friendlyProvider(comparison.variants[0].analysis.provider) : friendlyProvider(remoteProvider)}
             </span>
             {defaultBrandName ? (
               <span className="pill" title="Default brand set in the Brands view">

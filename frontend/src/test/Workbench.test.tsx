@@ -5,7 +5,7 @@ import type { Comparison } from "../types";
 
 // Builds a minimal-but-valid completed comparison so the Recent decisions panel
 // has something to render and filter.
-function makeComparison(id: string, objective: string, winnerName: string): Comparison {
+function makeComparison(id: string, objective: string, winnerName: string, provider = "web-heuristic-brain"): Comparison {
   const scores = {
     overall: 80,
     hook: 80,
@@ -30,8 +30,8 @@ function makeComparison(id: string, objective: string, winnerName: string): Comp
     created_at: new Date().toISOString(),
     brief: {},
     variants: [
-      { asset: { id: `${id}_a`, type: "script", name: winnerName }, analysis: { asset_id: `${id}_a`, provider: "web-heuristic-brain", status: "complete", scores, timeline, feature_vector: {}, summary: "" }, rank: 1, delta_from_best: 0 },
-      { asset: { id: `${id}_b`, type: "script", name: "Runner up" }, analysis: { asset_id: `${id}_b`, provider: "web-heuristic-brain", status: "complete", scores: { ...scores, overall: 70 }, timeline, feature_vector: {}, summary: "" }, rank: 2, delta_from_best: 10 }
+      { asset: { id: `${id}_a`, type: "script", name: winnerName }, analysis: { asset_id: `${id}_a`, provider, status: "complete", scores, timeline, feature_vector: {}, summary: "" }, rank: 1, delta_from_best: 0 },
+      { asset: { id: `${id}_b`, type: "script", name: "Runner up" }, analysis: { asset_id: `${id}_b`, provider, status: "complete", scores: { ...scores, overall: 70 }, timeline, feature_vector: {}, summary: "" }, rank: 2, delta_from_best: 10 }
     ],
     recommendation: { winner_asset_id: `${id}_a`, verdict: "ship", confidence: 0.8, headline: `Ship ${winnerName}`, reasons: ["because"] },
     suggestions: []
@@ -66,6 +66,14 @@ describe("Workbench", () => {
     render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
     // The toolbar's "Demo set" affordance is always present.
     expect((await screen.findAllByText(/demo set/i)).length).toBeGreaterThan(0);
+  });
+
+  it("uses neutral provider copy before an engine has reported", async () => {
+    stubFetch([]);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    expect(await screen.findByText(/Brain: Stimli/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Brain: TRIBE v2/i)).not.toBeInTheDocument();
   });
 
   it("renders keyboard-accessible controls for removing brief rules", async () => {
@@ -213,6 +221,39 @@ describe("Workbench", () => {
     const compare = screen.getByRole("button", { name: /^Compare/i });
     fireEvent.click(compare);
     expect(await screen.findByText(/Ship Demo A/i)).toBeInTheDocument();
+  });
+
+  it("does not expose raw provider ids in the result view", async () => {
+    const rawProvider = "private-provider-id";
+    const demoAssets = [
+      { id: "asset_d1", type: "script", name: "Demo A", extracted_text: "Stop weak hooks. Try the kit." },
+      { id: "asset_d2", type: "script", name: "Demo B", extracted_text: "A modern holistic ecosystem." }
+    ];
+    const result = makeComparison("cmp_provider", "demo run", "Demo A", rawProvider);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = (init?.method || "GET").toUpperCase();
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+        if (u.includes("/demo/seed") && method === "POST") return json(demoAssets);
+        if (u.includes("/comparisons") && method === "POST") return json(result);
+        if (u.includes("/comparisons")) return json([]);
+        if (u.includes("/assets")) return json([]);
+        if (u.includes("/brand-profiles")) return json([]);
+        return json([]);
+      })
+    );
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /demo set/i }))[0]);
+    await screen.findAllByText(/Demo A/);
+    fireEvent.click(screen.getByRole("button", { name: /^Compare/i }));
+
+    expect(await screen.findByText(/Ship Demo A/i)).toBeInTheDocument();
+    expect(screen.getByText("Stimli", { selector: ".kicker" })).toBeInTheDocument();
+    expect(screen.queryByText(rawProvider)).not.toBeInTheDocument();
   });
 
   it("keeps a generated share link visible when clipboard copy fails", async () => {
