@@ -412,7 +412,7 @@ function tribeUrl(env) {
 }
 
 function tribeTimeoutMs(env) {
-  return Number(resolveTribeEnv(env).TRIBE_CONTROL_TIMEOUT_MS || 20000);
+  return positiveNumber(resolveTribeEnv(env).TRIBE_CONTROL_TIMEOUT_MS, 20000);
 }
 
 export async function startBrainJob(asset, env) {
@@ -473,7 +473,7 @@ export async function extractAssetText(asset, env) {
       method: "POST",
       headers: remoteHeaders(env),
       body: JSON.stringify({ asset }),
-      signal: AbortSignal.timeout(Number(source.STIMLI_EXTRACT_TIMEOUT_MS || 25000))
+      signal: AbortSignal.timeout(positiveNumber(source.STIMLI_EXTRACT_TIMEOUT_MS, 25000))
     });
     if (!response.ok) {
       throw new Error(`Extractor returned ${response.status}`);
@@ -610,7 +610,7 @@ async function predictBrain(asset, env) {
         // the user's latency budget on a call that will be discarded anyway
         // (a partial remote result is normalized back to the heuristic for
         // fairness). Override via TRIBE_INFERENCE_TIMEOUT_MS if known-fast.
-        signal: AbortSignal.timeout(Number(source.TRIBE_INFERENCE_TIMEOUT_MS || 3000))
+        signal: AbortSignal.timeout(positiveNumber(source.TRIBE_INFERENCE_TIMEOUT_MS, 3000))
       });
       if (!response.ok) {
         throw new Error(`Remote provider returned ${response.status}`);

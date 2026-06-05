@@ -2314,6 +2314,44 @@ test("creates async comparisons and finalizes completed remote jobs", async () =
   }
 });
 
+test("malformed hosted job timeout still starts async jobs", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  let startCount = 0;
+  withEnv({
+    TRIBE_CONTROL_URL: "https://modal.test/control",
+    TRIBE_API_KEY: "test-key",
+    TRIBE_CONTROL_TIMEOUT_MS: "not-a-number"
+  });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      startCount += 1;
+      return jsonResponse({ job_id: `timeout_job_${startCount}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Timeout A", text: "Try the starter kit today." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Timeout B", text: "A generic message." }, headers);
+
+    const comparison = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Malformed timeout should still enqueue." },
+      headers
+    );
+
+    assert.equal(comparison.statusCode, 202);
+    assert.equal(comparison.json.status, "processing");
+    assert.equal(startCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined, TRIBE_CONTROL_TIMEOUT_MS: undefined });
+  }
+});
+
 test("text comparison stays synchronous and completes when the hosted brain is configured but unreachable", async () => {
   // Reproduces the production "Request failed" bug: with STIMLI_BRAIN_PROVIDER=
   // tribe-remote and the TRIBE URLs configured, every text comparison (the demo
@@ -2332,6 +2370,7 @@ test("text comparison stays synchronous and completes when the hosted brain is c
     STIMLI_BRAIN_PROVIDER: "tribe-remote",
     TRIBE_CONTROL_URL: "https://modal.test/control",
     TRIBE_INFERENCE_URL: "https://modal.test/inference",
+    TRIBE_INFERENCE_TIMEOUT_MS: "not-a-number",
     TRIBE_API_KEY: "test-key"
   });
   globalThis.fetch = async (url) => {
@@ -2377,6 +2416,7 @@ test("text comparison stays synchronous and completes when the hosted brain is c
       STIMLI_BRAIN_PROVIDER: undefined,
       TRIBE_CONTROL_URL: undefined,
       TRIBE_INFERENCE_URL: undefined,
+      TRIBE_INFERENCE_TIMEOUT_MS: undefined,
       TRIBE_API_KEY: undefined
     });
   }
@@ -2877,7 +2917,7 @@ test("project and brand-profile creation are rate limited per client", async () 
 test("uses hosted extraction for media assets before filename fallback", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
-  withEnv({ STIMLI_EXTRACT_URL: "https://extract.test/run", TRIBE_API_KEY: "test-key" });
+  withEnv({ STIMLI_EXTRACT_URL: "https://extract.test/run", STIMLI_EXTRACT_TIMEOUT_MS: "not-a-number", TRIBE_API_KEY: "test-key" });
   globalThis.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body || "{}"));
     assert.equal(body.asset.type, "image");
@@ -2913,7 +2953,7 @@ test("uses hosted extraction for media assets before filename fallback", async (
     assert.equal(created.json.asset.metadata.extractor_provider, "stimli-extractor");
   } finally {
     globalThis.fetch = originalFetch;
-    withEnv({ STIMLI_EXTRACT_URL: undefined, TRIBE_API_KEY: undefined });
+    withEnv({ STIMLI_EXTRACT_URL: undefined, STIMLI_EXTRACT_TIMEOUT_MS: undefined, TRIBE_API_KEY: undefined });
   }
 });
 
