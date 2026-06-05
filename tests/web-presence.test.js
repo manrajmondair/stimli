@@ -34,6 +34,21 @@ test("sitemap.xml is well-formed and lists the public marketing pages", () => {
   }
 });
 
+test("web manifest is valid JSON with icons and required fields", () => {
+  const manifest = JSON.parse(readPublic("manifest.webmanifest"));
+  assert.equal(typeof manifest.name, "string");
+  assert.ok(manifest.name.length > 0);
+  assert.equal(manifest.start_url, "/");
+  assert.ok(["standalone", "minimal-ui", "browser", "fullscreen"].includes(manifest.display));
+  assert.match(manifest.theme_color, /^#[0-9a-fA-F]{6}$/);
+  assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 1);
+  for (const icon of manifest.icons) {
+    assert.match(icon.sizes, /^\d+x\d+$/);
+    assert.equal(icon.type, "image/png");
+    assert.match(icon.src, /^\/icon-\d+\.png$/);
+  }
+});
+
 test("security.txt has the required RFC 9116 fields and an unexpired Expires", () => {
   const security = readPublic(".well-known/security.txt");
   assert.match(security, /^Contact: https:\/\/github\.com\/manrajmondair\/stimli\/security\/advisories\/new\s*$/m);
