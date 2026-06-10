@@ -201,6 +201,28 @@ def delete_comparison(comparison_id: str, request: Request) -> dict[str, str]:
     return {"deleted": comparison_id}
 
 
+@app.post("/comparisons/{comparison_id}/rerun", response_model=Comparison)
+def rerun_comparison(comparison_id: str, request: Request) -> Comparison:
+    workspace_id = _workspace_id(request)
+    source = _get_comparison(comparison_id, workspace_id)
+    assets = []
+    missing = []
+    for variant in source.variants:
+        asset = store.get_asset(variant.asset.id, workspace_id)
+        if asset is None:
+            missing.append(variant.asset.name or variant.asset.id)
+        else:
+            assets.append(asset)
+    if missing:
+        raise HTTPException(status_code=409, detail=f"Can't re-run: variant no longer exists ({', '.join(missing)}).")
+    if len(assets) < 2:
+        raise HTTPException(status_code=409, detail="This comparison no longer has enough variants to re-run.")
+    rerun = analyzer.compare(new_id("cmp"), source.objective, assets, now_iso(), source.brief)
+    rerun.rerun_of = source.id
+    store.save_comparison(rerun, workspace_id)
+    return rerun
+
+
 @app.post("/comparisons/{comparison_id}/cancel", response_model=Comparison)
 def cancel_comparison(comparison_id: str, request: Request) -> Comparison:
     # Local comparisons run synchronously and are always terminal by the time

@@ -12,6 +12,7 @@ import {
   listAssets,
   listBrandProfiles,
   listComparisons,
+  rerunComparison,
   seedDemo,
   updateComparisonMeta
 } from "./api";
@@ -759,6 +760,29 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
     if (saved) flash({ kind: "success", message: pinned ? "Pinned to the top of decisions." : "Unpinned." });
   }
 
+  // Re-scores the same variants + brief as a fresh decision (useful when the
+  // engine changed underneath an old one), then opens the new run through the
+  // normal openRecent flow so processing/polling behaves identically.
+  async function handleRerunRecent(comparisonId: string) {
+    if (busy || step === "analyzing") {
+      flash({ kind: "info", message: "Finish or cancel the current analysis before re-running." });
+      return;
+    }
+    setBusy(true);
+    try {
+      const fresh = await rerunComparison(comparisonId);
+      await refreshComparisons();
+      flash({ kind: "success", message: "Re-ran the decision with the current engine." });
+      await openRecent(fresh.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not re-run the decision.";
+      if (/auth|login|session|sign in/i.test(message)) onRequireAuth();
+      flash({ kind: "error", message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function performDeleteRecent() {
     const comparisonId = confirmRecentDeleteId;
     if (!comparisonId || deletingRecentRef.current) return;
@@ -909,6 +933,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
           onOpenRecent={openRecent}
           onDeleteRecent={handleDeleteRecent}
           onTogglePin={handleTogglePin}
+          onRerunRecent={handleRerunRecent}
           deletingRecentId={deletingRecentId}
         />
         <ResultsColumn
@@ -1496,6 +1521,7 @@ function InventoryPanel({
   onOpenRecent,
   onDeleteRecent,
   onTogglePin,
+  onRerunRecent,
   deletingRecentId
 }: {
   assets: Asset[];
@@ -1506,6 +1532,7 @@ function InventoryPanel({
   onOpenRecent: (comparisonId: string) => void;
   onDeleteRecent: (comparisonId: string) => void;
   onTogglePin: (comparisonId: string, pinned: boolean) => void;
+  onRerunRecent: (comparisonId: string) => void;
   deletingRecentId: string | null;
 }) {
   const [recentQuery, setRecentQuery] = useState("");
@@ -1689,6 +1716,25 @@ function InventoryPanel({
                     · {formatRelative(recent.created_at)}
                   </span>
                 </button>
+                {recent.status === "complete" ? (
+                  <button
+                    className="recent-rerun"
+                    onClick={() => onRerunRecent(recent.id)}
+                    title="Re-run this decision with the current engine"
+                    aria-label={`Re-run decision: ${headline}`}
+                    style={{
+                      border: 0,
+                      background: "transparent",
+                      color: "var(--ink-faint)",
+                      cursor: "pointer",
+                      padding: "0 4px",
+                      fontSize: 14,
+                      lineHeight: 1
+                    }}
+                  >
+                    ↻
+                  </button>
+                ) : null}
                 <button
                   className="recent-pin"
                   onClick={() => onTogglePin(recent.id, !recent.pinned)}

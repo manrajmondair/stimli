@@ -1161,6 +1161,55 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
     return sendJson(200, cancelled, headers, cookies);
   }
 
+  if (request.method === "POST" && segments[2] === "rerun") {
+    // Re-score the same variants + brief as a fresh comparison. Useful when the
+    // engine has changed underneath an old decision (hosted model back up,
+    // heuristic updated) — the new run is linked via rerun_of so provenance
+    // survives. Costs a comparison from the quota like any other run.
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const source = await getComparison(comparisonId, workspaceId);
+    if (!source) {
+      throw httpError(404, "Comparison not found");
+    }
+    if (source.status === "processing") {
+      throw httpError(409, "Comparison is still processing — wait for it to finish before re-running.");
+    }
+    const assetIds = (source.variants || []).map((variant) => variant.asset?.id).filter(Boolean);
+    if (assetIds.length < 2) {
+      throw httpError(409, "This comparison no longer has enough variants to re-run.");
+    }
+    const assets = await Promise.all(assetIds.map((assetId) => getAsset(assetId, workspaceId)));
+    const missingNames = (source.variants || [])
+      .filter((_, index) => !assets[index])
+      .map((variant) => variant.asset?.name || variant.asset?.id);
+    if (missingNames.length) {
+      throw httpError(409, `Can't re-run: variant no longer exists (${missingNames.join(", ")}).`);
+    }
+    const quota = await getQuotaForWorkspace(workspaceId);
+    await enforceUsageLimit(request, workspaceId, "comparison", quota, authContext);
+
+    const rerunId = newId("cmp");
+    const createdAt = nowIso();
+    const rawRerun = shouldCreateAsyncComparison({}, assets)
+      ? await createAsyncComparison(rerunId, source.objective, assets, createdAt, source.brief)
+      : await compareAssets(rerunId, source.objective, assets, createdAt, source.brief);
+    rawRerun.workspace_id = workspaceId;
+    rawRerun.project_id = source.project_id || null;
+    rawRerun.rerun_of = source.id;
+    if (source.brand_profile_id) {
+      rawRerun.brand_profile_id = source.brand_profile_id;
+    }
+    const rerun = publicComparison(rawRerun);
+    await Promise.all([
+      saveComparison(rerun),
+      audit(workspaceId, authContext.user, "comparison.rerun", "comparison", rerun.id, {
+        rerun_of: source.id,
+        status: rerun.status
+      })
+    ]);
+    return sendJson(rerun.status === "processing" ? 202 : 200, rerun, headers, cookies);
+  }
+
   if (request.method === "POST" && segments[2] === "challengers") {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     const comparison = await requireCompleteComparison(comparisonId, workspaceId);

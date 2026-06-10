@@ -192,6 +192,14 @@ export async function deleteComparison(comparisonId: string): Promise<void> {
   await parseResponse<void>(response);
 }
 
+export async function rerunComparison(comparisonId: string): Promise<Comparison> {
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}/rerun`, {
+    method: "POST",
+    headers: await workspaceHeaders()
+  });
+  return parseResponse(response);
+}
+
 export async function updateComparisonMeta(
   comparisonId: string,
   patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }

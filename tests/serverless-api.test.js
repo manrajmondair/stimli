@@ -3560,6 +3560,51 @@ test("/api/outcomes returns workspace-wide outcomes joined with comparison + ass
   assert.ok(row.asset_name, "asset_name joined in");
 });
 
+test("re-runs a decision with the same variants and brief, linked via rerun_of", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const original = await call(
+    "POST",
+    "/api/comparisons",
+    {
+      asset_ids: seeded.json.slice(0, 2).map((a) => a.id),
+      objective: "rerun source",
+      brief: { brand_name: "Lumina", audience: "dry-skin shoppers" }
+    },
+    headers
+  );
+  assert.equal(original.statusCode, 200);
+  const usageBefore = await countUsageEvents({ kind: "comparison", workspaceId: workspace });
+
+  const rerun = await call("POST", `/api/comparisons/${original.json.id}/rerun`, null, headers);
+  assert.equal(rerun.statusCode, 200);
+  assert.notEqual(rerun.json.id, original.json.id);
+  assert.equal(rerun.json.rerun_of, original.json.id);
+  assert.equal(rerun.json.objective, "rerun source");
+  assert.equal(rerun.json.brief.brand_name, "Lumina");
+  assert.deepEqual(
+    rerun.json.variants.map((v) => v.asset.id).sort(),
+    original.json.variants.map((v) => v.asset.id).sort()
+  );
+
+  // The rerun is a real comparison: persisted, listed, and quota-charged.
+  const listed = await call("GET", "/api/comparisons", null, headers);
+  assert.equal(listed.json.some((c) => c.id === rerun.json.id), true);
+  const usageAfter = await countUsageEvents({ kind: "comparison", workspaceId: workspace });
+  assert.equal(usageAfter, usageBefore + 1);
+
+  // Cross-workspace rerun is a 404; a deleted variant makes rerun a 409.
+  const foreign = await call("POST", `/api/comparisons/${original.json.id}/rerun`, null, {
+    "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`
+  });
+  assert.equal(foreign.statusCode, 404);
+  await call("DELETE", `/api/assets/${seeded.json[0].id}`, null, headers);
+  const blocked = await call("POST", `/api/comparisons/${original.json.id}/rerun`, null, headers);
+  assert.equal(blocked.statusCode, 409);
+  assert.match(blocked.json.detail, /no longer exists/i);
+});
+
 test("/api/insights aggregates winner profiles, predictive power, and copy signals", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

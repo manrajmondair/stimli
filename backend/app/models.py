@@ -130,6 +130,8 @@ class Comparison(BaseModel):
     decision_status: Literal["pending", "shipped", "killed"] | None = None
     pinned: bool = False
     decision_updated_at: str | None = None
+    # Set when this comparison was created by re-running another one.
+    rerun_of: str | None = None
     created_at: str
 
 

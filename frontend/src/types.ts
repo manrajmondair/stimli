@@ -156,6 +156,8 @@ export type Comparison = {
   decision_status?: DecisionStatus;
   pinned?: boolean;
   decision_updated_at?: string;
+  // Set when this comparison was created by re-running another one.
+  rerun_of?: string | null;
   created_at: string;
 };
 

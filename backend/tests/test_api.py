@@ -630,3 +630,23 @@ def test_decision_register_patch_roundtrip():
     # Empty patch is a 400, invalid status a 422 (pydantic enum).
     assert client.patch(f"/comparisons/{comparison['id']}", json={}).status_code == 400
     assert client.patch(f"/comparisons/{comparison['id']}", json={"decision_status": "maybe"}).status_code == 422
+
+
+def test_rerun_creates_linked_comparison():
+    seeded = client.post("/demo/seed").json()
+    original = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Local rerun."},
+    ).json()
+
+    rerun = client.post(f"/comparisons/{original['id']}/rerun")
+    assert rerun.status_code == 200
+    body = rerun.json()
+    assert body["id"] != original["id"]
+    assert body["rerun_of"] == original["id"]
+    assert body["objective"] == "Local rerun."
+
+    # Deleting a variant blocks future re-runs with a clear conflict.
+    client.delete(f"/assets/{seeded[0]['id']}")
+    blocked = client.post(f"/comparisons/{original['id']}/rerun")
+    assert blocked.status_code == 409
