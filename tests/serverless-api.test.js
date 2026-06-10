@@ -1357,23 +1357,95 @@ test("a multi-team member can act on a selected team and is scoped to it", async
   assert.equal(fallback.json.some((a) => a.id === teamBAsset.json.asset.id), false);
 });
 
-test("blocks demoting the team's last owner via a role change", async () => {
+test("an admin cannot change or remove an owner", async () => {
   const owner = await testAccount("Last Owner Team", "owner");
-  // An admin has members:manage but is not an owner, so they could otherwise
-  // demote the sole owner and leave the team with none.
+  // An admin has members:manage but is not an owner, so they must not be able to
+  // demote, strip, or remove an owner — that would let them neutralize the team's
+  // top role without being one.
   const admin = await testAccount("Admin Default Team", "admin");
   await saveTeamMember({ team_id: owner.team.id, user_id: admin.user.id, role: "admin", created_at: nowIso() });
   const adminCookie = await sessionCookie(admin.user.id, owner.team.id);
 
-  const blocked = await call(
+  const blockedDemote = await call(
     "PATCH",
     `/api/teams/members/${owner.user.id}/role`,
     { role: "viewer" },
     { cookie: adminCookie }
   );
-  assert.equal(blocked.statusCode, 409);
-  // The owner keeps their role.
+  assert.equal(blockedDemote.statusCode, 403);
+
+  const blockedRemove = await call(
+    "DELETE",
+    `/api/teams/members/${owner.user.id}`,
+    null,
+    { cookie: adminCookie }
+  );
+  assert.equal(blockedRemove.statusCode, 403);
+
+  // The owner keeps their role and membership.
   assert.equal((await getTeamMember(owner.team.id, owner.user.id)).role, "owner");
+});
+
+test("an admin cannot self-promote to owner via the role endpoint", async () => {
+  // The invite path already blocks minting elevated invites; the direct
+  // role-change endpoint must enforce the same rule, otherwise an admin with
+  // members:manage could PATCH their own membership to owner.
+  const owner = await testAccount("Self Promote Team", "owner");
+  const admin = await testAccount("Self Promote Admin Home", "admin");
+  await saveTeamMember({ team_id: owner.team.id, user_id: admin.user.id, role: "admin", created_at: nowIso() });
+  const adminCookie = await sessionCookie(admin.user.id, owner.team.id);
+
+  const selfPromote = await call(
+    "PATCH",
+    `/api/teams/members/${admin.user.id}/role`,
+    { role: "owner" },
+    { cookie: adminCookie }
+  );
+  assert.equal(selfPromote.statusCode, 403);
+
+  // An admin promoting an analyst to admin is also blocked (only owners grant
+  // owner/admin).
+  const analyst = await testAccount("Self Promote Analyst Home", "analyst");
+  await saveTeamMember({ team_id: owner.team.id, user_id: analyst.user.id, role: "analyst", created_at: nowIso() });
+  const elevate = await call(
+    "PATCH",
+    `/api/teams/members/${analyst.user.id}/role`,
+    { role: "admin" },
+    { cookie: adminCookie }
+  );
+  assert.equal(elevate.statusCode, 403);
+
+  // The admin stays an admin.
+  assert.equal((await getTeamMember(owner.team.id, admin.user.id)).role, "admin");
+  assert.equal((await getTeamMember(owner.team.id, analyst.user.id)).role, "analyst");
+});
+
+test("an owner can still demote a non-last owner and manage roles", async () => {
+  // Guard against over-restricting: with two owners, an owner may demote the
+  // other, and may promote an analyst to admin.
+  const owner = await testAccount("Owner Manage Team", "owner");
+  const second = await testAccount("Second Owner Home", "owner");
+  await saveTeamMember({ team_id: owner.team.id, user_id: second.user.id, role: "owner", created_at: nowIso() });
+  const analyst = await testAccount("Owner Manage Analyst Home", "analyst");
+  await saveTeamMember({ team_id: owner.team.id, user_id: analyst.user.id, role: "analyst", created_at: nowIso() });
+
+  const demote = await call(
+    "PATCH",
+    `/api/teams/members/${second.user.id}/role`,
+    { role: "analyst" },
+    { cookie: owner.cookie }
+  );
+  assert.equal(demote.statusCode, 200);
+  assert.equal((await getTeamMember(owner.team.id, second.user.id)).role, "analyst");
+
+  const promote = await call(
+    "PATCH",
+    `/api/teams/members/${analyst.user.id}/role`,
+    { role: "admin" },
+    { cookie: owner.cookie }
+  );
+  assert.equal(promote.statusCode, 200);
+  assert.equal((await getTeamMember(owner.team.id, analyst.user.id)).role, "admin");
 });
 
 test("markdown report escapes pipe characters in variant names", async () => {

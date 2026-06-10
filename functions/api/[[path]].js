@@ -52,6 +52,7 @@ import {
   getProject,
   getTeam,
   getTeamInviteById,
+  getTeamMember,
   countUsageEvents,
   getTeamInviteByTokenHash,
   listAuditEvents,
@@ -414,8 +415,16 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
     if (request.method === "PATCH" && segments[2] && segments[3] === "role") {
       const payload = await parseJson(request);
       const role = normalizeRole(payload.role);
+      // Only owners may grant owner/admin. The invite path enforces this; the
+      // direct role-change endpoint must too, otherwise an admin (who has
+      // members:manage) could PATCH any member — including themselves — to
+      // owner and self-promote around the invite guard.
+      assertCanGrantRole(authContext, role);
+      // Only owners may change another owner's role. An admin must not be able
+      // to demote or strip an owner even to a low role assertCanGrantRole allows.
+      await assertCanManageOwner(authContext, segments[2]);
       if (segments[2] === authContext.user.id && role !== "owner") {
-        throw httpError(400, "Owners cannot demote their own active session.");
+        throw httpError(400, "You can't demote your own role — ask another owner to change it.");
       }
       const result = await updateTeamMemberRole(authContext.team.id, segments[2], role);
       if (result.blocked_last_owner) {
@@ -432,6 +441,8 @@ async function handleTeams(request, segments, authContext, env, headers, cookies
       if (targetUserId === authContext.user.id) {
         throw httpError(400, "You can't remove yourself from the team — use account → sign out instead.");
       }
+      // Only owners may remove another owner — same rule as role changes.
+      await assertCanManageOwner(authContext, targetUserId);
       const result = await deleteTeamMember(authContext.team.id, targetUserId);
       if (result.blocked_last_owner) {
         throw httpError(409, "Can't remove the team's last owner.");
@@ -462,7 +473,11 @@ async function handleInvites(request, cookies, segments, authContext, headers) {
     if (!authContext.authenticated) {
       throw httpError(401, "Sign in before accepting this invite.");
     }
-    if (invite.email && invite.email !== authContext.user.email) {
+    // Compare case-insensitively: invite.email is normalized to lowercase at
+    // creation, but the signed-in user's email comes straight from Clerk and may
+    // be mixed-case, so a strict !== would 403 a legitimately-invited user whose
+    // address differs only in letter case.
+    if (invite.email && invite.email !== String(authContext.user.email || "").trim().toLowerCase()) {
       throw httpError(403, "This invite belongs to a different email address.");
     }
     // Re-check seats at accept time under the same team advisory lock used by
@@ -2444,6 +2459,18 @@ function requirePermission(authContext, permission, options = {}) {
 function assertCanGrantRole(authContext, role) {
   if (["owner", "admin"].includes(role) && authContext.role !== "owner") {
     throw httpError(403, "Only owners can grant owner or admin roles.");
+  }
+}
+
+// Guards member mutations (role change, removal) so a non-owner with
+// members:manage (i.e. an admin) cannot act on an owner. Owners can manage any
+// member; for everyone else, touching an owner is forbidden. Looked up only on
+// the non-owner path so owner actions stay a single round-trip.
+async function assertCanManageOwner(authContext, targetUserId) {
+  if (authContext.role === "owner") return;
+  const target = await getTeamMember(authContext.team.id, targetUserId);
+  if (target?.role === "owner") {
+    throw httpError(403, "Only an owner can change or remove another owner.");
   }
 }
 
