@@ -692,26 +692,44 @@ export async function checkCompliance({ env, text, brief }) {
   });
 
   if (!result) return null;
-  const requiredChecks = Array.isArray(result.required_claims)
-    ? result.required_claims
-        .filter((entry) => entry && typeof entry === "object")
-        .map((entry) => ({
-          claim: sanitizeString(entry.claim),
-          present: isTrueLike(entry.present),
-          evidence: sanitizeString(entry.evidence) || null
-        }))
-        .filter((entry) => entry.claim)
-    : [];
-  const forbiddenChecks = Array.isArray(result.forbidden_terms)
-    ? result.forbidden_terms
-        .filter((entry) => entry && typeof entry === "object")
-        .map((entry) => ({
-          term: sanitizeString(entry.term),
-          present: isTrueLike(entry.present),
-          evidence: sanitizeString(entry.evidence) || null
-        }))
-        .filter((entry) => entry.term)
-    : [];
+
+  // Reconcile the model's response against the brief's ACTUAL lists rather than
+  // trusting the response wholesale. The model is asked to echo every claim/term
+  // it was given, but nothing forces it to: it can hallucinate a forbidden term
+  // the brief never contained (which would falsely show a brand-safety hit) or
+  // drop one (which would silently miss a real violation). So we iterate the
+  // trusted input lists and look the model entry up by case-insensitive key —
+  // any model entry not in the input set is ignored, and any input term the
+  // model dropped still gets a verdict.
+  const modelRequiredByKey = indexByKey(result.required_claims, "claim");
+  const modelForbiddenByKey = indexByKey(result.forbidden_terms, "term");
+  const fullText = String(text || "");
+
+  const requiredChecks = required.map((rawClaim) => {
+    const claim = String(rawClaim).trim();
+    const modelEntry = modelRequiredByKey.get(claim.toLowerCase());
+    const present = isTrueLike(modelEntry?.present);
+    return {
+      claim,
+      present,
+      evidence: (present && modelEntry && sanitizeString(modelEntry.evidence)) || null
+    };
+  });
+
+  const forbiddenChecks = forbidden.map((rawTerm) => {
+    const term = String(rawTerm).trim();
+    const modelEntry = modelForbiddenByKey.get(term.toLowerCase());
+    // Deterministic backstop: a forbidden term literally present in the copy is
+    // a hit even if the model under-reported or dropped it. This is the same
+    // matcher used to vet generated challenger copy.
+    const present = isTrueLike(modelEntry?.present) || textContainsForbiddenTerm(fullText, term);
+    return {
+      term,
+      present,
+      evidence: (present && modelEntry && sanitizeString(modelEntry.evidence)) || null
+    };
+  });
+
   if (!requiredChecks.length && !forbiddenChecks.length) return null;
   return {
     required_claims: requiredChecks,
@@ -720,6 +738,20 @@ export async function checkCompliance({ env, text, brief }) {
     forbidden_hits: forbiddenChecks.filter((entry) => entry.present),
     truncated: sourceLength > COMPLIANCE_TEXT_CAP
   };
+}
+
+// Builds a case-insensitive lookup from a model-returned array of {claim|term, ...}
+// objects to the entry, keyed by the sanitized lowercase value. First occurrence
+// wins so a duplicated key can't clobber the earlier (usually more complete) one.
+function indexByKey(entries, field) {
+  const map = new Map();
+  if (!Array.isArray(entries)) return map;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const key = sanitizeString(entry[field]).toLowerCase();
+    if (key && !map.has(key)) map.set(key, entry);
+  }
+  return map;
 }
 
 // --- Helpers ----------------------------------------------------------------

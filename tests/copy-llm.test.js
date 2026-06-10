@@ -365,6 +365,41 @@ test("checkCompliance returns null when LLM disabled or brief empty", async () =
   }
 });
 
+test("checkCompliance ignores hallucinated terms and catches dropped ones deterministically", async () => {
+  // The model invents a forbidden term the brief never listed ("amazing") and
+  // drops the one it did ("miracle") while only echoing a required claim. The
+  // report must mirror the brief exactly: "amazing" never appears, and "miracle"
+  // — literally present in the copy — is still flagged via the deterministic
+  // backstop even though the model omitted it.
+  setEnv();
+  const restore = stubFetch(async () =>
+    openRouterResponse(
+      JSON.stringify({
+        required_claims: [{ claim: "clinically tested", present: true, evidence: "lab verified" }],
+        forbidden_terms: [{ term: "amazing", present: true, evidence: "amazing results" }]
+      })
+    )
+  );
+  try {
+    const report = await checkCompliance({
+      text: "Calmcap is the miracle drops, clinically tested for your nights.",
+      brief: { required_claims: ["clinically tested"], forbidden_terms: ["miracle"] }
+    });
+    // Forbidden output mirrors the brief: only "miracle", flagged deterministically.
+    assert.equal(report.forbidden_terms.length, 1);
+    assert.equal(report.forbidden_terms[0].term, "miracle");
+    assert.equal(report.forbidden_hits.length, 1);
+    assert.equal(report.forbidden_hits[0].term, "miracle");
+    // The hallucinated "amazing" term is absent from the report entirely.
+    assert.equal(report.forbidden_terms.some((entry) => entry.term === "amazing"), false);
+    // The echoed required claim resolves present, so nothing is missing.
+    assert.deepEqual(report.missing_required, []);
+  } finally {
+    restore();
+    clearEnv();
+  }
+});
+
 test("copyLlmStatus reports the active model", () => {
   setEnv({ STIMLI_LLM_MODEL: "google/gemini-2.5-flash" });
   const status = copyLlmStatus();

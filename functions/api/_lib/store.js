@@ -236,16 +236,22 @@ export async function deleteComparison(comparisonId, workspaceId = "public") {
     ),
     deleted_outcomes as (
       delete from stimli_outcomes
-      where comparison_id in (select id from deleted) and workspace_id = ${workspaceId}
+      where comparison_id in (select id from deleted)
       returning id
     ),
     deleted_share_links as (
       delete from stimli_share_links
-      where comparison_id in (select id from deleted) and workspace_id = ${workspaceId}
+      where comparison_id in (select id from deleted)
       returning token
     )
     select exists(select 1 from deleted) as deleted
   `;
+  // Child deletes intentionally scope on comparison_id alone: the parent delete
+  // is already workspace-scoped and comparison ids are globally unique, so the
+  // subquery can only match this workspace's rows. Dropping the redundant
+  // workspace_id predicate keeps the SQL cascade identical to the in-memory one
+  // (which scopes on comparison_id only), so no child row can ever survive on
+  // one backend while being removed on the other.
   return Boolean(rows[0]?.deleted);
 }
 
