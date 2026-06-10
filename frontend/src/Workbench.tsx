@@ -9,6 +9,7 @@ import {
   deleteComparison,
   getComparison,
   getReportMarkdown,
+  getLearningSummary,
   listAssets,
   listBrandProfiles,
   listComparisons,
@@ -66,6 +67,18 @@ const FALLBACK_OBJECTIVE =
 // default 25 MB — the Cloudflare Pages Functions body limit) so oversized files
 // are rejected before the upload instead of after it with a 413.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function checklistStorageKey(workspaceKey: string | null | undefined) {
+  return `stimli.onboarding_dismissed:${workspaceKey || "anonymous"}`;
+}
+
+function writeLocalStorage(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* storage can be unavailable in locked-down browsers */
+  }
+}
 
 function readLocalStorage(key: string): string | null {
   try {
@@ -149,6 +162,12 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
   const [pollNote, setPollNote] = useState<string | null>(null);
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
   const [outcomeFor, setOutcomeFor] = useState<string | null>(null);
+  // Drives the getting-started checklist: how many launch outcomes the
+  // workspace has logged (any number > 0 completes the final step).
+  const [outcomeCount, setOutcomeCount] = useState<number | null>(null);
+  const [checklistDismissed, setChecklistDismissed] = useState(
+    () => readLocalStorage(checklistStorageKey(workspaceKey)) === "1"
+  );
   const defaultBrandStorageKeyValue = useMemo(() => defaultBrandStorageKey(workspaceKey), [workspaceKey]);
   const [defaultBrandId, setDefaultBrandId] = useState<string | null>(() => readLocalStorage(defaultBrandStorageKeyValue));
   const [defaultBrandName, setDefaultBrandName] = useState<string | null>(null);
@@ -165,6 +184,9 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
     if (!workspaceReady) return;
     void refreshAssets();
     void refreshComparisons();
+    getLearningSummary()
+      .then((summary) => setOutcomeCount(summary.outcome_count))
+      .catch(() => setOutcomeCount(null));
   }, [workspaceReady, workspaceKey]);
 
   useEffect(() => {
@@ -664,6 +686,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
         notes: payload.notes
       });
       setOutcomeFor(null);
+      setOutcomeCount((current) => (current === null ? 1 : current + 1));
       flash({ kind: "success", message: "Outcome logged." });
     } catch (err) {
       flash({ kind: "error", message: err instanceof Error ? err.message : "Could not log outcome." });
@@ -888,6 +911,23 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
         </div>
       </header>
 
+      {step === "inventory" &&
+      !checklistDismissed &&
+      (assets.length > 0 || recentComparisons.length > 0) ? (
+        <GettingStartedChecklist
+          hasVariants={assets.length > 0 || recentComparisons.length > 0}
+          hasDecision={recentComparisons.length > 0}
+          hasDecisionLog={recentComparisons.some(
+            (item) => Boolean(item.label) || Boolean(item.notes) || item.decision_status === "shipped" || item.decision_status === "killed"
+          )}
+          hasOutcome={(outcomeCount ?? 0) > 0}
+          onDismiss={() => {
+            writeLocalStorage(checklistStorageKey(workspaceKey), "1");
+            setChecklistDismissed(true);
+          }}
+        />
+      ) : null}
+
       {assets.length === 0 && recentComparisons.length === 0 && step === "inventory" ? (
         <OnboardingCard
           briefSet={!isBriefEmpty(brief)}
@@ -992,6 +1032,69 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
         />
       ) : null}
     </>
+  );
+}
+
+// Compact progress checklist for partially-onboarded workspaces: walks the
+// user through the full decision→outcome loop. Hides itself once every step is
+// done (the loop is a habit now) or when dismissed; the all-empty workspace
+// keeps the bigger OnboardingCard instead.
+function GettingStartedChecklist({
+  hasVariants,
+  hasDecision,
+  hasDecisionLog,
+  hasOutcome,
+  onDismiss
+}: {
+  hasVariants: boolean;
+  hasDecision: boolean;
+  hasDecisionLog: boolean;
+  hasOutcome: boolean;
+  onDismiss: () => void;
+}) {
+  const steps = [
+    { done: hasVariants, label: "Add your creative variants", hint: "paste scripts, URLs, or upload files" },
+    { done: hasDecision, label: "Run your first comparison", hint: "select two variants and hit Compare" },
+    { done: hasDecisionLog, label: "Save a decision log", hint: "name the decision and track whether it shipped" },
+    { done: hasOutcome, label: "Log a launch outcome", hint: "spend + revenue calibrate future predictions" }
+  ];
+  const doneCount = steps.filter((step) => step.done).length;
+  if (doneCount === steps.length) return null;
+  return (
+    <div className="panel-card" style={{ marginBottom: 14 }} data-testid="getting-started">
+      <div className="panel-head">
+        <h3 style={{ fontSize: 15 }}>{`Getting started · ${doneCount}/${steps.length}`}</h3>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={onDismiss}
+          aria-label="Dismiss the getting-started checklist"
+        >
+          Dismiss
+        </button>
+      </div>
+      <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", gap: 14, flexWrap: "wrap" }}>
+        {steps.map((step) => (
+          <li
+            key={step.label}
+            style={{ display: "flex", alignItems: "baseline", gap: 7, opacity: step.done ? 0.55 : 1, minWidth: 200, flex: "1 1 200px" }}
+          >
+            <span aria-hidden="true" style={{ fontWeight: 700, color: step.done ? "var(--pistachio-ink)" : "var(--ink-faint)" }}>
+              {step.done ? "✓" : "○"}
+            </span>
+            <span>
+              <strong style={{ textDecoration: step.done ? "line-through" : "none" }}>{step.label}</strong>
+              {!step.done ? (
+                <span className="hint" style={{ display: "block", marginTop: 1 }}>
+                  {step.hint}
+                </span>
+              ) : null}
+              <span className="sr-only">{step.done ? " (done)" : " (not done)"}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 

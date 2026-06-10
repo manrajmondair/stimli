@@ -158,6 +158,58 @@ describe("Workbench", () => {
     });
   });
 
+  it("shows the getting-started checklist for partially-onboarded workspaces and dismisses persistently", async () => {
+    // One decision exists but no decision log or outcomes — the checklist
+    // should show 2/4 with the remaining steps highlighted.
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/learning/summary")) {
+        return json({ outcome_count: 0, total_spend: 0, total_revenue: 0, average_ctr: 0, average_cvr: 0, best_asset_id: null, calibration: { evaluated_comparisons: 0, aligned_predictions: 0, alignment_rate: 0, recent: [] }, insight: "" });
+      }
+      if (u.includes("/comparisons")) return json([makeComparison("cmp_1", "first test", "Winner A")]);
+      if (u.includes("/assets")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} workspaceKey="ws_check" />);
+
+    const checklist = await screen.findByTestId("getting-started");
+    expect(within(checklist).getByText(/getting started · 2\/4/i)).toBeInTheDocument();
+    expect(within(checklist).getByText(/save a decision log/i)).toBeInTheDocument();
+    expect(within(checklist).getByText(/log a launch outcome/i)).toBeInTheDocument();
+
+    fireEvent.click(within(checklist).getByRole("button", { name: /dismiss the getting-started checklist/i }));
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("stimli.onboarding_dismissed:ws_check")).toBe("1");
+  });
+
+  it("hides the getting-started checklist once the full loop is complete", async () => {
+    const finished = {
+      ...makeComparison("cmp_done", "complete test", "Winner Z"),
+      label: "Named decision",
+      decision_status: "shipped" as const
+    };
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/learning/summary")) {
+        return json({ outcome_count: 3, total_spend: 100, total_revenue: 300, average_ctr: 0.1, average_cvr: 0.1, best_asset_id: null, calibration: { evaluated_comparisons: 1, aligned_predictions: 1, alignment_rate: 1, recent: [] }, insight: "" });
+      }
+      if (u.includes("/comparisons")) return json([finished]);
+      if (u.includes("/assets")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} workspaceKey="ws_done" />);
+
+    // History renders (so data loaded) but the checklist never appears.
+    await screen.findByText("Named decision");
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+  });
+
   it("renders a delete control on each decision row", async () => {
     stubFetch([makeComparison("cmp_x", "only test", "Only winner")]);
     render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
