@@ -328,6 +328,51 @@ function collectFocusable(root: HTMLElement | null): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter((el) => !el.hasAttribute("inert"));
 }
 
+// Shared modal focus management: capture the opener, move initial focus into the
+// dialog, trap Tab/Shift+Tab inside it, and restore focus to the opener on close.
+// Every modal that sets role=dialog/aria-modal=true owes the keyboard user this
+// behavior; ConfirmDialog implements it inline (with its own Enter-to-confirm
+// semantics), the lighter modals share this hook. `active` toggles it so a hook
+// can be called unconditionally while the modal mounts/unmounts.
+function useModalFocusTrap(
+  modalRef: React.RefObject<HTMLElement | null>,
+  active = true,
+  initialFocusRef?: React.RefObject<HTMLElement | null>
+) {
+  useEffect(() => {
+    if (!active) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const raf = requestAnimationFrame(() => {
+      const target = initialFocusRef?.current || collectFocusable(modalRef.current)[0] || modalRef.current;
+      target?.focus();
+    });
+    function handleKey(e: KeyboardEvent) {
+      if (e.key !== "Tab") return;
+      const focusables = collectFocusable(modalRef.current);
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (e.shiftKey && (activeEl === first || !modalRef.current?.contains(activeEl))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && activeEl === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", handleKey);
+      previousFocus?.focus();
+    };
+  }, [active, modalRef, initialFocusRef]);
+}
+
 type View = "workbench" | "library" | "brands" | "outcomes" | "team" | "billing";
 type BillingBanner = { kind: "success" | "info" | "warn"; message: string };
 
@@ -615,10 +660,11 @@ function CommandPalette({
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+  // Trap focus inside the palette and restore it to the opener on close, with
+  // the search input as the initial focus.
+  useModalFocusTrap(modalRef, true, inputRef);
 
   const commands: PaletteCommand[] = useMemo(() => {
     const base: PaletteCommand[] = PALETTE_NAV.map((item) => ({
@@ -692,6 +738,7 @@ function CommandPalette({
   return (
     <div className="palette-overlay" role="presentation" onClick={onClose}>
       <div
+        ref={modalRef}
         className="palette-modal"
         role="dialog"
         aria-label="Command palette"
@@ -942,6 +989,8 @@ function WhatsNewButton() {
 }
 
 function WhatsNewModal({ onClose }: { onClose: () => void }) {
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  useModalFocusTrap(modalRef, true);
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
@@ -965,6 +1014,7 @@ function WhatsNewModal({ onClose }: { onClose: () => void }) {
   const modal = (
     <div className="auth-overlay" role="presentation" onClick={onClose}>
       <div
+        ref={modalRef}
         className="auth-modal whatsnew-modal"
         role="dialog"
         aria-modal="true"
@@ -1074,7 +1124,17 @@ function UsageMeter({ label, used, limit, ratio }: { label: string; used: number
           {limit > 0 ? <span className="usage-limit"> / {limit}</span> : null}
         </strong>
       </div>
-      <div className="usage-meter-track" role="progressbar" aria-valuenow={used} aria-valuemax={limit}>
+      <div
+        className="usage-meter-track"
+        role="progressbar"
+        // Only emit the numeric range when there's a real limit. With limit 0
+        // (older deploys / preview envs that don't surface monthly numbers),
+        // aria-valuenow could exceed aria-valuemax and screen readers announce a
+        // nonsensical percentage; describe it as unmetered instead.
+        {...(limit > 0
+          ? { "aria-valuemin": 0, "aria-valuenow": Math.min(used, limit), "aria-valuemax": limit }
+          : { "aria-valuetext": `${used} used` })}
+      >
         <div
           className="usage-meter-fill"
           style={{ width: `${Math.max(2, Math.round(ratio * 100))}%`, background: fillColor }}
@@ -1944,7 +2004,10 @@ function BrandsView({ workspaceKey }: { workspaceKey: string }) {
 
   function cancelEdit() {
     setEditingId(null);
-    setForm(EMPTY_BRAND_FORM);
+    // Preserve voice rules the same way a successful save does — they're meant
+    // to carry across profiles, so Cancel shouldn't silently discard them while
+    // Save keeps them.
+    setForm({ ...EMPTY_BRAND_FORM, voice: form.voice });
     setError(null);
   }
 
@@ -2517,6 +2580,8 @@ function LogOutcomeModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [invalidField, setInvalidField] = useState<string | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  useModalFocusTrap(modalRef, true);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -2563,13 +2628,14 @@ function LogOutcomeModal({
   return (
     <div className="auth-overlay" onClick={onClose} role="presentation">
       <div
+        ref={modalRef}
         className="auth-modal outcome-modal"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="log-outcome-title"
       >
-        <button className="auth-close" onClick={onClose} aria-label="Close log outcome dialog">
+        <button type="button" className="auth-close" onClick={onClose} aria-label="Close log outcome dialog">
           ×
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
@@ -2580,6 +2646,12 @@ function LogOutcomeModal({
           Logged spend and revenue calibrate the brain's confidence against real campaign performance. Each
           outcome only takes one metric to be useful — fill what you have.
         </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
         <label className="field">
           <span>Comparison</span>
           <select
@@ -2639,13 +2711,14 @@ function LogOutcomeModal({
         </label>
         {error ? <div className="auth-error" id="log-outcome-error">{error}</div> : null}
         <div className="form-actions" style={{ justifyContent: "flex-end" }}>
-          <button className="btn ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="btn ghost" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="btn primary" onClick={submit} disabled={busy}>
+          <button type="submit" className="btn primary" disabled={busy}>
             {busy ? "Saving…" : "Save outcome"}
           </button>
         </div>
+        </form>
       </div>
     </div>
   );
@@ -2756,6 +2829,15 @@ export function TeamView({
     const email = inviteEmail.trim();
     if (!email) {
       const message = "Invite email is required.";
+      setError(message);
+      show("error", message);
+      return;
+    }
+    // Validate format client-side too: the input is type=email, but a JS submit
+    // still reaches here, and the server only returns a generic error. Mirror the
+    // server's email shape so the user gets immediate, specific feedback.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      const message = "Enter a valid email address.";
       setError(message);
       show("error", message);
       return;
@@ -2953,7 +3035,13 @@ export function TeamView({
             <h3>Invite collaborator</h3>
             <span className="kicker">expires in 14 days</span>
           </div>
-          <div className="add-form">
+          <form
+            className="add-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void invite();
+            }}
+          >
             <label className="field">
               <span>Email</span>
               <input
@@ -2961,7 +3049,7 @@ export function TeamView({
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="teammate@brand.com"
                 type="email"
-                required
+                aria-label="Invite email"
               />
             </label>
             <label className="field">
@@ -2983,7 +3071,7 @@ export function TeamView({
               <strong>owner</strong> · full control · <strong>admin</strong> · members + jobs ·{" "}
               <strong>analyst</strong> · run comparisons · <strong>viewer</strong> · read only
             </p>
-            <button className="btn primary wide" onClick={invite} disabled={busy}>
+            <button type="submit" className="btn primary wide" disabled={busy}>
               Create invite link
             </button>
             {lastInviteUrl ? (
@@ -2994,7 +3082,7 @@ export function TeamView({
                 </button>
               </div>
             ) : null}
-          </div>
+          </form>
         </section>
         ) : (
           <section className="panel-card empty">
