@@ -497,12 +497,20 @@ export class StimliApiError extends Error {
   status: number;
   code: string | null;
   details: Record<string, unknown> | null;
-  constructor(message: string, status: number, code: string | null, details: Record<string, unknown> | null) {
+  requestId: string | null;
+  constructor(
+    message: string,
+    status: number,
+    code: string | null,
+    details: Record<string, unknown> | null,
+    requestId: string | null = null
+  ) {
     super(message);
     this.name = "StimliApiError";
     this.status = status;
     this.code = code;
     this.details = details;
+    this.requestId = requestId;
   }
 }
 
@@ -547,7 +555,7 @@ function structuredApiError(response: Response, raw: string): StimliApiError {
       /* keep parsed null */
     }
   }
-  const message = extractErrorMessage(raw) || `Request failed with ${response.status}`;
+  const baseMessage = extractErrorMessage(raw) || `Request failed with ${response.status}`;
   const code =
     parsedJson && parsed && typeof parsed === "object" && "code" in parsed && typeof (parsed as { code: unknown }).code === "string"
       ? ((parsed as { code: string }).code)
@@ -556,12 +564,21 @@ function structuredApiError(response: Response, raw: string): StimliApiError {
     parsedJson && parsed && typeof parsed === "object" && "details" in parsed && typeof (parsed as { details: unknown }).details === "object"
       ? ((parsed as { details: Record<string, unknown> }).details)
       : null;
+  // The server stamps opaque 5xx bodies (and the X-Request-Id header) with a
+  // correlation id that maps to its logged stack trace. Append it to the message
+  // so the toast a user screenshots in a bug report is actually greppable.
+  const requestId =
+    (parsedJson && parsed && typeof parsed === "object" && "request_id" in parsed && typeof (parsed as { request_id: unknown }).request_id === "string"
+      ? ((parsed as { request_id: string }).request_id)
+      : null) || response.headers.get("x-request-id");
+  const message =
+    response.status >= 500 && requestId ? `${baseMessage} (ref: ${requestId})` : baseMessage;
   // Quota responses get a global event so the shell can swap to the Billing
   // view without each call site having to remember to handle the case.
   if (response.status === 402 && typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("stimli:upgrade-required", { detail: { code, details } }));
   }
-  return new StimliApiError(message, response.status, code, details);
+  return new StimliApiError(message, response.status, code, details, requestId);
 }
 
 export function extractErrorMessage(raw: string): string {

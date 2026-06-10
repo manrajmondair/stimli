@@ -168,6 +168,45 @@ describe("parseResponse", () => {
     expect(fetchMock).toHaveBeenCalledTimes(actions.length);
   });
 
+  it("appends the server's request id to opaque 5xx messages", async () => {
+    // The server stamps 5xx bodies with a correlation id that maps to its
+    // logged stack trace — the toast a user screenshots must carry it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ detail: "Request failed", request_id: "ray-abc123" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json", "X-Request-Id": "ray-abc123" }
+        });
+      })
+    );
+
+    await expect(listProjects()).rejects.toMatchObject({
+      name: "StimliApiError",
+      message: "Request failed (ref: ray-abc123)",
+      status: 500,
+      requestId: "ray-abc123"
+    } satisfies Partial<StimliApiError>);
+  });
+
+  it("leaves 4xx messages unchanged (no request-id suffix)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ detail: "Project name is required." }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", "X-Request-Id": "ray-def456" }
+        });
+      })
+    );
+
+    await expect(listProjects()).rejects.toMatchObject({
+      name: "StimliApiError",
+      message: "Project name is required.",
+      status: 400
+    } satisfies Partial<StimliApiError>);
+  });
+
   it("keeps structured errors for markdown response failures", async () => {
     const details = { kind: "comparison", limit: 10, used: 10 };
     vi.stubGlobal(

@@ -111,7 +111,7 @@ Three tiers, all defined in `functions/api/_lib/billing.js`:
 
 | Plan      | Price  | Comparisons / mo | Assets / mo | Seats |
 |-----------|--------|------------------|-------------|-------|
-| Research  | Free   | 25               | 200         | 1     |
+| Research  | Free   | 25               | 200         | 3     |
 | Growth    | $149   | 500              | 4,000       | 5     |
 | Scale     | $499   | 5,000            | 40,000      | 25    |
 
