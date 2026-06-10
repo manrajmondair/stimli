@@ -3299,6 +3299,54 @@ test("failed import rows do not consume asset quota", async () => {
   }
 });
 
+test("an import where every item is quota-blocked surfaces the structured 402", async () => {
+  // When some items land, partial-import semantics return 200 (pinned above).
+  // But when the quota blocks EVERYTHING, nothing was created and the client
+  // needs the structured 402 so the billing upgrade flow can trigger — not a
+  // 200 "failed" job that buries the reason in per-item failure strings.
+  withEnv({
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: "1",
+    STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: "100"
+  });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, "user-agent": "stimli-import-allblocked-test" };
+  try {
+    // Exhaust the monthly quota with a direct asset first.
+    const direct = await call(
+      "POST",
+      "/api/assets",
+      { asset_type: "script", name: "Quota filler", text: "Stop weak hooks before launch. Try the starter kit today." },
+      headers
+    );
+    assert.equal(direct.statusCode, 200);
+
+    const blocked = await call(
+      "POST",
+      "/api/imports",
+      {
+        platform: "csv",
+        source: "all-blocked-test",
+        items: [
+          { asset_type: "script", name: "Blocked A", text: "First blocked row." },
+          { asset_type: "script", name: "Blocked B", text: "Second blocked row." }
+        ]
+      },
+      headers
+    );
+
+    assert.equal(blocked.statusCode, 402);
+    assert.equal(blocked.json.code, "quota_exceeded");
+    assert.equal(blocked.json.details.kind, "asset");
+    // No usage events were consumed beyond the original filler asset.
+    assert.equal(await countUsageEvents({ kind: "asset", workspaceId: workspace }), 1);
+  } finally {
+    withEnv({
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_MONTH: undefined,
+      STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR: undefined
+    });
+  }
+});
+
 test("import source and platform metadata are normalized before persistence", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

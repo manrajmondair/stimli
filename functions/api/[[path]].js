@@ -759,8 +759,14 @@ async function handleImports(request, segments, authContext, workspaceId, header
     const imported = [];
     const failed = [];
     const quota = await getQuotaForWorkspace(workspaceId);
+    // Once a quota/rate limit blocks one item it blocks every later item in the
+    // same request too (same workspace, same kind) — remember the first limit
+    // error so the rest can fail fast without re-running the count queries, and
+    // so an import where NOTHING landed can surface the structured 402/429.
+    let limitError = null;
     for (const item of items) {
       try {
+        if (limitError) throw limitError;
         const assetType = assetTypes.has(item.asset_type) ? item.asset_type : "script";
         const projectId = await resolveProjectId(item.project_id || payload.project_id, workspaceId);
         const sourceUrl = item.url ? requirePublicSourceUrl(item.url) : "";
@@ -782,8 +788,18 @@ async function handleImports(request, segments, authContext, workspaceId, header
         await saveAsset(asset);
         imported.push(publicAsset(asset));
       } catch (error) {
+        if (!limitError && ["quota_exceeded", "rate_limited", "seat_limit_reached"].includes(error.code)) {
+          limitError = error;
+        }
         failed.push({ item: safeImportFailureItem(item), error: error.message });
       }
+    }
+    // Every item was blocked by the quota/rate limit — nothing was created, so
+    // surface the structured 402/429 (code + details) instead of a 200 "failed"
+    // job. The frontend's global quota handler can then route to Billing. When
+    // at least one item landed, keep the pinned partial-import semantics.
+    if (!imported.length && limitError) {
+      throw limitError;
     }
     const job = {
       id: newId("import"),
