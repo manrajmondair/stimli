@@ -244,6 +244,14 @@ export async function listWorkspaceOutcomes(): Promise<WorkspaceOutcome[]> {
   return parseResponse(response);
 }
 
+export async function deleteWorkspaceOutcome(outcomeId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/outcomes/${encodeURIComponent(outcomeId)}`, {
+    method: "DELETE",
+    headers: await workspaceHeaders()
+  });
+  await parseResponse<void>(response);
+}
+
 export async function getBrainProviders(): Promise<BrainProviderHealth[]> {
   const response = await fetch(`${API_BASE}/brain/providers`);
   return parseResponse(response);

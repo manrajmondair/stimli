@@ -228,6 +228,13 @@ def get_shared_report(token: str) -> Report:
         raise
 
 
+@app.delete("/outcomes/{outcome_id}")
+def delete_outcome(outcome_id: str, request: Request) -> dict[str, str]:
+    if not store.delete_outcome(outcome_id, _workspace_id(request)):
+        raise HTTPException(status_code=404, detail="Outcome not found.")
+    return {"deleted": outcome_id}
+
+
 @app.get("/outcomes", response_model=list[WorkspaceOutcome])
 def list_workspace_outcomes(request: Request) -> list[WorkspaceOutcome]:
     workspace_id = _workspace_id(request)

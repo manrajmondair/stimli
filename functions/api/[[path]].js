@@ -44,6 +44,7 @@ import {
   deleteAsset,
   deleteBrandProfile,
   deleteComparison,
+  deleteOutcome,
   deleteTeamInvite,
   deleteTeamMember,
   getAsset,
@@ -248,6 +249,19 @@ export async function onRequest(context) {
         };
       });
       return sendJson(200, enriched, headers, cookies);
+    }
+
+    if (request.method === "DELETE" && segments[0] === "outcomes" && segments[1] && segments.length === 2) {
+      // Outcomes feed the calibration loop, so a fat-fingered spend/revenue
+      // entry shouldn't be permanent. Same write permission as logging one.
+      requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+      const outcomeId = segments[1];
+      const removed = await deleteOutcome(outcomeId, workspaceId);
+      if (!removed) {
+        throw httpError(404, "Outcome not found.");
+      }
+      await audit(workspaceId, authContext.user, "outcome.deleted", "outcome", outcomeId, {});
+      return sendJson(200, { deleted: outcomeId }, headers, cookies);
     }
 
     return sendJson(404, { detail: "Not found" }, headers, cookies);

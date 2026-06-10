@@ -570,3 +570,33 @@ def test_core_workbench_routes_exist_locally():
 
     # Deleting again is a clean 404, not a 405.
     assert client.delete(f"/comparisons/{comparison['id']}").status_code == 404
+
+
+def test_outcome_delete_scopes_to_workspace():
+    seeded = client.post("/demo/seed").json()
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Delete an outcome."},
+    ).json()
+    outcome = client.post(
+        f"/comparisons/{comparison['id']}/outcomes",
+        json={
+            "asset_id": comparison["recommendation"]["winner_asset_id"],
+            "spend": 50,
+            "impressions": 500,
+            "clicks": 25,
+            "conversions": 2,
+            "revenue": 10,
+        },
+    ).json()
+
+    # A different workspace can't delete it.
+    foreign = client.delete(f"/outcomes/{outcome['id']}", headers={"x-stimli-workspace": "ws_other"})
+    assert foreign.status_code == 404
+
+    deleted = client.delete(f"/outcomes/{outcome['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": outcome["id"]}
+    remaining = client.get("/outcomes").json()
+    assert all(row["id"] != outcome["id"] for row in remaining)
+    assert client.delete(f"/outcomes/{outcome['id']}").status_code == 404

@@ -3531,6 +3531,47 @@ test("/api/outcomes returns workspace-wide outcomes joined with comparison + ass
   assert.ok(row.asset_name, "asset_name joined in");
 });
 
+test("deletes a logged outcome and scopes the delete to the workspace", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const cmp = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((a) => a.id), objective: "outcome delete" },
+    headers
+  );
+  const winner = cmp.json.recommendation.winner_asset_id;
+  const created = await call(
+    "POST",
+    `/api/comparisons/${cmp.json.id}/outcomes`,
+    { asset_id: winner, spend: 90, impressions: 5000, clicks: 100, conversions: 4, revenue: 60 },
+    headers
+  );
+  assert.equal(created.statusCode, 200);
+  const outcomeId = created.json.id;
+
+  // A different workspace can't delete it (uniform 404, no cross-tenant probe).
+  const foreign = await call("DELETE", `/api/outcomes/${outcomeId}`, null, {
+    "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`
+  });
+  assert.equal(foreign.statusCode, 404);
+
+  const deleted = await call("DELETE", `/api/outcomes/${outcomeId}`, null, headers);
+  assert.equal(deleted.statusCode, 200);
+  assert.equal(deleted.json.deleted, outcomeId);
+
+  // Gone from the workspace list, and the learning summary recomputes clean.
+  const list = await call("GET", "/api/outcomes", null, headers);
+  assert.equal(list.json.some((r) => r.id === outcomeId), false);
+  const learning = await call("GET", "/api/learning/summary", null, headers);
+  assert.equal(learning.json.outcome_count, 0);
+
+  // Deleting again is a clean 404.
+  const again = await call("DELETE", `/api/outcomes/${outcomeId}`, null, headers);
+  assert.equal(again.statusCode, 404);
+});
+
 test("retries failed hosted inference jobs from admin controls", async () => {
   const originalFetch = globalThis.fetch;
   const owner = await testAccount("Retry Team", "owner");

@@ -153,6 +153,17 @@ class Store:
             )
         return outcome
 
+    def delete_outcome(self, outcome_id: str, workspace_id: str = "public") -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM outcomes WHERE id = ? AND workspace_id = ?",
+                (outcome_id, workspace_id),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM outcomes WHERE id = ? AND workspace_id = ?", (outcome_id, workspace_id))
+        return True
+
     def list_outcomes(self, comparison_id: str | None = None, workspace_id: str = "public") -> list[Outcome]:
         with self._connect() as conn:
             if comparison_id:

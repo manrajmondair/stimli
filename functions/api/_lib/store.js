@@ -276,6 +276,19 @@ export async function saveOutcome(outcome) {
   return outcome;
 }
 
+export async function deleteOutcome(outcomeId, workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    const outcome = memoryStore.outcomes.get(outcomeId) || null;
+    if (!outcome || workspaceForPayload(outcome) !== workspaceId) return false;
+    memoryStore.outcomes.delete(outcomeId);
+    return true;
+  }
+  await ensureTables(sql);
+  const rows = await sql`delete from stimli_outcomes where id = ${outcomeId} and workspace_id = ${workspaceId} returning id`;
+  return rows.length > 0;
+}
+
 export async function listOutcomes(comparisonId = null, workspaceId = "public") {
   const sql = getSql();
   if (!sql) {

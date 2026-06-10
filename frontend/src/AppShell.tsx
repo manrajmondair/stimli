@@ -8,6 +8,7 @@ import {
   createTeamInvite,
   deleteAsset,
   deleteBrandProfile,
+  deleteWorkspaceOutcome,
   exportBrandProfile,
   getBillingStatus,
   getBillingUsage,
@@ -2266,7 +2267,26 @@ function OutcomesView() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [logOpen, setLogOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<WorkspaceOutcome | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const { toast, show, dismiss } = useLocalToast();
+
+  async function performDelete(outcome: WorkspaceOutcome) {
+    setDeleteBusy(true);
+    try {
+      await deleteWorkspaceOutcome(outcome.id);
+      setOutcomes((current) => current.filter((row) => row.id !== outcome.id));
+      setConfirmDelete(null);
+      show("success", "Outcome deleted.");
+      // Refresh so the learning summary / calibration numbers recompute
+      // without the removed row.
+      await refresh();
+    } catch (err) {
+      show("error", err instanceof Error ? err.message : "Could not delete outcome.");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
 
   async function refresh() {
     setLoading(true);
@@ -2517,6 +2537,16 @@ function OutcomesView() {
                         </div>
                       ) : null}
                     </div>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => setConfirmDelete(row)}
+                      aria-label={`Delete outcome for ${row.asset_name || row.asset_id}`}
+                      title="Delete this outcome"
+                      style={{ marginLeft: 10, flexShrink: 0 }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 );
               })
@@ -2535,6 +2565,29 @@ function OutcomesView() {
           }}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        title="Delete this outcome?"
+        confirmLabel={deleteBusy ? "Deleting…" : "Delete outcome"}
+        busy={deleteBusy}
+        message={
+          <>
+            <p>
+              The logged result for <strong>{confirmDelete?.asset_name || confirmDelete?.asset_id}</strong>{" "}
+              (${formatNumber(confirmDelete?.spend ?? 0)} spend / ${formatNumber(confirmDelete?.revenue ?? 0)} revenue)
+              will be removed, and the calibration numbers will recompute without it.
+            </p>
+            <p style={{ marginTop: 8, color: "var(--ink-soft)", fontSize: 12 }}>This can't be undone.</p>
+          </>
+        }
+        onConfirm={() => {
+          if (confirmDelete) void performDelete(confirmDelete);
+        }}
+        onCancel={() => {
+          if (!deleteBusy) setConfirmDelete(null);
+        }}
+      />
 
       <ToastBar toast={toast} onDismiss={dismiss} />
     </>
