@@ -39,7 +39,14 @@ function getEnv(name) {
 }
 
 function envNum(name, fallback) {
-  const value = Number(getEnv(name));
+  // Treat unset / blank as "use the default" — Number("") is 0, so a blank env
+  // var would otherwise silently become a 0 limit (0 seats blocks every invite;
+  // a 0 hourly override disables the abuse guard). Same guard the router's
+  // nonNegativeNumber applies.
+  const raw = getEnv(name);
+  if (raw === null || raw === undefined) return fallback;
+  if (typeof raw === "string" && raw.trim() === "") return fallback;
+  const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 

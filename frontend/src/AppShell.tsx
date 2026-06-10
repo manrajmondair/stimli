@@ -3486,7 +3486,11 @@ export function InvitePage({ token }: { token: string }) {
 
   function signInToAccept() {
     if (clerk?.openSignIn) {
-      clerk.openSignIn({ forceRedirectUrl: invitePath });
+      // Pin BOTH flows back to the invite. forceRedirectUrl only covers the
+      // sign-in leg; a brand-new user who flips to "Sign up" inside the modal
+      // would otherwise inherit the provider-level signUpForceRedirectUrl
+      // ("/app") and land in their personal workspace with the invite dropped.
+      clerk.openSignIn({ forceRedirectUrl: invitePath, signUpForceRedirectUrl: invitePath });
       return;
     }
     window.location.assign(invitePath);

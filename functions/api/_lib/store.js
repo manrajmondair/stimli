@@ -434,12 +434,20 @@ export async function getUser(userId) {
 }
 
 export async function getUserByEmail(email) {
+  // Match case-insensitively: the email comes straight from the Clerk profile
+  // and can differ in letter case from the stored row (e.g. a row written as
+  // John@Example.com before Clerk, looked up as john@example.com now). An exact
+  // match would miss, and ensureStimliUser would then INSERT a duplicate user —
+  // same address, different id — orphaning the original row's team memberships.
+  const needle = String(email || "").trim().toLowerCase();
   const sql = getSql();
   if (!sql) {
-    return [...memoryStore.users.values()].find((user) => user.email === email) || null;
+    return (
+      [...memoryStore.users.values()].find((user) => String(user.email || "").toLowerCase() === needle) || null
+    );
   }
   await ensureTables(sql);
-  const rows = await sql`select payload from stimli_users where email = ${email} limit 1`;
+  const rows = await sql`select payload from stimli_users where lower(email) = ${needle} limit 1`;
   return rows[0]?.payload || null;
 }
 

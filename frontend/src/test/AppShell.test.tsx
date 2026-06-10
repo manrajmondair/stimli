@@ -504,7 +504,10 @@ describe("AppShell routing and shell flows", () => {
     render(<InvitePage token="invite-token" />);
     fireEvent.click(await screen.findByRole("button", { name: /sign in to accept/i }));
 
-    expect(clerkMock.openSignIn).toHaveBeenCalledWith({ forceRedirectUrl: "/invite/invite-token" });
+    expect(clerkMock.openSignIn).toHaveBeenCalledWith({
+      forceRedirectUrl: "/invite/invite-token",
+      signUpForceRedirectUrl: "/invite/invite-token"
+    });
   });
 
   it("shows a checking state for signed-in invite users until the backend session loads", async () => {

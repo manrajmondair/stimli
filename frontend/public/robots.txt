@@ -2,9 +2,13 @@
 # The marketing and trust pages are indexable. The authenticated workbench and
 # the API carry no SEO value, and /share and /invite URLs embed private tokens
 # that must never land in a search index — keep crawlers out of all of them.
+# Note: a bare "Disallow: /app" would prefix-match /apple-touch-icon.png too,
+# so the workbench is blocked as "/app$" (exact, for engines that support the
+# anchor) plus "/app/" for everything under it.
 User-agent: *
 Disallow: /api/
-Disallow: /app
+Disallow: /app$
+Disallow: /app/
 Disallow: /share/
 Disallow: /invite/
 

@@ -27,9 +27,16 @@ test("robots.txt keeps crawlers out of the API, app, and tokened links", () => {
   // Compare against trimmed lines rather than building a regex from each path
   // (which only escaped "/" and tripped CodeQL's incomplete-sanitization rule).
   const lines = readPublic("robots.txt").split(/\r?\n/).map((line) => line.trim());
-  for (const path of ["/api/", "/app", "/share/", "/invite/"]) {
+  // /app is blocked as "/app$" + "/app/" rather than a bare "/app" prefix —
+  // the bare rule would also match /apple-touch-icon.png.
+  for (const path of ["/api/", "/app$", "/app/", "/share/", "/invite/"]) {
     assert.ok(lines.includes(`Disallow: ${path}`), `expected Disallow ${path}`);
   }
+  assert.equal(
+    lines.includes("Disallow: /app"),
+    false,
+    "bare /app prefix rule would also block /apple-touch-icon.png"
+  );
   assert.ok(lines.includes("Sitemap: https://stimli.pages.dev/sitemap.xml"));
 });
 

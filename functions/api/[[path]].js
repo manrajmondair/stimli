@@ -1410,14 +1410,34 @@ async function refreshComparison(comparison, workspaceId) {
 
   const completeJobs = jobStatuses.filter((job) => job.status === "complete");
   if (completeJobs.length === comparison.jobs.length) {
-    const assets = [];
-    for (const variant of comparison.variants) {
-      const asset = await getAsset(variant.asset.id, workspaceId);
-      if (!asset) {
-        throw httpError(404, `Asset not found: ${variant.asset.id}`);
-      }
-      assets.push(asset);
+    const fetched = await Promise.all(
+      comparison.variants.map((variant) => getAsset(variant.asset.id, workspaceId))
+    );
+    const missingNames = comparison.variants
+      .filter((_, index) => !fetched[index])
+      .map((variant) => variant.asset.name || variant.asset.id);
+    if (missingNames.length) {
+      // A variant was deleted while the jobs were still running. Throwing here
+      // would leave the row stuck in "processing" and make every subsequent
+      // read of this comparison 404 forever — fail it terminally instead so
+      // the result is readable and the UI can explain what happened.
+      const failed = {
+        ...comparison,
+        status: "failed",
+        jobs: updatedJobs,
+        variants: withJobStatuses(comparison.variants, updatedJobs),
+        recommendation: {
+          winner_asset_id: null,
+          verdict: "revise",
+          confidence: 0,
+          headline: "Analysis failed because a variant was deleted while processing",
+          reasons: [`Variant no longer exists: ${missingNames.join(", ")}`]
+        }
+      };
+      await saveComparison(publicComparison(failed));
+      return failed;
     }
+    const assets = fetched;
     const brainByAssetId = Object.fromEntries(
       completeJobs.map((job) => [
         job.asset_id,
@@ -1966,8 +1986,10 @@ function isPrivateIpv4(host) {
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
+    // Deliberately blocks all of 192.0.0.0/16 and 198.51.0.0/16 — wider than
+    // the IANA special ranges (192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24),
+    // but over-blocking is the safe direction for an SSRF guard.
     (a === 192 && b === 0) ||
-    (a === 192 && b === 0 && octets[2] === 2) ||
     (a === 198 && (b === 18 || b === 19 || b === 51)) ||
     (a === 203 && b === 0 && octets[2] === 113) ||
     a >= 224
@@ -1991,13 +2013,24 @@ function isPrivateIpv6(host) {
 }
 
 function ipv4FromMappedIpv6(value) {
-  const prefix = "::ffff:";
-  if (!value.startsWith(prefix)) return null;
-  const suffix = value.slice(prefix.length);
+  // Handle both the IPv4-mapped form (::ffff:a.b.c.d) and the deprecated
+  // IPv4-compatible form (::a.b.c.d / ::7f00:1). The compatible form still
+  // parses in URL hostnames, so without it "http://[::127.0.0.1]" would walk
+  // straight past the loopback block.
+  let suffix = null;
+  if (value.startsWith("::ffff:")) {
+    suffix = value.slice("::ffff:".length);
+  } else if (value.startsWith("::") && value.length > 2) {
+    suffix = value.slice(2);
+  }
+  if (!suffix) return null;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(suffix)) return suffix;
   const hextets = suffix.split(":");
-  if (hextets.length !== 2) return null;
-  const [high, low] = hextets.map((part) => Number.parseInt(part, 16));
+  if (hextets.length < 1 || hextets.length > 2 || hextets.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) {
+    return null;
+  }
+  const low = Number.parseInt(hextets[hextets.length - 1], 16);
+  const high = hextets.length === 2 ? Number.parseInt(hextets[0], 16) : 0;
   if ([high, low].some((part) => !Number.isInteger(part) || part < 0 || part > 0xffff)) return null;
   return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
 }

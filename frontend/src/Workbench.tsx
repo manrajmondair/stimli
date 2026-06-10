@@ -59,6 +59,11 @@ const COLOR_CYCLE = ["var(--tomato)", "var(--pistachio)", "var(--butter)", "var(
 const FALLBACK_OBJECTIVE =
   "Pick the DTC creative most likely to earn attention, build memory, and convert.";
 
+// Mirrors the server's direct-upload cap (STIMLI_MAX_DIRECT_UPLOAD_BYTES,
+// default 25 MB — the Cloudflare Pages Functions body limit) so oversized files
+// are rejected before the upload instead of after it with a 413.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 function readLocalStorage(key: string): string | null {
   try {
     return typeof window === "undefined" ? null : window.localStorage.getItem(key);
@@ -328,6 +333,16 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
       flash({ kind: "error", message: "Paste text, a URL, or upload a file." });
       return;
     }
+    // Reject oversized files before uploading: the server caps direct uploads at
+    // 25 MB (Pages Functions body limit), so without this check the user waits
+    // for the full upload only to get a 413 at the end.
+    if (draft.file && draft.file.size > MAX_UPLOAD_BYTES) {
+      flash({
+        kind: "error",
+        message: `That file is ${(draft.file.size / (1024 * 1024)).toFixed(1)} MB — uploads are capped at ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB. Trim or compress it first.`
+      });
+      return;
+    }
     setBusy(true);
     try {
       const duration = draft.durationSeconds ? Number(draft.durationSeconds) : undefined;
@@ -519,7 +534,16 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
       invalidatePoll();
       finishProgressAnimation();
       setComparison(cancelled);
-      setStep("inventory");
+      // Cancel is a server-side no-op on terminal comparisons. If the analysis
+      // finished in the window between the user clicking Cancel and the request
+      // landing, show the completed result instead of silently discarding it.
+      if (cancelled.status === "complete") {
+        setStep("result");
+        setActiveVariantIdx(0);
+        flash({ kind: "info", message: "Analysis finished before it could be cancelled — showing the result." });
+      } else {
+        setStep("inventory");
+      }
       await refreshComparisons();
     } catch (err) {
       const resumeToken = invalidatePoll();

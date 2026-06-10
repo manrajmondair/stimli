@@ -116,7 +116,9 @@ function LazyRoute({ children }: { children: ReactNode }) {
 }
 
 export function App() {
-  const path = window.location.pathname;
+  // Normalize trailing slashes so a pasted "/share/<token>/" or "/legal/"
+  // resolves to its page instead of falling through to the marketing landing.
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
 
   useEffect(() => {
     // Lightweight per-route document title. Real SSR would set the OG tags
