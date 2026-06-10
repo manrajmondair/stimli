@@ -3560,6 +3560,60 @@ test("/api/outcomes returns workspace-wide outcomes joined with comparison + ass
   assert.ok(row.asset_name, "asset_name joined in");
 });
 
+test("annotates a decision with label, notes, status, and pin via PATCH", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const cmp = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((a) => a.id), objective: "annotate me" },
+    headers
+  );
+  assert.equal(cmp.statusCode, 200);
+
+  const patched = await call(
+    "PATCH",
+    `/api/comparisons/${cmp.json.id}`,
+    { label: "May hooks test", notes: "Shipped to Meta on $500/day.", decision_status: "shipped", pinned: true },
+    headers
+  );
+  assert.equal(patched.statusCode, 200);
+  assert.equal(patched.json.label, "May hooks test");
+  assert.equal(patched.json.notes, "Shipped to Meta on $500/day.");
+  assert.equal(patched.json.decision_status, "shipped");
+  assert.equal(patched.json.pinned, true);
+  assert.ok(patched.json.decision_updated_at, "decision_updated_at stamped");
+
+  // The annotation persists and survives a fresh read.
+  const read = await call("GET", `/api/comparisons/${cmp.json.id}`, null, headers);
+  assert.equal(read.json.label, "May hooks test");
+  assert.equal(read.json.decision_status, "shipped");
+  assert.equal(read.json.pinned, true);
+
+  // Partial patch only touches the provided fields; empty label clears it.
+  const cleared = await call("PATCH", `/api/comparisons/${cmp.json.id}`, { label: "" }, headers);
+  assert.equal(cleared.json.label, null);
+  assert.equal(cleared.json.notes, "Shipped to Meta on $500/day.");
+  assert.equal(cleared.json.decision_status, "shipped");
+
+  // Validation: bad status is a 400, empty patch is a 400, cross-workspace is 404.
+  const badStatus = await call("PATCH", `/api/comparisons/${cmp.json.id}`, { decision_status: "maybe" }, headers);
+  assert.equal(badStatus.statusCode, 400);
+  const emptyPatch = await call("PATCH", `/api/comparisons/${cmp.json.id}`, {}, headers);
+  assert.equal(emptyPatch.statusCode, 400);
+  const foreign = await call("PATCH", `/api/comparisons/${cmp.json.id}`, { label: "steal" }, {
+    "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`
+  });
+  assert.equal(foreign.statusCode, 404);
+
+  // The markdown report carries the notes section.
+  const markdown = await call("GET", `/api/reports/${cmp.json.id}/markdown`, null, headers);
+  assert.equal(markdown.statusCode, 200);
+  assert.match(markdown.text, /Shipped to Meta on \$500\/day\./);
+  assert.match(markdown.text, /## Decision Notes/);
+});
+
 test("deletes a logged outcome and scopes the delete to the workspace", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

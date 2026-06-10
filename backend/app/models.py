@@ -124,7 +124,20 @@ class Comparison(BaseModel):
     variants: list[VariantResult]
     recommendation: Recommendation
     suggestions: list[Suggestion]
+    # Decision-register annotations, set via PATCH /comparisons/{id}.
+    label: str | None = None
+    notes: str | None = None
+    decision_status: Literal["pending", "shipped", "killed"] | None = None
+    pinned: bool = False
+    decision_updated_at: str | None = None
     created_at: str
+
+
+class DecisionMetaPatch(BaseModel):
+    label: str | None = None
+    notes: str | None = None
+    decision_status: Literal["pending", "shipped", "killed"] | None = None
+    pinned: bool | None = None
 
 
 class OutcomeCreate(BaseModel):

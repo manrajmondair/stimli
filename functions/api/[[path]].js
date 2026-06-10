@@ -1092,6 +1092,28 @@ async function handleComparisons(request, segments, workspaceId, authContext, he
     return sendJson(200, await requireComparison(comparisonId, workspaceId), headers, cookies);
   }
 
+  if (request.method === "PATCH" && segments.length === 2) {
+    // Decision-register annotations: a human label, free-form notes, a
+    // shipped/killed/pending launch status, and a pin. These ride on the
+    // comparison payload itself (JSONB upsert) — no schema change needed.
+    requirePermission(authContext, "workspace:write", { allowAnonymous: true });
+    const existing = await getComparison(comparisonId, workspaceId);
+    if (!existing) {
+      throw httpError(404, "Comparison not found");
+    }
+    const payload = await parseJson(request);
+    const patch = normalizeDecisionMeta(payload);
+    if (!Object.keys(patch).length) {
+      throw httpError(400, "Provide label, notes, decision_status, or pinned.");
+    }
+    const updated = publicComparison({ ...existing, ...patch, decision_updated_at: nowIso() });
+    await saveComparison(updated);
+    await audit(workspaceId, authContext.user, "comparison.annotated", "comparison", comparisonId, {
+      fields: Object.keys(patch)
+    });
+    return sendJson(200, updated, headers, cookies);
+  }
+
   if (request.method === "DELETE" && segments.length === 2) {
     requirePermission(authContext, "workspace:write", { allowAnonymous: true });
     // If it's still processing, cancel the remote jobs first so deleting the row
@@ -1291,6 +1313,9 @@ async function buildReport(comparisonId, workspaceId) {
   return {
     comparison_id: comparison.id,
     title: "Stimli Creative Decision Report",
+    label: comparison.label || null,
+    decision_status: comparison.decision_status || null,
+    decision_notes: comparison.notes || null,
     executive_summary: executiveSummary,
     recommendation: comparison.recommendation,
     variants: comparison.variants,
@@ -2068,8 +2093,10 @@ function ipv4FromMappedIpv6(value) {
 function reportToMarkdown(report) {
   const lines = [
     `# ${report.title}`,
+    ...(report.label ? ["", `**Decision:** ${mdCell(report.label)}${report.decision_status ? ` · ${report.decision_status}` : ""}`] : []),
     "",
     report.executive_summary,
+    ...(report.decision_notes ? ["", "## Decision Notes", "", report.decision_notes] : []),
     "",
     "## Recommendation",
     "",
@@ -2676,6 +2703,30 @@ function governancePolicy() {
     retention_days: positiveNumber(env.STIMLI_RETENTION_DAYS, 365),
     commercial_license_mode: env.STIMLI_TRIBE_COMMERCIAL_LICENSE === "1" ? "commercial-ready" : "research-only"
   };
+}
+
+// Validates a decision-register PATCH body. Only the provided keys land in the
+// patch; absent keys leave the stored value untouched. Empty label/notes clear
+// the field (null) so a user can remove an annotation.
+function normalizeDecisionMeta(payload) {
+  const patch = {};
+  if ("label" in payload) {
+    patch.label = stringField(payload.label).trim().slice(0, 120) || null;
+  }
+  if ("notes" in payload) {
+    patch.notes = stringField(payload.notes).trim().slice(0, 2000) || null;
+  }
+  if ("decision_status" in payload) {
+    const status = String(payload.decision_status || "").trim().toLowerCase();
+    if (!["pending", "shipped", "killed"].includes(status)) {
+      throw httpError(400, "decision_status must be pending, shipped, or killed.");
+    }
+    patch.decision_status = status;
+  }
+  if ("pinned" in payload) {
+    patch.pinned = Boolean(payload.pinned);
+  }
+  return patch;
 }
 
 function normalizeTargetType(value) {

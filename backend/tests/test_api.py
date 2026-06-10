@@ -600,3 +600,33 @@ def test_outcome_delete_scopes_to_workspace():
     remaining = client.get("/outcomes").json()
     assert all(row["id"] != outcome["id"] for row in remaining)
     assert client.delete(f"/outcomes/{outcome['id']}").status_code == 404
+
+
+def test_decision_register_patch_roundtrip():
+    seeded = client.post("/demo/seed").json()
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Annotate locally."},
+    ).json()
+
+    patched = client.patch(
+        f"/comparisons/{comparison['id']}",
+        json={"label": "Local hooks test", "notes": "Local run.", "decision_status": "shipped", "pinned": True},
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["label"] == "Local hooks test"
+    assert body["decision_status"] == "shipped"
+    assert body["pinned"] is True
+    assert body["decision_updated_at"]
+
+    # Persisted across a fresh read; partial patch leaves other fields alone.
+    read = client.get(f"/comparisons/{comparison['id']}").json()
+    assert read["label"] == "Local hooks test"
+    cleared = client.patch(f"/comparisons/{comparison['id']}", json={"label": ""}).json()
+    assert cleared["label"] is None
+    assert cleared["notes"] == "Local run."
+
+    # Empty patch is a 400, invalid status a 422 (pydantic enum).
+    assert client.patch(f"/comparisons/{comparison['id']}", json={}).status_code == 400
+    assert client.patch(f"/comparisons/{comparison['id']}", json={"decision_status": "maybe"}).status_code == 422

@@ -24,6 +24,7 @@ from app.models import (
     ChallengerResponse,
     Comparison,
     ComparisonCreate,
+    DecisionMetaPatch,
     LearningSummary,
     Outcome,
     OutcomeCreate,
@@ -171,6 +172,26 @@ def list_comparisons(request: Request) -> list[Comparison]:
 @app.get("/comparisons/{comparison_id}", response_model=Comparison)
 def get_comparison(comparison_id: str, request: Request) -> Comparison:
     return _get_comparison(comparison_id, _workspace_id(request))
+
+
+@app.patch("/comparisons/{comparison_id}", response_model=Comparison)
+def annotate_comparison(comparison_id: str, payload: DecisionMetaPatch, request: Request) -> Comparison:
+    workspace_id = _workspace_id(request)
+    comparison = _get_comparison(comparison_id, workspace_id)
+    provided = payload.model_dump(exclude_unset=True)
+    if not provided:
+        raise HTTPException(status_code=400, detail="Provide label, notes, decision_status, or pinned.")
+    if "label" in provided:
+        comparison.label = (provided["label"] or "").strip()[:120] or None
+    if "notes" in provided:
+        comparison.notes = (provided["notes"] or "").strip()[:2000] or None
+    if "decision_status" in provided and provided["decision_status"] is not None:
+        comparison.decision_status = provided["decision_status"]
+    if "pinned" in provided and provided["pinned"] is not None:
+        comparison.pinned = bool(provided["pinned"])
+    comparison.decision_updated_at = now_iso()
+    store.save_comparison(comparison, workspace_id)
+    return comparison
 
 
 @app.delete("/comparisons/{comparison_id}")

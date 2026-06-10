@@ -115,6 +115,49 @@ describe("Workbench", () => {
     expect(screen.queryByText(/Ship Pain-led hook\./i)).not.toBeInTheDocument();
   });
 
+  it("floats pinned decisions to the top, shows labels and status chips, and PATCHes on pin", async () => {
+    const labelled = {
+      ...makeComparison("cmp_old", "old test", "Old winner"),
+      label: "May hooks test",
+      decision_status: "shipped" as const,
+      pinned: true,
+      created_at: new Date(Date.now() - 86400000).toISOString()
+    };
+    const newer = makeComparison("cmp_new", "new test", "New winner");
+    // Server order is newest-first; the pinned older decision must still lead.
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/comparisons/cmp_new") && (init?.method || "GET") === "PATCH") {
+        return json({ ...newer, pinned: true });
+      }
+      if (u.includes("/comparisons")) return json([newer, labelled]);
+      if (u.includes("/assets")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    // The pinned decision renders its label (not the verdict headline) plus a
+    // shipped chip, and sorts above the newer unpinned one.
+    await screen.findByText("May hooks test");
+    expect(screen.getByText(/shipped ·/i)).toBeInTheDocument();
+    const rows = screen.getAllByRole("button", { name: /pin decision|unpin decision/i });
+    expect(rows[0]).toHaveAccessibleName(/unpin decision: May hooks test/i);
+
+    // Pinning the other row PATCHes the comparison with pinned: true.
+    const pinNew = screen.getByRole("button", { name: /^pin decision: Ship New winner/i });
+    fireEvent.click(pinNew);
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(([u, init]) =>
+        String(u).includes("/comparisons/cmp_new") && (init?.method || "GET") === "PATCH"
+      );
+      expect(patchCalls).toHaveLength(1);
+      expect(JSON.parse(String(patchCalls[0][1]?.body))).toEqual({ pinned: true });
+    });
+  });
+
   it("renders a delete control on each decision row", async () => {
     stubFetch([makeComparison("cmp_x", "only test", "Only winner")]);
     render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);

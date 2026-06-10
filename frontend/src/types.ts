@@ -137,6 +137,8 @@ export type CreativeBrief = {
   forbidden_terms: string[];
 };
 
+export type DecisionStatus = "pending" | "shipped" | "killed";
+
 export type Comparison = {
   id: string;
   project_id?: string | null;
@@ -148,6 +150,12 @@ export type Comparison = {
   suggestions: Suggestion[];
   jobs?: ComparisonJob[];
   compliance?: ComplianceReport[] | null;
+  // Decision-register annotations (all optional; set via PATCH /comparisons/:id).
+  label?: string | null;
+  notes?: string | null;
+  decision_status?: DecisionStatus;
+  pinned?: boolean;
+  decision_updated_at?: string;
   created_at: string;
 };
 
@@ -271,6 +279,9 @@ export type BillingStatus = {
 export type Report = {
   comparison_id: string;
   title: string;
+  label?: string | null;
+  decision_status?: DecisionStatus | null;
+  decision_notes?: string | null;
   executive_summary: string;
   recommendation: Recommendation;
   variants: VariantResult[];

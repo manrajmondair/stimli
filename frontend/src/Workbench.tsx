@@ -12,7 +12,8 @@ import {
   listAssets,
   listBrandProfiles,
   listComparisons,
-  seedDemo
+  seedDemo,
+  updateComparisonMeta
 } from "./api";
 
 const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
@@ -22,6 +23,7 @@ import type {
   Comparison,
   ComplianceReport,
   CreativeBrief,
+  DecisionStatus,
   ScoreBreakdown,
   Suggestion,
   TimelinePoint,
@@ -734,6 +736,29 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
     setConfirmRecentDeleteId(comparisonId);
   }
 
+  // Applies a decision-register patch (label / notes / status / pin) to the
+  // server, then mirrors it into both the open comparison and the history list
+  // so the UI is consistent without a refetch.
+  async function saveDecisionMeta(
+    comparisonId: string,
+    patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
+  ): Promise<boolean> {
+    try {
+      const updated = await updateComparisonMeta(comparisonId, patch);
+      setComparison((current) => (current?.id === comparisonId ? { ...current, ...updated } : current));
+      setRecentComparisons((current) => current.map((item) => (item.id === comparisonId ? { ...item, ...updated } : item)));
+      return true;
+    } catch (err) {
+      flash({ kind: "error", message: err instanceof Error ? err.message : "Could not save the decision note." });
+      return false;
+    }
+  }
+
+  async function handleTogglePin(comparisonId: string, pinned: boolean) {
+    const saved = await saveDecisionMeta(comparisonId, { pinned });
+    if (saved) flash({ kind: "success", message: pinned ? "Pinned to the top of decisions." : "Unpinned." });
+  }
+
   async function performDeleteRecent() {
     const comparisonId = confirmRecentDeleteId;
     if (!comparisonId || deletingRecentRef.current) return;
@@ -883,6 +908,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
           recents={recentComparisons}
           onOpenRecent={openRecent}
           onDeleteRecent={handleDeleteRecent}
+          onTogglePin={handleTogglePin}
           deletingRecentId={deletingRecentId}
         />
         <ResultsColumn
@@ -902,6 +928,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
           onLogOutcome={handleLogOutcome}
           onCancel={handleCancel}
           onContinueInBackground={continueInBackground}
+          onSaveDecisionMeta={saveDecisionMeta}
           pollNote={pollNote}
           pollStartedAt={pollStartedAt}
         />
@@ -1468,6 +1495,7 @@ function InventoryPanel({
   recents,
   onOpenRecent,
   onDeleteRecent,
+  onTogglePin,
   deletingRecentId
 }: {
   assets: Asset[];
@@ -1477,15 +1505,26 @@ function InventoryPanel({
   recents: Comparison[];
   onOpenRecent: (comparisonId: string) => void;
   onDeleteRecent: (comparisonId: string) => void;
+  onTogglePin: (comparisonId: string, pinned: boolean) => void;
   deletingRecentId: string | null;
 }) {
   const [recentQuery, setRecentQuery] = useState("");
   const query = recentQuery.trim().toLowerCase();
+  // Pinned decisions float to the top in both browsing and search; within each
+  // group the list keeps its newest-first server order.
+  const orderedRecents = useMemo(() => {
+    const pinned = recents.filter((item) => item.pinned);
+    const rest = recents.filter((item) => !item.pinned);
+    return [...pinned, ...rest];
+  }, [recents]);
   const filteredRecents = useMemo(() => {
-    if (!query) return recents;
-    return recents.filter((recent) => {
+    if (!query) return orderedRecents;
+    return orderedRecents.filter((recent) => {
       const winner = recent.variants.find((v) => v.asset.id === recent.recommendation.winner_asset_id);
       const haystack = [
+        recent.label,
+        recent.notes,
+        recent.decision_status,
         recent.objective,
         recent.recommendation.headline,
         recent.status,
@@ -1497,7 +1536,7 @@ function InventoryPanel({
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [recents, query]);
+  }, [orderedRecents, query]);
   // Without a search, keep the panel tidy by showing the most recent handful;
   // when searching, reveal every match across the full history.
   const visibleRecents = query ? filteredRecents : filteredRecents.slice(0, 6);
@@ -1601,7 +1640,9 @@ function InventoryPanel({
               ? "var(--tomato)"
               : "var(--ink)";
             const winnerLabel = winner?.asset.name.split("·")[0]?.trim();
-            const headline = recent.status === "processing"
+            const headline = recent.label
+              ? recent.label
+              : recent.status === "processing"
               ? "Still analyzing…"
               : recent.status === "failed"
               ? "Analysis failed."
@@ -1610,6 +1651,12 @@ function InventoryPanel({
               : winnerLabel
               ? `${verb} ${winnerLabel}.`
               : `${verb} the leading variant.`;
+            const statusChip =
+              recent.decision_status === "shipped"
+                ? { text: "shipped", color: "var(--pistachio-ink)" }
+                : recent.decision_status === "killed"
+                ? { text: "killed", color: "var(--tomato-ink)" }
+                : null;
             return (
               <div
                 key={recent.id}
@@ -1633,11 +1680,32 @@ function InventoryPanel({
                 >
                   <strong>{headline}</strong>
                   <span>
+                    {statusChip ? (
+                      <span style={{ color: statusChip.color, fontWeight: 600 }}>{statusChip.text} · </span>
+                    ) : null}
                     {recent.status === "complete"
                       ? `${Math.round((recent.recommendation.confidence ?? 0) * 100)}%`
                       : recent.status}{" "}
                     · {formatRelative(recent.created_at)}
                   </span>
+                </button>
+                <button
+                  className="recent-pin"
+                  onClick={() => onTogglePin(recent.id, !recent.pinned)}
+                  title={recent.pinned ? "Unpin this decision" : "Pin this decision to the top"}
+                  aria-label={`${recent.pinned ? "Unpin" : "Pin"} decision: ${headline}`}
+                  aria-pressed={Boolean(recent.pinned)}
+                  style={{
+                    border: 0,
+                    background: "transparent",
+                    color: recent.pinned ? "var(--butter-ink, var(--ink))" : "var(--ink-faint)",
+                    cursor: "pointer",
+                    padding: "0 4px",
+                    fontSize: 15,
+                    lineHeight: 1
+                  }}
+                >
+                  {recent.pinned ? "★" : "☆"}
                 </button>
                 <button
                   className="recent-delete"
@@ -1683,6 +1751,7 @@ function ResultsColumn({
   onLogOutcome,
   onCancel,
   onContinueInBackground,
+  onSaveDecisionMeta,
   pollNote,
   pollStartedAt
 }: {
@@ -1702,6 +1771,10 @@ function ResultsColumn({
   onLogOutcome: (assetId: string) => void;
   onCancel: () => void;
   onContinueInBackground: () => void;
+  onSaveDecisionMeta: (
+    comparisonId: string,
+    patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
+  ) => Promise<boolean>;
   pollNote: string | null;
   pollStartedAt: number | null;
 }) {
@@ -1736,6 +1809,7 @@ function ResultsColumn({
       onExport={onExport}
       onDraftChallenger={onDraftChallenger}
       onLogOutcome={onLogOutcome}
+      onSaveDecisionMeta={onSaveDecisionMeta}
     />
   );
 }
@@ -1998,7 +2072,8 @@ function Result({
   onShare,
   onExport,
   onDraftChallenger,
-  onLogOutcome
+  onLogOutcome,
+  onSaveDecisionMeta
 }: {
   comparison: Comparison;
   ranked: VariantResult[];
@@ -2010,6 +2085,10 @@ function Result({
   onExport: () => void;
   onDraftChallenger: () => void;
   onLogOutcome: (assetId: string) => void;
+  onSaveDecisionMeta: (
+    comparisonId: string,
+    patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
+  ) => Promise<boolean>;
 }) {
   const winner = ranked[0];
   const winnerColor = COLOR_CYCLE[0];
@@ -2197,9 +2276,110 @@ function Result({
               Draft challenger ✺
             </button>
           </div>
+          <DecisionMetaCard key={comparison.id} comparison={comparison} onSave={onSaveDecisionMeta} />
         </div>
       </div>
     </section>
+  );
+}
+
+// Decision-register editor on a completed result: name the decision, record
+// whether it actually shipped, and keep launch notes with the comparison so the
+// history list and shared report carry the context.
+function DecisionMetaCard({
+  comparison,
+  onSave
+}: {
+  comparison: Comparison;
+  onSave: (
+    comparisonId: string,
+    patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
+  ) => Promise<boolean>;
+}) {
+  const [label, setLabel] = useState(comparison.label || "");
+  const [notes, setNotes] = useState(comparison.notes || "");
+  const [status, setStatus] = useState<DecisionStatus>(comparison.decision_status || "pending");
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  const dirty =
+    label.trim() !== (comparison.label || "") ||
+    notes.trim() !== (comparison.notes || "") ||
+    status !== (comparison.decision_status || "pending");
+
+  async function save() {
+    if (saving || !dirty) return;
+    setSaving(true);
+    try {
+      const ok = await onSave(comparison.id, {
+        label: label.trim() || null,
+        notes: notes.trim() || null,
+        decision_status: status
+      });
+      if (ok) setSavedAt(Date.now());
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      className="decision-meta"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+      style={{ marginTop: 18, paddingTop: 14, borderTop: "1.5px dashed var(--ink)" }}
+    >
+      <div className="panel-head" style={{ marginBottom: 8 }}>
+        <h3 style={{ fontSize: 15 }}>Decision log</h3>
+        <span className="kicker">name it · track the launch</span>
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <label className="field" style={{ flex: "2 1 220px", minWidth: 0 }}>
+          <span>Label</span>
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. May hooks test — skincare"
+            maxLength={120}
+          />
+        </label>
+        <label className="field" style={{ flex: "1 1 130px" }}>
+          <span>Launch status</span>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as DecisionStatus)}
+            className="member-role-select"
+            style={{ width: "100%", fontSize: 14, padding: 8 }}
+          >
+            <option value="pending">pending</option>
+            <option value="shipped">shipped</option>
+            <option value="killed">killed</option>
+          </select>
+        </label>
+      </div>
+      <label className="field">
+        <span>Notes</span>
+        <textarea
+          rows={2}
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Why this call? Channel, budget, anything future-you needs…"
+          maxLength={2000}
+        />
+      </label>
+      <div className="form-actions" style={{ justifyContent: "flex-end", marginTop: 4 }}>
+        {savedAt && !dirty ? (
+          <span className="hint" role="status">
+            Saved.
+          </span>
+        ) : null}
+        <button type="submit" className="btn cream" disabled={saving || !dirty}>
+          {saving ? "Saving…" : "Save decision log"}
+        </button>
+      </div>
+    </form>
   );
 }
 

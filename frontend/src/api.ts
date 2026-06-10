@@ -11,6 +11,7 @@ import type {
   ChallengerResponse,
   Comparison,
   CreativeBrief,
+  DecisionStatus,
   GovernancePolicy,
   GovernanceRequest,
   ImportJob,
@@ -188,6 +189,18 @@ export async function deleteComparison(comparisonId: string): Promise<void> {
     headers: await workspaceHeaders()
   });
   await parseResponse<void>(response);
+}
+
+export async function updateComparisonMeta(
+  comparisonId: string,
+  patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
+): Promise<Comparison> {
+  const response = await fetch(`${API_BASE}/comparisons/${encodeURIComponent(comparisonId)}`, {
+    method: "PATCH",
+    headers: await jsonHeaders(),
+    body: JSON.stringify(patch)
+  });
+  return parseResponse(response);
 }
 
 export async function getReport(comparisonId: string): Promise<Report> {
