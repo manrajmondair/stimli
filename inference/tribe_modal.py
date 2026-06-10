@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import math
 import os
 import re
@@ -535,7 +536,10 @@ def _check_auth(authorization: str | None) -> None:
     expected = os.getenv("STIMLI_MODAL_API_KEY")
     if not expected:
         raise _http_error(500, "Modal auth secret is not configured.")
-    if authorization != f"Bearer {expected}":
+    # Constant-time comparison so the bearer check can't leak prefix-match
+    # timing. Network jitter makes the oracle impractical anyway, but
+    # compare_digest costs nothing.
+    if not hmac.compare_digest(str(authorization or ""), f"Bearer {expected}"):
         raise _http_error(401, "Unauthorized.")
 
 
