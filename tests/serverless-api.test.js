@@ -2022,6 +2022,35 @@ test("normalizes stored source URLs and rejects credentialed URLs", async () => 
   assert.equal(privateMappedAsset.statusCode, 400);
   assert.match(privateMappedAsset.json.detail, /private_or_local_host/);
 
+  // The deprecated IPv4-COMPATIBLE form (no ::ffff: prefix) must be blocked
+  // too — WHATWG URL canonicalizes http://[::127.0.0.1] to [::7f00:1], which
+  // previously walked straight past the loopback check.
+  const compatLoopbackAsset = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      url: "http://[::127.0.0.1]/admin",
+      text: "IPv4-compatible loopback must be rejected."
+    },
+    headers
+  );
+  assert.equal(compatLoopbackAsset.statusCode, 400);
+  assert.match(compatLoopbackAsset.json.detail, /private_or_local_host/);
+
+  const compatHexLoopbackAsset = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      url: "http://[::7f00:1]/admin",
+      text: "Hex-spelled IPv4-compatible loopback must be rejected."
+    },
+    headers
+  );
+  assert.equal(compatHexLoopbackAsset.statusCode, 400);
+  assert.match(compatHexLoopbackAsset.json.detail, /private_or_local_host/);
+
   const publicMappedAsset = await call(
     "POST",
     "/api/assets",
@@ -3570,6 +3599,64 @@ test("deletes a logged outcome and scopes the delete to the workspace", async ()
   // Deleting again is a clean 404.
   const again = await call("DELETE", `/api/outcomes/${outcomeId}`, null, headers);
   assert.equal(again.statusCode, 404);
+});
+
+test("a processing comparison whose variant was deleted fails terminally instead of 404ing forever", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const jobs = new Map();
+  let jobIndex = 0;
+
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `del_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      const job = jobs.get(body.job_id);
+      return jsonResponse({
+        ...job,
+        status: "complete",
+        timeline: [{ second: 0, attention: 0.5, memory: 0.5, cognitive_load: 0.5, note: "stub" }]
+      });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Vanish A", text: "Try the starter kit today." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Vanish B", text: "A generic product message." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Variant deleted mid-flight." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+
+    // Delete one variant while the jobs are still out — the next poll sees
+    // every job complete but can't load the asset.
+    const removed = await call("DELETE", `/api/assets/${first.json.asset.id}`, null, headers);
+    assert.equal(removed.statusCode, 200);
+
+    const refreshed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(refreshed.statusCode, 200);
+    assert.equal(refreshed.json.status, "failed");
+    assert.match(refreshed.json.recommendation.reasons[0], /no longer exists/i);
+
+    // The failure is terminal and the row stays readable on re-poll.
+    const again = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(again.statusCode, 200);
+    assert.equal(again.json.status, "failed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
 });
 
 test("retries failed hosted inference jobs from admin controls", async () => {
