@@ -3560,6 +3560,70 @@ test("/api/outcomes returns workspace-wide outcomes joined with comparison + ass
   assert.ok(row.asset_name, "asset_name joined in");
 });
 
+test("/api/insights aggregates winner profiles, predictive power, and copy signals", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  // Two deterministic comparisons from the demo set (heuristic engine, fixed
+  // text → fixed scores): A-vs-B (pain-led hook wins) twice so winner/runner-up
+  // profiles have a stable sample of 2.
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const [a, b] = seeded.json;
+  const first = await call("POST", "/api/comparisons", { asset_ids: [a.id, b.id], objective: "insights one" }, headers);
+  assert.equal(first.statusCode, 200);
+  const second = await call("POST", "/api/comparisons", { asset_ids: [a.id, b.id], objective: "insights two" }, headers);
+  assert.equal(second.statusCode, 200);
+  const winnerId = first.json.recommendation.winner_asset_id;
+  const loserId = first.json.variants.find((v) => v.asset.id !== winnerId).asset.id;
+
+  // Outcomes: the model's winner is the real best in comparison 1 ($300 spend,
+  // aligned); the loser wins comparison 2 ($100 spend, misaligned).
+  await call("POST", `/api/comparisons/${first.json.id}/outcomes`,
+    { asset_id: winnerId, spend: 300, revenue: 900, impressions: 1000, clicks: 50, conversions: 10 }, headers);
+  await call("POST", `/api/comparisons/${second.json.id}/outcomes`,
+    { asset_id: loserId, spend: 100, revenue: 500, impressions: 800, clicks: 40, conversions: 8 }, headers);
+
+  // Mark one shipped so the decision mix counts it.
+  await call("PATCH", `/api/comparisons/${first.json.id}`, { decision_status: "shipped" }, headers);
+
+  const insights = await call("GET", "/api/insights", null, headers);
+  assert.equal(insights.statusCode, 200);
+  const body = insights.json;
+
+  assert.equal(body.sample.decisions, 2);
+  assert.equal(body.sample.decisions_with_outcomes, 2);
+  assert.equal(body.decision_mix.total_decisions, 2);
+  assert.equal(body.decision_mix.shipped, 1);
+  assert.ok(body.decision_mix.average_confidence > 0);
+
+  // Winner profile covers every dimension; the hook edge must be positive
+  // (the pain-led hook beats the generic story on hook by construction).
+  assert.equal(body.winner_profile.length, 10);
+  const hookRow = body.winner_profile.find((row) => row.dimension === "hook");
+  assert.ok(hookRow.winner_avg > hookRow.runner_up_avg, "winners out-hook runners-up");
+  assert.ok(hookRow.edge > 0);
+  const loadRow = body.winner_profile.find((row) => row.dimension === "cognitive_load");
+  assert.equal(loadRow.lower_is_better, true);
+
+  // Predictive power: hook picked the same variant both times, and it matched
+  // the real outcome only in comparison 1 → 1/2.
+  const hookPower = body.dimension_predictive_power.find((row) => row.dimension === "hook");
+  assert.equal(hookPower.evaluated, 2);
+  assert.equal(hookPower.aligned, 1);
+  assert.equal(hookPower.rate, 0.5);
+
+  // Spend-weighted alignment: $300 of $400 was on the aligned call.
+  assert.equal(body.spend.total, 400);
+  assert.equal(body.spend.on_aligned_decisions, 300);
+  assert.equal(body.spend.aligned_share, 0.75);
+
+  // Copy signals are rates in [0, 1] for both cohorts.
+  for (const signal of body.copy_signals) {
+    assert.ok(signal.winner_rate >= 0 && signal.winner_rate <= 1);
+    assert.ok(signal.runner_up_rate >= 0 && signal.runner_up_rate <= 1);
+  }
+});
+
 test("annotates a decision with label, notes, status, and pin via PATCH", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

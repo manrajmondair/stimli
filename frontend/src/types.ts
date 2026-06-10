@@ -276,6 +276,30 @@ export type BillingStatus = {
   plans: Plan[];
 };
 
+export type InsightDimensionProfile = {
+  dimension: string;
+  lower_is_better: boolean;
+  winner_avg: number | null;
+  runner_up_avg: number | null;
+  edge: number | null;
+};
+
+export type CreativeInsights = {
+  sample: { decisions: number; decisions_with_outcomes: number; outcomes: number };
+  decision_mix: {
+    total_decisions: number;
+    ship: number;
+    revise: number;
+    average_confidence: number;
+    shipped: number;
+    killed: number;
+  };
+  winner_profile: InsightDimensionProfile[];
+  dimension_predictive_power: Array<{ dimension: string; evaluated: number; aligned: number; rate: number | null }>;
+  copy_signals: Array<{ signal: string; label: string; winner_rate: number | null; runner_up_rate: number | null }>;
+  spend: { total: number; on_aligned_decisions: number; aligned_share: number | null };
+};
+
 export type Report = {
   comparison_id: string;
   title: string;

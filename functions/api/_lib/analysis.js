@@ -161,6 +161,21 @@ export async function compareAssets(comparisonId, objective, assets, createdAt, 
   return compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief);
 }
 
+// Deterministic lexical fingerprint of a creative's text, used by the insights
+// rollup to contrast winning vs losing copy. Mirrors the positions the scoring
+// heuristics look at: hooks live in the first 24 words, CTAs in the last 40.
+export function creativeTextSignals(text) {
+  const words = tokenize(text || "");
+  const first = words.slice(0, 24);
+  const last = words.slice(-40);
+  return {
+    hook_word: first.some((word) => hookWords.has(word)),
+    number_open: first.some((word) => /\d/.test(word)),
+    cta_word: last.some((word) => ctaWords.has(word)),
+    proof_word: words.some((word) => proofWords.has(word))
+  };
+}
+
 export async function compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief = {}, brainByAssetId = {}) {
   // Snapshot the env reference at entry. Module-level _env can be overwritten
   // by a concurrent request's configureAnalysis call between the time we

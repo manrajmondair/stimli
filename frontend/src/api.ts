@@ -11,6 +11,7 @@ import type {
   ChallengerResponse,
   Comparison,
   CreativeBrief,
+  CreativeInsights,
   DecisionStatus,
   GovernancePolicy,
   GovernanceRequest,
@@ -249,6 +250,11 @@ export async function createChallenger(
 
 export async function getLearningSummary(): Promise<LearningSummary> {
   const response = await fetch(`${API_BASE}/learning/summary`, { headers: await workspaceHeaders() });
+  return parseResponse(response);
+}
+
+export async function getCreativeInsights(): Promise<CreativeInsights> {
+  const response = await fetch(`${API_BASE}/insights`, { headers: await workspaceHeaders() });
   return parseResponse(response);
 }
 

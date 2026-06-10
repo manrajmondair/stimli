@@ -19,6 +19,7 @@ import {
   compareAssetsWithBrain,
   configureAnalysis,
   createPendingComparison,
+  creativeTextSignals,
   extractAssetText,
   generateChallenger,
   getBrainJob,
@@ -224,6 +225,15 @@ export async function onRequest(context) {
     if (request.method === "GET" && apiPath === "/learning/summary") {
       const [outcomes, comparisons] = await Promise.all([listOutcomes(null, workspaceId), listComparisons(workspaceId)]);
       return sendJson(200, learningSummary(outcomes, comparisons), headers, cookies);
+    }
+
+    if (request.method === "GET" && apiPath === "/insights") {
+      // Deterministic analytics rollup over the workspace's accumulated
+      // decisions + outcomes — what winning creative looks like, which score
+      // dimensions actually predict launch results, and the copy patterns that
+      // separate winners from runners-up.
+      const [outcomes, comparisons] = await Promise.all([listOutcomes(null, workspaceId), listComparisons(workspaceId)]);
+      return sendJson(200, creativeInsights(comparisons, outcomes), headers, cookies);
     }
 
     if (request.method === "GET" && apiPath === "/outcomes") {
@@ -1755,6 +1765,160 @@ function calibrationEvaluations(outcomes, comparisons) {
       };
     })
     .filter(Boolean);
+}
+
+// Score dimensions the insights rollup profiles. cognitive_load is the one
+// where LOWER is better — every consumer below special-cases it.
+const INSIGHT_DIMENSIONS = [
+  "hook",
+  "clarity",
+  "cta",
+  "brand_cue",
+  "pacing",
+  "offer_strength",
+  "audience_fit",
+  "neural_attention",
+  "memory",
+  "cognitive_load"
+];
+
+// Deterministic aggregation over completed comparisons + logged outcomes.
+// Three lenses: (1) what the model's winners look like vs their runners-up,
+// (2) which dimensions actually predicted the best real-world outcome,
+// (3) which copy patterns separate winners from runners-up. Pure math over
+// existing data — no LLM, no randomness, reproducible for tests.
+function creativeInsights(comparisons, outcomes) {
+  const completed = comparisons.filter(
+    (comparison) => comparison.status === "complete" && comparison.recommendation?.winner_asset_id
+  );
+
+  const decisionMix = {
+    total_decisions: completed.length,
+    ship: completed.filter((c) => c.recommendation.verdict === "ship").length,
+    revise: completed.filter((c) => c.recommendation.verdict !== "ship").length,
+    average_confidence: completed.length
+      ? round(completed.reduce((sum, c) => sum + (Number(c.recommendation.confidence) || 0), 0) / completed.length, 3)
+      : 0,
+    shipped: comparisons.filter((c) => c.decision_status === "shipped").length,
+    killed: comparisons.filter((c) => c.decision_status === "killed").length
+  };
+
+  // Winner vs runner-up dimension profile.
+  const winnerScores = [];
+  const runnerUpScores = [];
+  const winnerSignals = [];
+  const runnerUpSignals = [];
+  for (const comparison of completed) {
+    const ranked = [...(comparison.variants || [])].sort((a, b) => a.rank - b.rank);
+    if (ranked[0]?.analysis?.scores) {
+      winnerScores.push(ranked[0].analysis.scores);
+      winnerSignals.push(creativeTextSignals(ranked[0].asset?.extracted_text || ""));
+    }
+    if (ranked[1]?.analysis?.scores) {
+      runnerUpScores.push(ranked[1].analysis.scores);
+      runnerUpSignals.push(creativeTextSignals(ranked[1].asset?.extracted_text || ""));
+    }
+  }
+  const avgDim = (rows, dim) =>
+    rows.length ? round(rows.reduce((sum, scores) => sum + (Number(scores[dim]) || 0), 0) / rows.length, 1) : null;
+  const winnerProfile = INSIGHT_DIMENSIONS.map((dimension) => {
+    const winnerAvg = avgDim(winnerScores, dimension);
+    const runnerUpAvg = avgDim(runnerUpScores, dimension);
+    return {
+      dimension,
+      lower_is_better: dimension === "cognitive_load",
+      winner_avg: winnerAvg,
+      runner_up_avg: runnerUpAvg,
+      edge: winnerAvg !== null && runnerUpAvg !== null ? round(winnerAvg - runnerUpAvg, 1) : null
+    };
+  });
+
+  // Which dimensions predicted the actual best outcome. For each comparison
+  // with logged outcomes, the "dimension's pick" is the variant with the best
+  // score on that dimension (lowest for cognitive_load); it's aligned when
+  // that pick matches the outcome-ranked best asset.
+  const outcomesByComparison = new Map();
+  for (const outcome of outcomes) {
+    if (!outcomesByComparison.has(outcome.comparison_id)) {
+      outcomesByComparison.set(outcome.comparison_id, []);
+    }
+    outcomesByComparison.get(outcome.comparison_id).push(outcome);
+  }
+  const power = new Map(INSIGHT_DIMENSIONS.map((dim) => [dim, { evaluated: 0, aligned: 0 }]));
+  let spendTotal = 0;
+  let spendAligned = 0;
+  for (const comparison of completed) {
+    const comparisonOutcomes = outcomesByComparison.get(comparison.id) || [];
+    if (!comparisonOutcomes.length) continue;
+    const actualBest = [...comparisonOutcomes].sort(outcomeRank)[0];
+    const comparisonSpend = comparisonOutcomes.reduce((sum, o) => sum + (Number(o.spend) || 0), 0);
+    spendTotal += comparisonSpend;
+    if (actualBest.asset_id === comparison.recommendation.winner_asset_id) {
+      spendAligned += comparisonSpend;
+    }
+    for (const dimension of INSIGHT_DIMENSIONS) {
+      const lowerIsBetter = dimension === "cognitive_load";
+      let pick = null;
+      let pickValue = null;
+      for (const variant of comparison.variants || []) {
+        const value = Number(variant.analysis?.scores?.[dimension]);
+        if (!Number.isFinite(value)) continue;
+        if (pickValue === null || (lowerIsBetter ? value < pickValue : value > pickValue)) {
+          pickValue = value;
+          pick = variant.asset?.id || null;
+        }
+      }
+      if (!pick) continue;
+      const entry = power.get(dimension);
+      entry.evaluated += 1;
+      if (pick === actualBest.asset_id) entry.aligned += 1;
+    }
+  }
+  const predictivePower = INSIGHT_DIMENSIONS.map((dimension) => {
+    const entry = power.get(dimension);
+    return {
+      dimension,
+      evaluated: entry.evaluated,
+      aligned: entry.aligned,
+      rate: entry.evaluated ? round(entry.aligned / entry.evaluated, 3) : null
+    };
+  });
+
+  const signalRate = (rows, key) =>
+    rows.length ? round(rows.filter((signals) => signals[key]).length / rows.length, 3) : null;
+  const copySignals = [
+    { signal: "hook_word_open", label: "Opens with a hook word" },
+    { signal: "number_open", label: "Opens with a number" },
+    { signal: "cta_word_close", label: "Closes with a CTA verb" },
+    { signal: "proof_word", label: "Contains proof language" }
+  ].map(({ signal, label }) => {
+    const key = signal === "hook_word_open" ? "hook_word" : signal === "cta_word_close" ? "cta_word" : signal;
+    return {
+      signal,
+      label,
+      winner_rate: signalRate(winnerSignals, key),
+      runner_up_rate: signalRate(runnerUpSignals, key)
+    };
+  });
+
+  return {
+    sample: {
+      decisions: completed.length,
+      decisions_with_outcomes: [...outcomesByComparison.keys()].filter((id) =>
+        completed.some((c) => c.id === id)
+      ).length,
+      outcomes: outcomes.length
+    },
+    decision_mix: decisionMix,
+    winner_profile: winnerProfile,
+    dimension_predictive_power: predictivePower,
+    copy_signals: copySignals,
+    spend: {
+      total: round(spendTotal, 2),
+      on_aligned_decisions: round(spendAligned, 2),
+      aligned_share: spendTotal ? round(spendAligned / spendTotal, 3) : null
+    }
+  };
 }
 
 function calibrationSummary(outcomes, comparisons) {

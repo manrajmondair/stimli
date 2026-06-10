@@ -12,6 +12,7 @@ import {
   exportBrandProfile,
   getBillingStatus,
   getBillingUsage,
+  getCreativeInsights,
   getInvite,
   getLearningSummary,
   getSession,
@@ -41,6 +42,7 @@ import type {
   BrandProfile,
   Comparison,
   CreativeBrief,
+  CreativeInsights,
   LearningSummary,
   LibraryAsset,
   OutcomeCreate,
@@ -2264,6 +2266,7 @@ function OutcomesView() {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [outcomes, setOutcomes] = useState<WorkspaceOutcome[]>([]);
   const [comparisons, setComparisons] = useState<Comparison[]>([]);
+  const [insights, setInsights] = useState<CreativeInsights | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [logOpen, setLogOpen] = useState(false);
@@ -2292,14 +2295,18 @@ function OutcomesView() {
     setLoading(true);
     setError(null);
     try {
-      const [s, o, c] = await Promise.all([
+      const [s, o, c, ins] = await Promise.all([
         getLearningSummary(),
         listWorkspaceOutcomes().catch(() => [] as WorkspaceOutcome[]),
-        listComparisons().catch(() => [] as Comparison[])
+        listComparisons().catch(() => [] as Comparison[]),
+        // Insights are additive — an older API without the route shouldn't
+        // break the whole view.
+        getCreativeInsights().catch(() => null)
       ]);
       setSummary(s);
       setOutcomes(o);
       setComparisons(c);
+      setInsights(ins);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load outcomes.");
     } finally {
@@ -2312,13 +2319,15 @@ function OutcomesView() {
     Promise.all([
       getLearningSummary(),
       listWorkspaceOutcomes().catch(() => [] as WorkspaceOutcome[]),
-      listComparisons().catch(() => [] as Comparison[])
+      listComparisons().catch(() => [] as Comparison[]),
+      getCreativeInsights().catch(() => null)
     ])
-      .then(([s, o, c]) => {
+      .then(([s, o, c, ins]) => {
         if (cancelled) return;
         setSummary(s);
         setOutcomes(o);
         setComparisons(c);
+        setInsights(ins);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -2503,6 +2512,10 @@ function OutcomesView() {
             </div>
           ) : null}
 
+          {insights && insights.sample.decisions >= 2 ? (
+            <CreativeInsightsPanel insights={insights} />
+          ) : null}
+
           <div className="panel-card">
             <div className="panel-head">
               <h3>Recent outcomes</h3>
@@ -2591,6 +2604,160 @@ function OutcomesView() {
 
       <ToastBar toast={toast} onDismiss={dismiss} />
     </>
+  );
+}
+
+// Renders the deterministic insights rollup: what winning creative looks like,
+// which dimensions actually predicted launch outcomes, and the copy patterns
+// separating winners from runners-up. Sections appear only once they have
+// enough sample to mean something.
+function CreativeInsightsPanel({ insights }: { insights: CreativeInsights }) {
+  const dimLabel = (dimension: string) =>
+    ({
+      hook: "Hook",
+      clarity: "Clarity",
+      cta: "CTA",
+      brand_cue: "Brand cue",
+      pacing: "Pacing",
+      offer_strength: "Offer",
+      audience_fit: "Audience fit",
+      neural_attention: "Attention",
+      memory: "Memory",
+      cognitive_load: "Cognitive load"
+    })[dimension] || dimension;
+
+  // Top dimension edges, largest absolute separation first.
+  const edges = insights.winner_profile
+    .filter((row) => row.edge !== null)
+    .sort((a, b) => Math.abs(b.edge ?? 0) - Math.abs(a.edge ?? 0))
+    .slice(0, 5);
+  const power = insights.dimension_predictive_power
+    .filter((row) => row.evaluated > 0 && row.rate !== null)
+    .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))
+    .slice(0, 5);
+  const signals = insights.copy_signals.filter(
+    (row) => row.winner_rate !== null && row.runner_up_rate !== null
+  );
+
+  return (
+    <div className="panel-card">
+      <div className="panel-head">
+        <h3>Creative insights</h3>
+        <span className="kicker">
+          {insights.sample.decisions} decisions · {insights.sample.decisions_with_outcomes} with outcomes
+        </span>
+      </div>
+      <div className="metric-grid">
+        <div className="metric">
+          <span>Ship rate</span>
+          <strong>
+            {insights.decision_mix.total_decisions
+              ? Math.round((insights.decision_mix.ship / insights.decision_mix.total_decisions) * 100)
+              : 0}
+            %
+          </strong>
+        </div>
+        <div className="metric">
+          <span>Avg confidence</span>
+          <strong>{Math.round(insights.decision_mix.average_confidence * 100)}%</strong>
+        </div>
+        <div className="metric">
+          <span>Shipped / killed</span>
+          <strong>
+            {insights.decision_mix.shipped} / {insights.decision_mix.killed}
+          </strong>
+        </div>
+        {insights.spend.aligned_share !== null ? (
+          <div className="metric">
+            <span>Spend on aligned calls</span>
+            <strong>{Math.round(insights.spend.aligned_share * 100)}%</strong>
+          </div>
+        ) : null}
+      </div>
+
+      {edges.length ? (
+        <div className="table-scroll" style={{ marginTop: 16 }}>
+          <table className="simple-table">
+            <thead>
+              <tr>
+                <th>What winners score higher on</th>
+                <th>Winners</th>
+                <th>Runners-up</th>
+                <th>Edge</th>
+              </tr>
+            </thead>
+            <tbody>
+              {edges.map((row) => (
+                <tr key={row.dimension}>
+                  <td>
+                    {dimLabel(row.dimension)}
+                    {row.lower_is_better ? <span className="hint"> (lower wins)</span> : null}
+                  </td>
+                  <td>{row.winner_avg}</td>
+                  <td>{row.runner_up_avg}</td>
+                  <td>
+                    {(row.edge ?? 0) > 0 ? "+" : ""}
+                    {row.edge}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {power.length ? (
+        <div className="table-scroll" style={{ marginTop: 16 }}>
+          <table className="simple-table">
+            <thead>
+              <tr>
+                <th>Dimension → real-outcome hit rate</th>
+                <th>Hits</th>
+                <th>Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {power.map((row) => (
+                <tr key={row.dimension}>
+                  <td>{dimLabel(row.dimension)}</td>
+                  <td>
+                    {row.aligned}/{row.evaluated}
+                  </td>
+                  <td>{Math.round((row.rate ?? 0) * 100)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="hint" style={{ marginTop: 12 }}>
+          Log launch outcomes to see which score dimensions actually predict your results.
+        </p>
+      )}
+
+      {signals.length ? (
+        <div className="table-scroll" style={{ marginTop: 16 }}>
+          <table className="simple-table">
+            <thead>
+              <tr>
+                <th>Copy pattern</th>
+                <th>Winners</th>
+                <th>Runners-up</th>
+              </tr>
+            </thead>
+            <tbody>
+              {signals.map((row) => (
+                <tr key={row.signal}>
+                  <td>{row.label}</td>
+                  <td>{Math.round((row.winner_rate ?? 0) * 100)}%</td>
+                  <td>{Math.round((row.runner_up_rate ?? 0) * 100)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
