@@ -513,3 +513,60 @@ def test_outcome_metrics_must_be_non_negative():
 
     assert outcome.status_code == 400
     assert "spend must be a non-negative number" in outcome.json()["detail"]
+
+
+def test_core_workbench_routes_exist_locally():
+    # The Workbench's delete / cancel / share / outcomes buttons all work against
+    # the serverless API; the local backend must implement the same subset so
+    # Path B (Vite + FastAPI) dev doesn't dead-end with 404/405s.
+    seeded = client.post("/demo/seed").json()
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Exercise core routes."},
+    ).json()
+
+    # Cancel is a no-op on a terminal comparison and returns the current state.
+    cancelled = client.post(f"/comparisons/{comparison['id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "complete"
+
+    # Share link mints a token that resolves to the report without auth headers.
+    share = client.post(f"/reports/{comparison['id']}/share")
+    assert share.status_code == 200
+    link = share.json()
+    assert link["path"] == f"/share/{link['token']}"
+    shared = client.get(f"/share/{link['token']}")
+    assert shared.status_code == 200
+    assert shared.json()["comparison_id"] == comparison["id"]
+
+    # Workspace-wide outcomes list joins comparison + asset context in.
+    outcome = client.post(
+        f"/comparisons/{comparison['id']}/outcomes",
+        json={
+            "asset_id": comparison["recommendation"]["winner_asset_id"],
+            "spend": 100,
+            "impressions": 1000,
+            "clicks": 50,
+            "conversions": 5,
+            "revenue": 250,
+        },
+    )
+    assert outcome.status_code == 200
+    workspace_outcomes = client.get("/outcomes")
+    assert workspace_outcomes.status_code == 200
+    rows = workspace_outcomes.json()
+    row = next(item for item in rows if item["comparison_id"] == comparison["id"])
+    assert row["comparison_objective"] == "Exercise core routes."
+    assert row["asset_name"]
+    assert row["profit"] == 150.0
+
+    # Delete cascades: comparison, its outcomes, and its share link all go.
+    deleted = client.delete(f"/comparisons/{comparison['id']}")
+    assert deleted.status_code == 200
+    assert client.get(f"/comparisons/{comparison['id']}").status_code == 404
+    assert client.get(f"/share/{link['token']}").status_code == 404
+    remaining = client.get("/outcomes").json()
+    assert all(item["comparison_id"] != comparison["id"] for item in remaining)
+
+    # Deleting again is a clean 404, not a 405.
+    assert client.delete(f"/comparisons/{comparison['id']}").status_code == 404

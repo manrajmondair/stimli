@@ -20,7 +20,11 @@ class CreativeAnalyzer:
 
     def analyze(self, asset: Asset, brief: CreativeBrief | None = None) -> AnalysisRun:
         brief = brief or CreativeBrief()
-        words = _words(asset.extracted_text or asset.name or asset.source_url or "")
+        # Use the SAME fallback string for tokenization and clarity so the
+        # sentence count isn't taken from a different text than the word list —
+        # mirrors analysis.js, which passes one `text` to both.
+        text = asset.extracted_text or asset.name or asset.source_url or ""
+        words = _words(text)
         timeline = self.provider.predict(asset) or FixtureBrainResponseProvider().predict(asset)
         neural_attention = mean(point.attention for point in timeline)
         memory = mean(point.memory for point in timeline)
@@ -28,7 +32,7 @@ class CreativeAnalyzer:
         scores = ScoreBreakdown(
             overall=0,
             hook=_hook_score(words),
-            clarity=_clarity_score(asset.extracted_text, words),
+            clarity=_clarity_score(text, words),
             cta=_cta_score(words),
             brand_cue=_brand_score(words, asset, brief),
             pacing=_pacing_score(asset, words),

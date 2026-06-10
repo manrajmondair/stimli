@@ -71,6 +71,17 @@ class Store:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS share_links (
+                    token TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL DEFAULT 'public',
+                    comparison_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             self._ensure_column(conn, "assets", "workspace_id", "TEXT NOT NULL DEFAULT 'public'")
             self._ensure_column(conn, "comparisons", "workspace_id", "TEXT NOT NULL DEFAULT 'public'")
             self._ensure_column(conn, "outcomes", "workspace_id", "TEXT NOT NULL DEFAULT 'public'")
@@ -155,6 +166,36 @@ class Store:
                     (workspace_id,),
                 ).fetchall()
         return [Outcome.model_validate_json(row["payload"]) for row in rows]
+
+    def delete_comparison(self, comparison_id: str, workspace_id: str = "public") -> bool:
+        # Cascade outcomes and share links with the parent so nothing dangles —
+        # mirrors the serverless deleteComparison.
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM comparisons WHERE id = ? AND workspace_id = ?",
+                (comparison_id, workspace_id),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM comparisons WHERE id = ? AND workspace_id = ?", (comparison_id, workspace_id))
+            conn.execute("DELETE FROM outcomes WHERE comparison_id = ?", (comparison_id,))
+            conn.execute("DELETE FROM share_links WHERE comparison_id = ?", (comparison_id,))
+        return True
+
+    def save_share_link(self, token: str, comparison_id: str, workspace_id: str, expires_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO share_links (token, workspace_id, comparison_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                (token, workspace_id, comparison_id, expires_at, now_iso()),
+            )
+
+    def get_share_link(self, token: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT token, workspace_id, comparison_id, expires_at FROM share_links WHERE token = ?",
+                (token,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def clear_demo_assets(self, workspace_id: str = "public") -> None:
         with self._connect() as conn:

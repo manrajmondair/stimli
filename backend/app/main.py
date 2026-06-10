@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import os
+import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,6 +29,8 @@ from app.models import (
     OutcomeCreate,
     PublicAsset,
     Report,
+    ShareLink,
+    WorkspaceOutcome,
 )
 from app.storage import UPLOAD_DIR, Store, new_id, now_iso
 
@@ -167,6 +171,84 @@ def list_comparisons(request: Request) -> list[Comparison]:
 @app.get("/comparisons/{comparison_id}", response_model=Comparison)
 def get_comparison(comparison_id: str, request: Request) -> Comparison:
     return _get_comparison(comparison_id, _workspace_id(request))
+
+
+@app.delete("/comparisons/{comparison_id}")
+def delete_comparison(comparison_id: str, request: Request) -> dict[str, str]:
+    if not store.delete_comparison(comparison_id, _workspace_id(request)):
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    return {"deleted": comparison_id}
+
+
+@app.post("/comparisons/{comparison_id}/cancel", response_model=Comparison)
+def cancel_comparison(comparison_id: str, request: Request) -> Comparison:
+    # Local comparisons run synchronously and are always terminal by the time
+    # this endpoint can be called, so cancel is a no-op that returns the current
+    # state — the same behavior the serverless API has for terminal comparisons.
+    return _get_comparison(comparison_id, _workspace_id(request))
+
+
+@app.post("/reports/{comparison_id}/share", response_model=ShareLink)
+def create_share_link(comparison_id: str, request: Request) -> ShareLink:
+    workspace_id = _workspace_id(request)
+    _get_comparison(comparison_id, workspace_id)
+    token = secrets.token_urlsafe(18)
+    ttl_days = 14
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
+    store.save_share_link(token, comparison_id, workspace_id, expires_at)
+    return ShareLink(
+        token=token,
+        path=f"/share/{token}",
+        api_path=f"/api/share/{token}",
+        url=None,
+        expires_at=expires_at,
+    )
+
+
+@app.get("/share/{token}", response_model=Report)
+def get_shared_report(token: str) -> Report:
+    link = store.get_share_link(token)
+    if not link:
+        raise HTTPException(status_code=404, detail="Shared report not found")
+    expires_at = link.get("expires_at") or ""
+    try:
+        expired = datetime.fromisoformat(expires_at) < datetime.now(timezone.utc)
+    except ValueError:
+        expired = True
+    if expired:
+        raise HTTPException(status_code=404, detail="Shared report not found")
+    try:
+        return _report_for_comparison(link["comparison_id"], link["workspace_id"])
+    except HTTPException as exc:
+        # Collapse internal states to a uniform 404 so an anonymous token holder
+        # can't distinguish deleted from never-existed — same as the serverless
+        # shared-report route.
+        if exc.status_code in {404, 409}:
+            raise HTTPException(status_code=404, detail="Shared report not found") from exc
+        raise
+
+
+@app.get("/outcomes", response_model=list[WorkspaceOutcome])
+def list_workspace_outcomes(request: Request) -> list[WorkspaceOutcome]:
+    workspace_id = _workspace_id(request)
+    outcomes = store.list_outcomes(workspace_id=workspace_id)
+    comparisons = {comparison.id: comparison for comparison in store.list_comparisons(workspace_id)}
+    enriched = []
+    for outcome in outcomes:
+        comparison = comparisons.get(outcome.comparison_id)
+        variant = None
+        if comparison:
+            variant = next((v for v in comparison.variants if v.asset.id == outcome.asset_id), None)
+        enriched.append(
+            WorkspaceOutcome(
+                **outcome.model_dump(),
+                comparison_objective=comparison.objective if comparison else None,
+                comparison_status=comparison.status if comparison else None,
+                asset_name=variant.asset.name if variant else None,
+                profit=round(outcome.revenue - outcome.spend, 2),
+            )
+        )
+    return enriched
 
 
 @app.get("/reports/{comparison_id}", response_model=Report)

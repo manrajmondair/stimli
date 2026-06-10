@@ -198,3 +198,20 @@ class Report(BaseModel):
     next_steps: list[str]
     brief: CreativeBrief = Field(default_factory=CreativeBrief)
     learning_summary: LearningSummary | None = None
+
+
+class ShareLink(BaseModel):
+    token: str
+    path: str
+    api_path: str
+    url: str | None = None
+    expires_at: str
+
+
+class WorkspaceOutcome(Outcome):
+    # /outcomes joins comparison + asset context in so the Outcomes view can
+    # render a table without N+1 lookups — same shape as the serverless API.
+    comparison_objective: str | None = None
+    comparison_status: str | None = None
+    asset_name: str | None = None
+    profit: float | None = None
