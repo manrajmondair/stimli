@@ -70,6 +70,15 @@ export function wordDiff(fromText: string, toText: string): DiffOp[] {
   return ops;
 }
 
+// True when either side exceeds the MAX_TOKENS clamp — callers should tell the
+// user the diff covers only the first MAX_TOKENS words instead of presenting a
+// silently truncated comparison as complete.
+export function diffTruncated(fromText: string, toText: string): boolean {
+  return tokenize(fromText).length > MAX_TOKENS || tokenize(toText).length > MAX_TOKENS;
+}
+
+export const DIFF_MAX_TOKENS = MAX_TOKENS;
+
 // Summary counts for a diff, used for the disclosure label ("+12 / −8 words").
 export function diffStats(ops: DiffOp[]): { added: number; removed: number } {
   let added = 0;

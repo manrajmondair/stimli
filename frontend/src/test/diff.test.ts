@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffStats, wordDiff, type DiffOp } from "../diff";
+import { DIFF_MAX_TOKENS, diffStats, diffTruncated, wordDiff, type DiffOp } from "../diff";
 
 function render(ops: DiffOp[]): string {
   return ops
@@ -56,6 +56,19 @@ describe("wordDiff", () => {
       { kind: "same", text: "ignored words here" }
     ]);
     expect(stats).toEqual({ added: 3, removed: 2 });
+  });
+
+  it("reports truncation when either side exceeds the clamp", () => {
+    const short = "a few words";
+    const long = Array.from({ length: DIFF_MAX_TOKENS + 1 }, (_, i) => `w${i}`).join(" ");
+    expect(diffTruncated(short, short)).toBe(false);
+    expect(diffTruncated(long, short)).toBe(true);
+    expect(diffTruncated(short, long)).toBe(true);
+  });
+
+  it("treats whitespace-only differences as identical", () => {
+    const ops = wordDiff("buy  now\nplease", "buy now please");
+    expect(diffStats(ops)).toEqual({ added: 0, removed: 0 });
   });
 
   it("stays fast and bounded on long inputs", () => {

@@ -32,7 +32,7 @@ import type {
   VariantResult
 } from "./types";
 import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
-import { diffStats, wordDiff } from "./diff";
+import { DIFF_MAX_TOKENS, diffStats, diffTruncated, wordDiff } from "./diff";
 
 function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
   return workspaceKey && workspaceKey !== "anonymous"
@@ -2545,46 +2545,62 @@ function CopyDiffCard({ winner, variant }: { winner: VariantResult; variant: Var
   const winnerText = (winner.asset.extracted_text || "").trim();
   const variantText = (variant.asset.extracted_text || "").trim();
   const ops = useMemo(() => wordDiff(variantText, winnerText), [variantText, winnerText]);
-  if (!winnerText || !variantText || winnerText === variantText) return null;
   const stats = diffStats(ops);
+  // Bail on the OPS, not the raw strings: texts differing only in internal
+  // whitespace tokenize identically and would otherwise render a contentless
+  // "+0 / −0 words" card.
+  if (!winnerText || !variantText || (stats.added === 0 && stats.removed === 0)) return null;
+  const truncated = diffTruncated(variantText, winnerText);
   const winnerName = winner.asset.name.split("·")[0]?.trim() ?? winner.asset.name;
   const variantName = variant.asset.name.split("·")[0]?.trim() ?? variant.asset.name;
   return (
-    <div className="panel-card" data-testid="copy-diff" style={{ marginTop: 14 }}>
+    // No inline margin: the result column is a flex stack with its own gap, and
+    // an extra margin stacks on top of it, detaching this card from the hero.
+    <div className="panel-card" data-testid="copy-diff">
       <div className="panel-head">
         <h3 style={{ fontSize: 15 }}>{`Copy diff · ${variantName} → ${winnerName}`}</h3>
         <span className="kicker">{`+${stats.added} / −${stats.removed} words`}</span>
       </div>
       <p style={{ lineHeight: 1.75, margin: 0 }}>
         {ops.map((op, index) =>
+          // Separator spaces live OUTSIDE the styled elements so the highlight
+          // and strikethrough end exactly at each run's last word.
           op.kind === "same" ? (
-            <span key={index}>{op.text} </span>
+            <span key={index}>{op.text}{" "}</span>
           ) : op.kind === "added" ? (
-            <ins
-              key={index}
-              style={{
-                background: "var(--pistachio-soft, #e3eed3)",
-                textDecoration: "none",
-                borderRadius: 4,
-                padding: "0 3px"
-              }}
-              title="Only in the winner"
-            >
-              {op.text}{" "}
-            </ins>
+            <span key={index}>
+              <ins
+                style={{
+                  background: "var(--pistachio-soft, #e3eed3)",
+                  // Keep the UA underline: the background tint alone is a
+                  // color-only signal (WCAG 1.4.1) and vanishes entirely in
+                  // forced-colors mode.
+                  textDecoration: "underline",
+                  borderRadius: 4,
+                  padding: "0 3px"
+                }}
+                title="Only in the winner"
+              >
+                <span className="sr-only">winner adds: </span>
+                {op.text}
+              </ins>{" "}
+            </span>
           ) : (
-            <del
-              key={index}
-              style={{ color: "var(--ink-soft)", borderRadius: 4, padding: "0 3px" }}
-              title="Only in this variant"
-            >
-              {op.text}{" "}
-            </del>
+            <span key={index}>
+              <del
+                style={{ color: "var(--ink-soft)", borderRadius: 4, padding: "0 3px" }}
+                title="Only in this variant"
+              >
+                <span className="sr-only">this variant only: </span>
+                {op.text}
+              </del>{" "}
+            </span>
           )
         )}
       </p>
       <p className="hint" style={{ marginTop: 10 }}>
-        Highlighted words appear only in the winner; struck words only in this variant.
+        Underlined words appear only in the winner; struck words only in this variant.
+        {truncated ? ` Diff covers the first ${DIFF_MAX_TOKENS} words of each side.` : ""}
       </p>
     </div>
   );
