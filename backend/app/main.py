@@ -10,7 +10,7 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.analysis import CreativeAnalyzer, build_challenger_text
+from app.analysis import CreativeAnalyzer, build_challenger_text, creative_text_signals
 from app.brain import provider_health
 from app.extractor import BlockedLandingPageURL, extract_landing_page_text, normalize_public_url
 from app.models import (
@@ -185,9 +185,13 @@ def annotate_comparison(comparison_id: str, payload: DecisionMetaPatch, request:
         comparison.label = (provided["label"] or "").strip()[:120] or None
     if "notes" in provided:
         comparison.notes = (provided["notes"] or "").strip()[:2000] or None
-    if "decision_status" in provided and provided["decision_status"] is not None:
+    # Mirror the serverless contract exactly: an explicit null decision_status
+    # is rejected (it isn't a valid state), and pinned coerces null to false.
+    if "decision_status" in provided:
+        if provided["decision_status"] is None:
+            raise HTTPException(status_code=400, detail="decision_status must be pending, shipped, or killed.")
         comparison.decision_status = provided["decision_status"]
-    if "pinned" in provided and provided["pinned"] is not None:
+    if "pinned" in provided:
         comparison.pinned = bool(provided["pinned"])
     comparison.decision_updated_at = now_iso()
     store.save_comparison(comparison, workspace_id)
@@ -318,6 +322,9 @@ def _report_for_comparison(comparison_id: str, workspace_id: str) -> Report:
     return Report(
         comparison_id=comparison.id,
         title="Stimli Creative Decision Report",
+        label=comparison.label,
+        decision_status=comparison.decision_status,
+        decision_notes=comparison.notes,
         executive_summary=summary,
         recommendation=comparison.recommendation,
         variants=comparison.variants,
@@ -335,10 +342,20 @@ def _report_for_comparison(comparison_id: str, workspace_id: str) -> Report:
 @app.get("/reports/{comparison_id}/markdown")
 def get_markdown_report(comparison_id: str, request: Request) -> Response:
     report = _report_for_comparison(comparison_id, _workspace_id(request))
-    lines = [
-        f"# {report.title}",
+    lines = [f"# {report.title}"]
+    if report.label:
+        status_suffix = f" · {report.decision_status}" if report.decision_status else ""
+        lines.extend(["", f"**Decision:** {_md_cell(report.label)}{status_suffix}"])
+    lines.extend([
         "",
         report.executive_summary,
+    ])
+    if report.decision_notes:
+        # Blockquote each line so free-form notes can't inject document
+        # structure — same discipline as the serverless reportToMarkdown.
+        lines.extend(["", "## Decision Notes", ""])
+        lines.extend(f"> {line}" for line in str(report.decision_notes).splitlines())
+    lines.extend([
         "",
         "## Recommendation",
         "",
@@ -354,7 +371,7 @@ def get_markdown_report(comparison_id: str, request: Request) -> Response:
         "",
         "| Rank | Variant | Overall | Hook | CTA | Offer | Audience |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
+    ])
     for variant in report.variants:
         scores = variant.analysis.scores
         lines.append(
@@ -446,6 +463,149 @@ def list_comparison_outcomes(comparison_id: str, request: Request) -> list[Outco
 def learning_summary(request: Request) -> LearningSummary:
     workspace_id = _workspace_id(request)
     return _learning_summary(store.list_outcomes(workspace_id=workspace_id), store.list_comparisons(workspace_id))
+
+
+INSIGHT_DIMENSIONS = [
+    "hook",
+    "clarity",
+    "cta",
+    "brand_cue",
+    "pacing",
+    "offer_strength",
+    "audience_fit",
+    "neural_attention",
+    "memory",
+    "cognitive_load",
+]
+
+
+@app.get("/insights")
+def creative_insights(request: Request) -> dict[str, Any]:
+    # Mirrors the serverless GET /insights: deterministic aggregation over the
+    # workspace's comparisons + outcomes. Same math, same shape, so the
+    # Creative Insights panel works identically in local dev.
+    workspace_id = _workspace_id(request)
+    comparisons = store.list_comparisons(workspace_id)
+    outcomes = store.list_outcomes(workspace_id=workspace_id)
+    completed = [c for c in comparisons if c.status == "complete" and c.recommendation.winner_asset_id]
+
+    decision_mix = {
+        "total_decisions": len(completed),
+        "ship": sum(1 for c in completed if c.recommendation.verdict == "ship"),
+        "revise": sum(1 for c in completed if c.recommendation.verdict != "ship"),
+        "average_confidence": round(sum(c.recommendation.confidence for c in completed) / len(completed), 3) if completed else 0,
+        "shipped": sum(1 for c in comparisons if c.decision_status == "shipped"),
+        "killed": sum(1 for c in comparisons if c.decision_status == "killed"),
+    }
+
+    winner_scores = []
+    runner_up_scores = []
+    winner_signals = []
+    runner_up_signals = []
+    for comparison in completed:
+        ranked = sorted(comparison.variants, key=lambda v: v.rank)
+        if ranked:
+            winner_scores.append(ranked[0].analysis.scores)
+            winner_signals.append(creative_text_signals(ranked[0].asset.extracted_text or ""))
+        if len(ranked) > 1:
+            runner_up_scores.append(ranked[1].analysis.scores)
+            runner_up_signals.append(creative_text_signals(ranked[1].asset.extracted_text or ""))
+
+    def avg_dim(rows: list, dim: str) -> float | None:
+        return round(sum(getattr(s, dim, 0) or 0 for s in rows) / len(rows), 1) if rows else None
+
+    winner_profile = []
+    for dimension in INSIGHT_DIMENSIONS:
+        winner_avg = avg_dim(winner_scores, dimension)
+        runner_up_avg = avg_dim(runner_up_scores, dimension)
+        winner_profile.append(
+            {
+                "dimension": dimension,
+                "lower_is_better": dimension == "cognitive_load",
+                "winner_avg": winner_avg,
+                "runner_up_avg": runner_up_avg,
+                "edge": round(winner_avg - runner_up_avg, 1) if winner_avg is not None and runner_up_avg is not None else None,
+            }
+        )
+
+    outcomes_by_comparison: dict[str, list[Outcome]] = {}
+    for outcome in outcomes:
+        outcomes_by_comparison.setdefault(outcome.comparison_id, []).append(outcome)
+
+    power = {dim: {"evaluated": 0, "aligned": 0} for dim in INSIGHT_DIMENSIONS}
+    spend_total = 0.0
+    spend_aligned = 0.0
+    for comparison in completed:
+        rows = outcomes_by_comparison.get(comparison.id, [])
+        if not rows:
+            continue
+        actual_best = max(rows, key=_outcome_rank_key)
+        comparison_spend = sum(o.spend for o in rows)
+        spend_total += comparison_spend
+        if actual_best.asset_id == comparison.recommendation.winner_asset_id:
+            spend_aligned += comparison_spend
+        for dimension in INSIGHT_DIMENSIONS:
+            lower_is_better = dimension == "cognitive_load"
+            pick = None
+            pick_value = None
+            for variant in comparison.variants:
+                value = getattr(variant.analysis.scores, dimension, None)
+                if value is None:
+                    continue
+                if pick_value is None or (value < pick_value if lower_is_better else value > pick_value):
+                    pick_value = value
+                    pick = variant.asset.id
+            if pick is None:
+                continue
+            power[dimension]["evaluated"] += 1
+            if pick == actual_best.asset_id:
+                power[dimension]["aligned"] += 1
+
+    predictive_power = [
+        {
+            "dimension": dim,
+            "evaluated": power[dim]["evaluated"],
+            "aligned": power[dim]["aligned"],
+            "rate": round(power[dim]["aligned"] / power[dim]["evaluated"], 3) if power[dim]["evaluated"] else None,
+        }
+        for dim in INSIGHT_DIMENSIONS
+    ]
+
+    def signal_rate(rows: list[dict[str, bool]], key: str) -> float | None:
+        return round(sum(1 for s in rows if s[key]) / len(rows), 3) if rows else None
+
+    copy_signals = []
+    for signal, label, key in [
+        ("hook_word_open", "Opens with a hook word", "hook_word"),
+        ("number_open", "Opens with a number", "number_open"),
+        ("cta_word_close", "Closes with a CTA verb", "cta_word"),
+        ("proof_word", "Contains proof language", "proof_word"),
+    ]:
+        copy_signals.append(
+            {
+                "signal": signal,
+                "label": label,
+                "winner_rate": signal_rate(winner_signals, key),
+                "runner_up_rate": signal_rate(runner_up_signals, key),
+            }
+        )
+
+    return {
+        "sample": {
+            "decisions": len(completed),
+            "decisions_with_outcomes": sum(1 for c in completed if outcomes_by_comparison.get(c.id)),
+            "outcomes": len(outcomes),
+        },
+        "decision_mix": decision_mix,
+        "winner_profile": winner_profile,
+        "dimension_predictive_power": predictive_power,
+        "copy_signals": copy_signals,
+        "spend": {
+            "total": round(spend_total, 2),
+            "on_aligned_decisions": round(spend_aligned, 2),
+            "aligned_share": round(spend_aligned / spend_total, 3) if spend_total else None,
+        },
+    }
 
 
 @app.post("/demo/seed", response_model=list[PublicAsset])

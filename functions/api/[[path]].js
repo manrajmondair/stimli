@@ -1561,7 +1561,7 @@ async function refreshComparison(comparison, workspaceId) {
         }
       ])
     );
-    const completed = await compareAssetsWithBrain(
+    const rescored = await compareAssetsWithBrain(
       comparison.id,
       comparison.objective,
       assets,
@@ -1569,9 +1569,18 @@ async function refreshComparison(comparison, workspaceId) {
       comparison.brief,
       brainByAssetId
     );
-    completed.workspace_id = workspaceId;
-    completed.project_id = comparison.project_id || null;
-    completed.jobs = updatedJobs;
+    // Spread the prior row first so auxiliary payload fields written while the
+    // jobs were running survive completion — decision-register annotations
+    // (label/notes/decision_status/pinned), rerun_of, brand_profile_id. The
+    // failed/cancelled branches already preserve them the same way; rebuilding
+    // from the engine output alone silently wiped them.
+    const completed = {
+      ...comparison,
+      ...rescored,
+      workspace_id: workspaceId,
+      project_id: comparison.project_id || null,
+      jobs: updatedJobs
+    };
     await saveComparison(publicComparison(completed));
     return completed;
   }
@@ -2309,7 +2318,12 @@ function reportToMarkdown(report) {
     ...(report.label ? ["", `**Decision:** ${mdCell(report.label)}${report.decision_status ? ` · ${report.decision_status}` : ""}`] : []),
     "",
     report.executive_summary,
-    ...(report.decision_notes ? ["", "## Decision Notes", "", report.decision_notes] : []),
+    // Blockquote each notes line so free-form user text reads as content and
+    // can't inject document structure (fake headings, tables) — the same
+    // discipline mdCell applies to labels and variant names.
+    ...(report.decision_notes
+      ? ["", "## Decision Notes", "", ...String(report.decision_notes).split(/\r?\n/).map((line) => `> ${line}`)]
+      : []),
     "",
     "## Recommendation",
     "",

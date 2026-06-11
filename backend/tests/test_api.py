@@ -650,3 +650,71 @@ def test_rerun_creates_linked_comparison():
     client.delete(f"/assets/{seeded[0]['id']}")
     blocked = client.post(f"/comparisons/{original['id']}/rerun")
     assert blocked.status_code == 409
+
+
+def test_local_insights_route_mirrors_serverless_shape():
+    seeded = client.post("/demo/seed").json()
+    cmp1 = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Insights local one."},
+    ).json()
+    client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Insights local two."},
+    )
+    winner = cmp1["recommendation"]["winner_asset_id"]
+    client.post(
+        f"/comparisons/{cmp1['id']}/outcomes",
+        json={"asset_id": winner, "spend": 300, "revenue": 900, "impressions": 1000, "clicks": 50, "conversions": 10},
+    )
+    client.patch(f"/comparisons/{cmp1['id']}", json={"decision_status": "shipped"})
+
+    insights = client.get("/insights")
+    assert insights.status_code == 200
+    body = insights.json()
+    assert body["sample"]["decisions"] >= 2
+    assert body["decision_mix"]["shipped"] >= 1
+    assert len(body["winner_profile"]) == 10
+    hook = next(row for row in body["winner_profile"] if row["dimension"] == "hook")
+    assert hook["edge"] is not None and hook["edge"] > 0
+    load = next(row for row in body["winner_profile"] if row["dimension"] == "cognitive_load")
+    assert load["lower_is_better"] is True
+    hook_power = next(row for row in body["dimension_predictive_power"] if row["dimension"] == "hook")
+    assert hook_power["evaluated"] >= 1
+    assert body["spend"]["total"] >= 300
+    for signal in body["copy_signals"]:
+        assert signal["winner_rate"] is None or 0 <= signal["winner_rate"] <= 1
+
+
+def test_patch_null_handling_matches_serverless():
+    seeded = client.post("/demo/seed").json()
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Null parity."},
+    ).json()
+    # Explicit null decision_status is rejected, like the serverless API.
+    rejected = client.patch(f"/comparisons/{comparison['id']}", json={"decision_status": None})
+    assert rejected.status_code == 400
+    # pinned: null coerces to false (unpin), like Boolean(null) on the server.
+    client.patch(f"/comparisons/{comparison['id']}", json={"pinned": True})
+    unpinned = client.patch(f"/comparisons/{comparison['id']}", json={"pinned": None})
+    assert unpinned.status_code == 200
+    assert unpinned.json()["pinned"] is False
+
+
+def test_local_markdown_report_blockquotes_notes():
+    seeded = client.post("/demo/seed").json()
+    comparison = client.post(
+        "/comparisons",
+        json={"asset_ids": [seeded[0]["id"], seeded[1]["id"]], "objective": "Markdown parity."},
+    ).json()
+    client.patch(
+        f"/comparisons/{comparison['id']}",
+        json={"label": "Local markdown", "notes": "first line\n## Fake Heading"},
+    )
+    markdown = client.get(f"/reports/{comparison['id']}/markdown")
+    assert markdown.status_code == 200
+    assert "**Decision:** Local markdown" in markdown.text
+    assert "> first line" in markdown.text
+    assert "> ## Fake Heading" in markdown.text
+    assert "\n## Fake Heading\n" not in markdown.text

@@ -206,6 +206,9 @@ class LearningSummary(BaseModel):
 class Report(BaseModel):
     comparison_id: str
     title: str
+    label: str | None = None
+    decision_status: Literal["pending", "shipped", "killed"] | None = None
+    decision_notes: str | None = None
     executive_summary: str
     recommendation: Recommendation
     variants: list[VariantResult]

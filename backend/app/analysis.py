@@ -91,6 +91,20 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z0-9']+", text.lower())
 
 
+def creative_text_signals(text: str) -> dict[str, bool]:
+    # Mirrors the serverless creativeTextSignals: lexical fingerprint at the
+    # positions the scoring heuristics look at (hooks open, CTAs close).
+    words = _words(text or "")
+    first = words[:24]
+    last = words[-40:]
+    return {
+        "hook_word": any(word in HOOK_WORDS for word in first),
+        "number_open": any(any(ch.isdigit() for ch in word) for word in first),
+        "cta_word": any(word in CTA_WORDS for word in last),
+        "proof_word": any(word in PROOF_WORDS for word in words),
+    }
+
+
 def _hook_score(words: list[str]) -> float:
     first = words[:24]
     base = 44

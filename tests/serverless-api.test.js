@@ -3764,6 +3764,98 @@ test("deletes a logged outcome and scopes the delete to the workspace", async ()
   assert.equal(again.statusCode, 404);
 });
 
+test("decision annotations saved while jobs run survive async completion", async () => {
+  const originalFetch = globalThis.fetch;
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const jobs = new Map();
+  let jobIndex = 0;
+
+  withEnv({ TRIBE_CONTROL_URL: "https://modal.test/control", TRIBE_API_KEY: "test-key" });
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = JSON.parse(String(options.body || "{}"));
+    if (body.action === "start") {
+      jobIndex += 1;
+      const job = { job_id: `keep_job_${jobIndex}`, asset_id: body.asset.id, status: "queued", provider: "tribe-v2" };
+      jobs.set(job.job_id, job);
+      return jsonResponse(job);
+    }
+    if (body.action === "status") {
+      const job = jobs.get(body.job_id);
+      return jsonResponse({
+        ...job,
+        status: "complete",
+        timeline: [{ second: 0, attention: 0.6, memory: 0.6, cognitive_load: 0.4, note: "stub" }]
+      });
+    }
+    return jsonResponse({ detail: "not found" }, 404);
+  };
+
+  try {
+    const first = await call("POST", "/api/assets", { asset_type: "audio", name: "Keep A", text: "Try the starter kit today." }, headers);
+    const second = await call("POST", "/api/assets", { asset_type: "audio", name: "Keep B", text: "A generic product message." }, headers);
+    const created = await call(
+      "POST",
+      "/api/comparisons",
+      { asset_ids: [first.json.asset.id, second.json.asset.id], objective: "Annotate while processing." },
+      headers
+    );
+    assert.equal(created.statusCode, 202);
+    assert.equal(created.json.status, "processing");
+
+    // Annotate the decision while the hosted jobs are still out.
+    const annotated = await call(
+      "PATCH",
+      `/api/comparisons/${created.json.id}`,
+      { label: "Async keeper", decision_status: "shipped", pinned: true },
+      headers
+    );
+    assert.equal(annotated.statusCode, 200);
+
+    // The next poll completes the jobs and rebuilds the scoring — the
+    // annotations must ride along instead of being wiped.
+    const refreshed = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(refreshed.statusCode, 200);
+    assert.equal(refreshed.json.status, "complete");
+    assert.equal(refreshed.json.label, "Async keeper");
+    assert.equal(refreshed.json.decision_status, "shipped");
+    assert.equal(refreshed.json.pinned, true);
+
+    // And they persist on the stored row, not just the in-flight response.
+    const again = await call("GET", `/api/comparisons/${created.json.id}`, null, headers);
+    assert.equal(again.json.label, "Async keeper");
+    assert.equal(again.json.pinned, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    withEnv({ TRIBE_CONTROL_URL: undefined, TRIBE_API_KEY: undefined });
+  }
+});
+
+test("decision notes cannot inject markdown structure into the report", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const seeded = await call("POST", "/api/demo/seed", null, headers);
+  const cmp = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: seeded.json.slice(0, 2).map((a) => a.id), objective: "notes injection" },
+    headers
+  );
+  await call(
+    "PATCH",
+    `/api/comparisons/${cmp.json.id}`,
+    { notes: "legit first line\n## Fake Recommendation\n| sneaky | table |" },
+    headers
+  );
+  const markdown = await call("GET", `/api/reports/${cmp.json.id}/markdown`, null, headers);
+  assert.equal(markdown.statusCode, 200);
+  // Every notes line arrives blockquoted; the fake heading never lands as a
+  // real document heading.
+  assert.match(markdown.text, /> legit first line/);
+  assert.match(markdown.text, /> ## Fake Recommendation/);
+  assert.equal(/^## Fake Recommendation$/m.test(markdown.text), false);
+});
+
 test("a processing comparison whose variant was deleted fails terminally instead of 404ing forever", async () => {
   const originalFetch = globalThis.fetch;
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
