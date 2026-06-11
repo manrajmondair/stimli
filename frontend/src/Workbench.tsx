@@ -32,6 +32,7 @@ import type {
   VariantResult
 } from "./types";
 import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
+import { diffStats, wordDiff } from "./diff";
 
 function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
   return workspaceKey && workspaceKey !== "anonymous"
@@ -2346,6 +2347,10 @@ function Result({
         </div>
       </div>
 
+      {activeVariant.asset.id !== winner.asset.id ? (
+        <CopyDiffCard winner={winner} variant={activeVariant} />
+      ) : null}
+
       <div className="result-side-grid">
         <div className="panel-card scores-card">
           <div className="panel-head">
@@ -2529,6 +2534,59 @@ function DecisionMetaCard({
         </button>
       </div>
     </form>
+  );
+}
+
+// Word-level copy diff between the active (non-winning) variant and the
+// winner, answering the strategist's "what is the winner actually doing
+// differently?" — green runs are words only the winner has, struck runs are
+// words only this variant has. Skips itself when either side has no real text.
+function CopyDiffCard({ winner, variant }: { winner: VariantResult; variant: VariantResult }) {
+  const winnerText = (winner.asset.extracted_text || "").trim();
+  const variantText = (variant.asset.extracted_text || "").trim();
+  const ops = useMemo(() => wordDiff(variantText, winnerText), [variantText, winnerText]);
+  if (!winnerText || !variantText || winnerText === variantText) return null;
+  const stats = diffStats(ops);
+  const winnerName = winner.asset.name.split("·")[0]?.trim() ?? winner.asset.name;
+  const variantName = variant.asset.name.split("·")[0]?.trim() ?? variant.asset.name;
+  return (
+    <div className="panel-card" data-testid="copy-diff" style={{ marginTop: 14 }}>
+      <div className="panel-head">
+        <h3 style={{ fontSize: 15 }}>{`Copy diff · ${variantName} → ${winnerName}`}</h3>
+        <span className="kicker">{`+${stats.added} / −${stats.removed} words`}</span>
+      </div>
+      <p style={{ lineHeight: 1.75, margin: 0 }}>
+        {ops.map((op, index) =>
+          op.kind === "same" ? (
+            <span key={index}>{op.text} </span>
+          ) : op.kind === "added" ? (
+            <ins
+              key={index}
+              style={{
+                background: "var(--pistachio-soft, #e3eed3)",
+                textDecoration: "none",
+                borderRadius: 4,
+                padding: "0 3px"
+              }}
+              title="Only in the winner"
+            >
+              {op.text}{" "}
+            </ins>
+          ) : (
+            <del
+              key={index}
+              style={{ color: "var(--ink-soft)", borderRadius: 4, padding: "0 3px" }}
+              title="Only in this variant"
+            >
+              {op.text}{" "}
+            </del>
+          )
+        )}
+      </p>
+      <p className="hint" style={{ marginTop: 10 }}>
+        Highlighted words appear only in the winner; struck words only in this variant.
+      </p>
+    </div>
   );
 }
 
