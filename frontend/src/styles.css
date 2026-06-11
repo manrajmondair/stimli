@@ -2363,3 +2363,5 @@ input[type="file"]::file-selector-button {
   white-space: nowrap;
   border: 0;
 }
+
+.hl-butter { color: var(--butter-ink, var(--ink)); background: var(--butter-soft, var(--butter)); padding: 0 0.18em; border-radius: 8px; }

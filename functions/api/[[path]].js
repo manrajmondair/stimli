@@ -26,6 +26,7 @@ import {
   newId,
   noteRemoteBrainFailure,
   nowIso,
+  previewAnalysis,
   providerHealth,
   shouldCreateAsyncComparison,
   startBrainJob
@@ -225,6 +226,33 @@ export async function onRequest(context) {
     if (request.method === "GET" && apiPath === "/learning/summary") {
       const [outcomes, comparisons] = await Promise.all([listOutcomes(null, workspaceId), listComparisons(workspaceId)]);
       return sendJson(200, learningSummary(outcomes, comparisons), headers, cookies);
+    }
+
+    if (request.method === "POST" && apiPath === "/analyze/preview") {
+      // Copy Studio's live loop: score one draft text through the deterministic
+      // engine — no persistence, no remote brain, no LLM. Metered with its own
+      // hourly bucket (debounced typing ≈ one call/second peak) so the free
+      // scoring surface can't bypass the billed comparison quota at scale.
+      requirePermission(authContext, "workspace:read", { allowAnonymous: true });
+      const payload = await parseJson(request);
+      const draftText = stringField(payload.text);
+      if (!draftText.trim()) {
+        throw httpError(400, "text is required.");
+      }
+      const maxPreviewBytes = positiveNumber(env.STIMLI_MAX_PREVIEW_TEXT_BYTES, 32_000);
+      if (new TextEncoder().encode(draftText).byteLength > maxPreviewBytes) {
+        throw httpError(413, `Preview text exceeds the ${maxPreviewBytes} byte limit.`);
+      }
+      const previewType = assetTypes.has(payload.asset_type) ? payload.asset_type : "script";
+      await enforceCreationRateLimit(request, workspaceId, "preview", authContext, "STIMLI_PREVIEW_LIMIT_PER_HOUR", 600);
+      const preview = await previewAnalysis({
+        text: draftText,
+        asset_type: previewType,
+        duration_seconds: optionalNonNegativeNumber(payload.duration_seconds, "duration_seconds", { max: 24 * 60 * 60 }),
+        brief: payload.brief && typeof payload.brief === "object" ? payload.brief : {},
+        include_ladder: payload.include_ladder === true
+      });
+      return sendJson(200, preview, headers, cookies);
     }
 
     if (request.method === "GET" && apiPath === "/insights") {
@@ -2600,9 +2628,9 @@ async function resolveComparisonBrief(payload, workspaceId) {
 // rows (projects, brand profiles). Reuses the atomic usage-event machinery with
 // an explicit hourly cap and a stub quota — no plan lookup, no monthly quota —
 // so the per-client and per-workspace hourly buckets still apply.
-async function enforceCreationRateLimit(request, workspaceId, kind, authContext, limitEnvName) {
+async function enforceCreationRateLimit(request, workspaceId, kind, authContext, limitEnvName, defaultLimit = 120) {
   const env = globalThis.__stimliEnv || {};
-  const hourlyLimit = positiveNumber(env[limitEnvName], 120);
+  const hourlyLimit = positiveNumber(env[limitEnvName], defaultLimit);
   await enforceUsageLimit(request, workspaceId, kind, { hourly: {}, monthly: {}, plan: {} }, authContext, { hourlyLimit });
 }
 

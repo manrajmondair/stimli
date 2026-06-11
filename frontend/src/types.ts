@@ -278,6 +278,24 @@ export type BillingStatus = {
   plans: Plan[];
 };
 
+export type DraftPreview = {
+  provider: string;
+  scores: ScoreBreakdown;
+  timeline: TimelinePoint[];
+  feature_vector: Record<string, number>;
+  summary: string;
+  suggestions: Suggestion[];
+  signals: Array<{ signal: string; label: string; active: boolean }>;
+  compliance: {
+    required_claims: Array<{ claim: string; present: boolean }>;
+    forbidden_terms: Array<{ term: string; present: boolean }>;
+    missing_required: string[];
+    forbidden_hits: Array<{ term: string; present: boolean }>;
+  };
+  ship_threshold: number;
+  ladder?: Array<{ focus: "hook" | "cta" | "offer" | "clarity"; text: string; overall: number; delta: number }>;
+};
+
 export type InsightDimensionProfile = {
   dimension: string;
   lower_is_better: boolean;

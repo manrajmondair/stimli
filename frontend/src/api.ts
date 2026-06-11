@@ -13,6 +13,7 @@ import type {
   CreativeBrief,
   CreativeInsights,
   DecisionStatus,
+  DraftPreview,
   GovernancePolicy,
   GovernanceRequest,
   ImportJob,
@@ -263,6 +264,21 @@ export async function getLearningSummary(): Promise<LearningSummary> {
 
 export async function getCreativeInsights(): Promise<CreativeInsights> {
   const response = await fetch(`${API_BASE}/insights`, { headers: await workspaceHeaders() });
+  return parseResponse(response);
+}
+
+export async function previewDraft(input: {
+  text: string;
+  asset_type?: AssetType;
+  duration_seconds?: number | null;
+  brief?: Partial<CreativeBrief>;
+  include_ladder?: boolean;
+}): Promise<DraftPreview> {
+  const response = await fetch(`${API_BASE}/analyze/preview`, {
+    method: "POST",
+    headers: await jsonHeaders(),
+    body: JSON.stringify(input)
+  });
   return parseResponse(response);
 }
 

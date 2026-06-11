@@ -91,6 +91,49 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z0-9']+", text.lower())
 
 
+def preview_signals(text: str, brief: CreativeBrief) -> list[dict[str, object]]:
+    # Mirrors the serverless previewSignals: named deterministic facts the
+    # Studio renders as live chips.
+    words = _words(text or "")
+    first = words[:24]
+    last = words[-40:]
+    offer_terms = _words(brief.primary_offer or "")
+    return [
+        {"signal": "hook_word_open", "label": "Hook word in the opener", "active": any(w in HOOK_WORDS for w in first)},
+        {"signal": "number_open", "label": "Number in the opener", "active": any(any(c.isdigit() for c in w) for w in first)},
+        {"signal": "short_opener", "label": "Opener under 18 words", "active": len(words) > 0 and len(first) <= 18},
+        {"signal": "cta_close", "label": "CTA verb near the close", "active": any(w in CTA_WORDS for w in last)},
+        {"signal": "proof_language", "label": "Proof language present", "active": any(w in PROOF_WORDS for w in words)},
+        {"signal": "offer_named", "label": "Names the offer", "active": bool(offer_terms) and any(t in words for t in offer_terms)},
+        {"signal": "jargon_free", "label": "No jargon words", "active": not any(w in JARGON_WORDS for w in words)},
+    ]
+
+
+def preview_compliance(text: str, brief: CreativeBrief) -> dict[str, object]:
+    # Deterministic brief lint mirroring the serverless previewCompliance:
+    # literal claim presence + word-boundary forbidden-term matching.
+    lower = (text or "").lower()
+
+    def term_hit(term: str) -> bool:
+        t = term.strip().lower()
+        if not t:
+            return False
+        if " " in t:
+            return t in lower
+        if re.fullmatch(r"[a-z0-9'_-]+", t):
+            return re.search(rf"(?:^|[^a-z0-9_]){re.escape(t)}(?:[^a-z0-9_]|$)", lower) is not None
+        return t in lower
+
+    required = [{"claim": c, "present": c.lower() in lower} for c in brief.required_claims if c]
+    forbidden = [{"term": t, "present": term_hit(t)} for t in brief.forbidden_terms if t]
+    return {
+        "required_claims": required,
+        "forbidden_terms": forbidden,
+        "missing_required": [r["claim"] for r in required if not r["present"]],
+        "forbidden_hits": [f for f in forbidden if f["present"]],
+    }
+
+
 def creative_text_signals(text: str) -> dict[str, bool]:
     # Mirrors the serverless creativeTextSignals: lexical fingerprint at the
     # positions the scoring heuristics look at (hooks open, CTAs close).

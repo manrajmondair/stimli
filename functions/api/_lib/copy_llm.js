@@ -320,7 +320,7 @@ function truncateWords(value, maxWords) {
 //   • single-word terms in mixed/lowercase letters → Unicode word-boundary
 //     regex so "cure" doesn't match "secure", with the de-hyphenated fallback
 //     for compound terms.
-function textContainsForbiddenTerm(text, term) {
+export function textContainsForbiddenTerm(text, term) {
   if (!term) return false;
   const termStr = String(term).trim();
   if (!termStr) return false;

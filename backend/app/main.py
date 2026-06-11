@@ -10,7 +10,13 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.analysis import CreativeAnalyzer, build_challenger_text, creative_text_signals
+from app.analysis import (
+    CreativeAnalyzer,
+    build_challenger_text,
+    creative_text_signals,
+    preview_compliance,
+    preview_signals,
+)
 from app.brain import provider_health
 from app.extractor import BlockedLandingPageURL, extract_landing_page_text, normalize_public_url
 from app.models import (
@@ -24,6 +30,7 @@ from app.models import (
     ChallengerResponse,
     Comparison,
     ComparisonCreate,
+    CreativeBrief,
     DecisionMetaPatch,
     LearningSummary,
     Outcome,
@@ -477,6 +484,65 @@ INSIGHT_DIMENSIONS = [
     "memory",
     "cognitive_load",
 ]
+
+
+@app.post("/analyze/preview")
+async def analyze_preview(request: Request) -> dict[str, Any]:
+    # Local mirror of the serverless Copy Studio preview: scores one draft text
+    # through the deterministic engine, no persistence. The local suggestion
+    # engine predates the serverless structured edits, so suggestions stay
+    # empty here (the Studio hides that panel when empty).
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON payload must be an object.")
+    text = str(payload.get("text") or "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="text is required.")
+    if len(text.encode("utf-8")) > 32_000:
+        raise HTTPException(status_code=413, detail="Preview text exceeds the 32000 byte limit.")
+    raw_type = str(payload.get("asset_type") or "script")
+    asset_type = raw_type if raw_type in {"script", "landing_page", "image", "audio", "video"} else "script"
+    brief = CreativeBrief(**(payload.get("brief") or {})) if isinstance(payload.get("brief"), dict) else CreativeBrief()
+    asset = Asset(
+        id="preview",
+        type=cast(AssetType, asset_type),
+        name="Studio draft",
+        extracted_text=text,
+        duration_seconds=None,
+        metadata={},
+        created_at=now_iso(),
+    )
+    analysis = analyzer.analyze(asset, brief)
+    result: dict[str, Any] = {
+        "provider": analysis.provider,
+        "scores": analysis.scores.model_dump(),
+        "timeline": [point.model_dump() for point in analysis.timeline],
+        "feature_vector": analysis.feature_vector,
+        "summary": analysis.summary,
+        "suggestions": [],
+        "signals": preview_signals(text, brief),
+        "compliance": preview_compliance(text, brief),
+        "ship_threshold": 68,
+    }
+    if payload.get("include_ladder") is True:
+        ladder = []
+        for focus in ["hook", "cta", "offer", "clarity"]:
+            rewritten = build_challenger_text(asset, brief, focus)
+            rung_asset = asset.model_copy(update={"id": f"preview_{focus}", "extracted_text": rewritten})
+            rung = analyzer.analyze(rung_asset, brief)
+            ladder.append(
+                {
+                    "focus": focus,
+                    "text": rewritten,
+                    "overall": rung.scores.overall,
+                    "delta": round(rung.scores.overall - analysis.scores.overall, 1),
+                }
+            )
+        result["ladder"] = sorted(ladder, key=lambda rung: rung["delta"], reverse=True)
+    return result
 
 
 @app.get("/insights")

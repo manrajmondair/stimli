@@ -54,6 +54,7 @@ import type {
 } from "./types";
 import { BrainBlob, NeuralTimeline, type NeuralVariant } from "./art";
 import { Workbench } from "./Workbench";
+import { StudioView } from "./Studio";
 
 const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
 
@@ -376,11 +377,12 @@ function useModalFocusTrap(
   }, [active, modalRef, initialFocusRef]);
 }
 
-type View = "workbench" | "library" | "brands" | "outcomes" | "team" | "billing";
+type View = "workbench" | "studio" | "library" | "brands" | "outcomes" | "team" | "billing";
 type BillingBanner = { kind: "success" | "info" | "warn"; message: string };
 
 const NAV_ITEMS: Array<{ id: View; label: string; color: string }> = [
   { id: "workbench", label: "Workbench", color: "var(--tomato)" },
+  { id: "studio", label: "Studio", color: "var(--butter)" },
   { id: "library", label: "Library", color: "var(--pistachio)" },
   { id: "brands", label: "Brands", color: "var(--butter)" },
   { id: "outcomes", label: "Outcomes", color: "var(--plum)" },
@@ -588,10 +590,12 @@ export function AppShell() {
             workspaceKey={workspaceKey}
             workspaceReady={workspaceReady}
             onRequireAuth={requireAuth}
+            onOpenStudio={() => navigateView("studio")}
             remoteProvider={null}
             briefDefaults={undefined}
           />
         ) : workspaceLoading : null}
+        {view === "studio" ? workspaceReady ? <StudioView key={workspaceKey} workspaceKey={workspaceKey} /> : workspaceLoading : null}
         {view === "library" ? workspaceReady ? <LibraryView key={workspaceKey} /> : workspaceLoading : null}
         {view === "brands" ? workspaceReady ? <BrandsView key={workspaceKey} workspaceKey={workspaceKey} /> : workspaceLoading : null}
         {view === "outcomes" ? workspaceReady ? <OutcomesView key={workspaceKey} /> : workspaceLoading : null}
@@ -632,6 +636,7 @@ export function AppShell() {
 
 const PALETTE_NAV: Array<{ id: View; label: string; hint: string; icon: string }> = [
   { id: "workbench", label: "Go to Workbench", hint: "Run a new comparison", icon: "✦" },
+  { id: "studio", label: "Go to Studio", hint: "Write copy with live scoring", icon: "✎" },
   { id: "library", label: "Go to Library", hint: "Saved variants + bulk actions", icon: "❒" },
   { id: "brands", label: "Go to Brands", hint: "Re-usable briefs", icon: "✺" },
   { id: "outcomes", label: "Go to Outcomes", hint: "Calibration vs real spend", icon: "$" },

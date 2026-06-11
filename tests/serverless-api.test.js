@@ -3560,6 +3560,95 @@ test("/api/outcomes returns workspace-wide outcomes joined with comparison + ass
   assert.ok(row.asset_name, "asset_name joined in");
 });
 
+test("/api/analyze/preview scores a draft deterministically with signals, lint, and ladder", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+  const body = {
+    text: "Stop wasting money on routines that fail. Lumina locks in 24-hour hydration, dermatologist tested. Try the starter kit today.",
+    asset_type: "script",
+    brief: {
+      brand_name: "Lumina",
+      primary_offer: "starter kit",
+      required_claims: ["dermatologist tested", "money back guarantee"],
+      forbidden_terms: ["miracle"]
+    },
+    include_ladder: true
+  };
+
+  const first = await call("POST", "/api/analyze/preview", body, headers);
+  assert.equal(first.statusCode, 200);
+  const second = await call("POST", "/api/analyze/preview", body, headers);
+  // Deterministic engine: identical input, identical output.
+  assert.deepEqual(first.json.scores, second.json.scores);
+  assert.deepEqual(first.json.ladder, second.json.ladder);
+
+  // The heuristic provider is forced — never the remote brain.
+  assert.equal(first.json.provider, "web-heuristic-brain");
+  assert.equal(first.json.ship_threshold, 68);
+  assert.ok(first.json.scores.overall > 0);
+  assert.ok(Array.isArray(first.json.timeline) && first.json.timeline.length >= 3);
+
+  // Signals are named, boolean facts; this copy opens with a hook word and
+  // names the offer.
+  const signalsByKey = Object.fromEntries(first.json.signals.map((s) => [s.signal, s.active]));
+  assert.equal(signalsByKey.hook_word_open, true);
+  assert.equal(signalsByKey.offer_named, true);
+  assert.equal(signalsByKey.jargon_free, true);
+
+  // Lint: one claim present, one missing, no forbidden hits.
+  assert.deepEqual(first.json.compliance.missing_required, ["money back guarantee"]);
+  assert.equal(first.json.compliance.forbidden_hits.length, 0);
+  const dirty = await call(
+    "POST",
+    "/api/analyze/preview",
+    { ...body, text: `${body.text} A true miracle.`, include_ladder: false },
+    headers
+  );
+  assert.equal(dirty.json.compliance.forbidden_hits.length, 1);
+  assert.equal(dirty.json.compliance.forbidden_hits[0].term, "miracle");
+
+  // Ladder: four deterministic rewrites ranked by measured delta.
+  assert.equal(first.json.ladder.length, 4);
+  assert.deepEqual(
+    [...first.json.ladder.map((r) => r.delta)].sort((a, b) => b - a),
+    first.json.ladder.map((r) => r.delta)
+  );
+  for (const rung of first.json.ladder) {
+    assert.ok(["hook", "cta", "offer", "clarity"].includes(rung.focus));
+    assert.ok(rung.text.length > 0);
+  }
+
+  // Floor-based suggestions only (no winner context leaks a compared_score).
+  for (const suggestion of first.json.suggestions) {
+    assert.equal(suggestion.compared_to_asset_id, null);
+  }
+
+  // Validation: blank text 400; oversize 413.
+  const blank = await call("POST", "/api/analyze/preview", { text: "   " }, headers);
+  assert.equal(blank.statusCode, 400);
+  const oversize = await call("POST", "/api/analyze/preview", { text: "x".repeat(33_000) }, headers);
+  assert.equal(oversize.statusCode, 413);
+});
+
+test("/api/analyze/preview has its own hourly meter", async () => {
+  withEnv({ STIMLI_PREVIEW_LIMIT_PER_HOUR: "2" });
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace, "user-agent": "stimli-preview-meter-test" };
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const ok = await call("POST", "/api/analyze/preview", { text: `draft number ${i} with words` }, headers);
+      assert.equal(ok.statusCode, 200);
+    }
+    const blocked = await call("POST", "/api/analyze/preview", { text: "one draft too many" }, headers);
+    assert.equal(blocked.statusCode, 429);
+    assert.equal(blocked.json.code, "rate_limited");
+    // The preview meter never touches the comparison quota.
+    assert.equal(await countUsageEvents({ kind: "comparison", workspaceId: workspace }), 0);
+  } finally {
+    withEnv({ STIMLI_PREVIEW_LIMIT_PER_HOUR: undefined });
+  }
+});
+
 test("re-runs a decision with the same variants and brief, linked via rerun_of", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

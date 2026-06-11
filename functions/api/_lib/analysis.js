@@ -18,7 +18,8 @@ import {
   generateChallengerText as polishChallengerText,
   isCopyLlmEnabled,
   polishEditsForVariant,
-  polishRecommendation
+  polishRecommendation,
+  textContainsForbiddenTerm
 } from "./copy_llm.js";
 
 const ctaWords = new Set(["buy", "shop", "try", "start", "get", "claim", "book", "subscribe", "download", "order"]);
@@ -159,6 +160,110 @@ export async function providerHealth() {
 
 export async function compareAssets(comparisonId, objective, assets, createdAt, brief = {}) {
   return compareAssetsWithBrain(comparisonId, objective, assets, createdAt, brief);
+}
+
+// Scores a single draft text through the SAME deterministic engine that powers
+// comparisons — no persistence, no remote brain probe (the heuristic timeline is
+// forced explicitly so a configured-but-cold TRIBE endpoint can't add a 3s stall
+// to every keystroke preview), no LLM. Powers the Copy Studio live loop.
+export async function previewAnalysis({ text, asset_type = "script", duration_seconds = null, brief = {}, include_ladder = false }) {
+  const safeBrief = normalizeBrief(brief);
+  const draft = String(text || "");
+  const asset = {
+    id: "preview",
+    type: asset_type,
+    name: "Studio draft",
+    source_url: null,
+    extracted_text: draft,
+    duration_seconds,
+    metadata: {}
+  };
+  const analysis = await analyzeAsset(
+    asset,
+    safeBrief,
+    { provider: "web-heuristic-brain", timeline: heuristicTimeline(asset) }
+  );
+  // Floor-based edits only (isWinner: true): a lone draft has no runner-up to
+  // chase, so the suggestions target the ship floors.
+  const suggestions = suggestionsForVariant(asset, analysis, safeBrief, { isWinner: true });
+
+  const result = {
+    provider: analysis.provider,
+    scores: analysis.scores,
+    timeline: analysis.timeline,
+    feature_vector: analysis.feature_vector,
+    summary: analysis.summary,
+    suggestions,
+    signals: previewSignals(draft, safeBrief),
+    compliance: previewCompliance(draft, safeBrief),
+    // The comparison verdict ships at overall >= 68 (buildRecommendation); the
+    // Studio ship-line renders against the same threshold.
+    ship_threshold: 68
+  };
+
+  if (include_ladder) {
+    // Deterministic sparring partner: score the four templated challenger
+    // rewrites through the same engine and rank them by measured delta vs the
+    // draft. No LLM in this path — identical input, identical ladder.
+    const ladder = await Promise.all(
+      ["hook", "cta", "offer", "clarity"].map(async (focus) => {
+        const rewritten = buildChallengerText(asset, safeBrief, focus);
+        const rung = await analyzeAsset(
+          { ...asset, id: `preview_${focus}`, extracted_text: rewritten },
+          safeBrief,
+          { provider: "web-heuristic-brain", timeline: heuristicTimeline({ ...asset, id: `preview_${focus}`, extracted_text: rewritten }) }
+        );
+        return {
+          focus,
+          text: rewritten,
+          overall: rung.scores.overall,
+          delta: round(rung.scores.overall - analysis.scores.overall, 1)
+        };
+      })
+    );
+    result.ladder = ladder.sort((a, b) => b.delta - a.delta);
+  }
+
+  return result;
+}
+
+// Named, deterministic facts about WHY the dimensions sit where they do — the
+// Studio renders these as live chips so score movement reads as legible cause
+// and effect rather than arbitrary jumps.
+function previewSignals(text, brief) {
+  const words = tokenize(text || "");
+  const first = words.slice(0, 24);
+  const last = words.slice(-40);
+  const offerTerms = tokenize(brief.primary_offer || "");
+  return [
+    { signal: "hook_word_open", label: "Hook word in the opener", active: first.some((word) => hookWords.has(word)) },
+    { signal: "number_open", label: "Number in the opener", active: first.some((word) => /\d/.test(word)) },
+    { signal: "short_opener", label: "Opener under 18 words", active: words.length > 0 && first.length <= 18 },
+    { signal: "cta_close", label: "CTA verb near the close", active: last.some((word) => ctaWords.has(word)) },
+    { signal: "proof_language", label: "Proof language present", active: words.some((word) => proofWords.has(word)) },
+    { signal: "offer_named", label: "Names the offer", active: offerTerms.length > 0 && offerTerms.some((term) => words.includes(term)) },
+    { signal: "jargon_free", label: "No jargon words", active: !words.some((word) => jargonWords.has(word)) }
+  ];
+}
+
+// Deterministic brief lint for the live loop: literal required-claim presence
+// and forbidden-term hits. The semantic (LLM) compliance check still runs at
+// compare time; this is the instant, free version for writing.
+function previewCompliance(text, brief) {
+  const required = (brief.required_claims || []).filter(Boolean).map((claim) => ({
+    claim,
+    present: String(text || "").toLowerCase().includes(String(claim).toLowerCase())
+  }));
+  const forbidden = (brief.forbidden_terms || []).filter(Boolean).map((term) => ({
+    term,
+    present: textContainsForbiddenTerm(text || "", term)
+  }));
+  return {
+    required_claims: required,
+    forbidden_terms: forbidden,
+    missing_required: required.filter((entry) => !entry.present).map((entry) => entry.claim),
+    forbidden_hits: forbidden.filter((entry) => entry.present)
+  };
 }
 
 // Deterministic lexical fingerprint of a creative's text, used by the insights

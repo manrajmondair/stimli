@@ -33,6 +33,7 @@ import type {
 } from "./types";
 import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
 import { DIFF_MAX_TOKENS, diffStats, diffTruncated, wordDiff } from "./diff";
+import { writeStudioHandoff } from "./Studio";
 
 function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
   return workspaceKey && workspaceKey !== "anonymous"
@@ -120,13 +121,14 @@ type Toast = { kind: "info" | "success" | "error"; message: string } | null;
 type WorkbenchProps = {
   onRequireAuth: () => void;
   onSurfaceLibrary?: () => void;
+  onOpenStudio?: () => void;
   remoteProvider: string | null;
   briefDefaults?: Partial<CreativeBrief>;
   workspaceKey?: string;
   workspaceReady?: boolean;
 };
 
-export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, workspaceKey = "anonymous", workspaceReady = true }: WorkbenchProps) {
+export function Workbench({ onRequireAuth, onOpenStudio, remoteProvider, briefDefaults, workspaceKey = "anonymous", workspaceReady = true }: WorkbenchProps) {
   const [step, setStep] = useState<Step>("inventory");
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -784,6 +786,22 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
     if (saved) flash({ kind: "success", message: pinned ? "Pinned to the top of decisions." : "Unpinned." });
   }
 
+  // Hands the active variant's copy to the Studio with its score as the live
+  // baseline, so the writer can apply edits and watch the measured delta.
+  function handleOpenInStudio(variant: VariantResult) {
+    writeStudioHandoff({
+      text: variant.asset.extracted_text || "",
+      baseline_overall: variant.analysis.scores.overall,
+      baseline_label: variant.asset.name.split("·")[0]?.trim() ?? variant.asset.name,
+      brief: comparison?.brief
+    });
+    if (onOpenStudio) {
+      onOpenStudio();
+    } else {
+      flash({ kind: "info", message: "Open the Studio view to keep editing this draft." });
+    }
+  }
+
   // Re-scores the same variants + brief as a fresh decision (useful when the
   // engine changed underneath an old one), then opens the new run through the
   // normal openRecent flow so processing/polling behaves identically.
@@ -995,6 +1013,7 @@ export function Workbench({ onRequireAuth, remoteProvider, briefDefaults, worksp
           onCancel={handleCancel}
           onContinueInBackground={continueInBackground}
           onSaveDecisionMeta={saveDecisionMeta}
+          onOpenInStudio={handleOpenInStudio}
           pollNote={pollNote}
           pollStartedAt={pollStartedAt}
         />
@@ -1902,6 +1921,7 @@ function ResultsColumn({
   onCancel,
   onContinueInBackground,
   onSaveDecisionMeta,
+  onOpenInStudio,
   pollNote,
   pollStartedAt
 }: {
@@ -1925,6 +1945,7 @@ function ResultsColumn({
     comparisonId: string,
     patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
   ) => Promise<boolean>;
+  onOpenInStudio: (variant: VariantResult) => void;
   pollNote: string | null;
   pollStartedAt: number | null;
 }) {
@@ -1960,6 +1981,7 @@ function ResultsColumn({
       onDraftChallenger={onDraftChallenger}
       onLogOutcome={onLogOutcome}
       onSaveDecisionMeta={onSaveDecisionMeta}
+      onOpenInStudio={onOpenInStudio}
     />
   );
 }
@@ -2223,7 +2245,8 @@ function Result({
   onExport,
   onDraftChallenger,
   onLogOutcome,
-  onSaveDecisionMeta
+  onSaveDecisionMeta,
+  onOpenInStudio
 }: {
   comparison: Comparison;
   ranked: VariantResult[];
@@ -2239,6 +2262,7 @@ function Result({
     comparisonId: string,
     patch: { label?: string | null; notes?: string | null; decision_status?: DecisionStatus; pinned?: boolean }
   ) => Promise<boolean>;
+  onOpenInStudio: (variant: VariantResult) => void;
 }) {
   const winner = ranked[0];
   const winnerColor = COLOR_CYCLE[0];
@@ -2425,6 +2449,13 @@ function Result({
             </button>
             <button className="btn cream" onClick={onReCompare}>
               Re-compare
+            </button>
+            <button
+              className="btn cream"
+              onClick={() => onOpenInStudio(activeVariant)}
+              title="Edit this variant's copy with live scoring against its current score"
+            >
+              Open in Studio ✎
             </button>
             <button className="btn primary" onClick={onDraftChallenger}>
               Draft challenger ✺

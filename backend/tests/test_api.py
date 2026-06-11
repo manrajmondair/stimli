@@ -718,3 +718,38 @@ def test_local_markdown_report_blockquotes_notes():
     assert "> first line" in markdown.text
     assert "> ## Fake Heading" in markdown.text
     assert "\n## Fake Heading\n" not in markdown.text
+
+
+def test_local_preview_mirrors_serverless_shape():
+    body = {
+        "text": "Stop wasting money. Lumina locks in hydration, dermatologist tested. Try the starter kit today.",
+        "brief": {
+            "brand_name": "Lumina",
+            "primary_offer": "starter kit",
+            "required_claims": ["dermatologist tested", "money back guarantee"],
+            "forbidden_terms": ["miracle"],
+        },
+        "include_ladder": True,
+    }
+    first = client.post("/analyze/preview", json=body)
+    assert first.status_code == 200
+    payload = first.json()
+    # Deterministic: identical input, identical output.
+    assert client.post("/analyze/preview", json=body).json() == payload
+    assert payload["ship_threshold"] == 68
+    assert payload["scores"]["overall"] > 0
+    assert len(payload["timeline"]) >= 3
+    signals = {s["signal"]: s["active"] for s in payload["signals"]}
+    assert signals["hook_word_open"] is True
+    assert signals["offer_named"] is True
+    assert payload["compliance"]["missing_required"] == ["money back guarantee"]
+    assert payload["compliance"]["forbidden_hits"] == []
+    assert len(payload["ladder"]) == 4
+    deltas = [r["delta"] for r in payload["ladder"]]
+    assert deltas == sorted(deltas, reverse=True)
+
+    # Forbidden hit + validation parity.
+    dirty = client.post("/analyze/preview", json={**body, "text": body["text"] + " A miracle.", "include_ladder": False})
+    assert dirty.json()["compliance"]["forbidden_hits"][0]["term"] == "miracle"
+    assert client.post("/analyze/preview", json={"text": "   "}).status_code == 400
+    assert client.post("/analyze/preview", json={"text": "x" * 33000}).status_code == 413
