@@ -10,8 +10,6 @@ frontend/*.tsbuildinfo
 backend/.data
 backend/.venv
 backend/venv
-backend/__pycache__
-backend/.pytest_cache
 **/__pycache__
 **/.pytest_cache
 **/*.pyc

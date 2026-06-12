@@ -1,4 +1,5 @@
 // Tests for the Cloudflare Pages Function that backs the Stimli API.
+// Run with `npm run test:api` (or the full chain via `npm test`).
 //
 // The function exports onRequest({ request, env, ... }) and reads its
 // configuration from `env` (passed in by the Pages runtime). In tests we drive

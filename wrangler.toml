@@ -1,3 +1,4 @@
+# Stimli — Cloudflare Pages configuration (bindings, public env, previews).
 name = "stimli"
 compatibility_date = "2026-05-15"
 compatibility_flags = ["nodejs_compat"]

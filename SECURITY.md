@@ -1,8 +1,7 @@
 # Security policy
 
-Stimli is a small research project, but it does handle authenticated user data
-(Clerk-managed identities, workspace assets, Stripe customer ids). Take
-security findings seriously.
+Stimli handles authenticated user data — Clerk-managed identities, workspace
+assets, and Stripe customer ids — and treats security findings accordingly.
 
 ## Reporting a vulnerability
 

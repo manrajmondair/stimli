@@ -1,3 +1,10 @@
+"""Stimli hosted inference on Modal.
+
+Three authenticated endpoints: synchronous TRIBE-compatible inference,
+asynchronous job control for media assets, and OCR/transcription extraction.
+See README.md -> Hosted inference for deployment.
+"""
+
 from __future__ import annotations
 
 import base64

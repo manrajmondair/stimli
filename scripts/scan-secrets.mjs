@@ -1,3 +1,5 @@
+// Scans git-tracked files for secret-shaped strings before they can land in a
+// commit. Run via `npm test` (tests/scan-secrets.test.js) and CI.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";

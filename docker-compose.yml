@@ -1,3 +1,5 @@
+# Local development stack: FastAPI mirror + Vite frontend.
+# Production runs on Cloudflare Pages — see README.md → Deployment.
 services:
   backend:
     build:

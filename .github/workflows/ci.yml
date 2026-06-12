@@ -1,3 +1,5 @@
+# Full test gate — Node API suite, Vitest, pytest, and a production build —
+# on every push and pull request. The deploy workflow runs the same chain.
 name: ci
 
 on:

@@ -61,7 +61,7 @@ function getCatalog() {
     {
       id: "research",
       name: "Research",
-      tagline: "Free for solo research and CS 153 demos.",
+      tagline: "Free for solo research and evaluation.",
       price_cents_monthly: 0,
       seats: envNum("STIMLI_RESEARCH_SEATS", 3),
       asset_limit_per_hour: envNum("STIMLI_RESEARCH_ASSET_LIMIT_PER_HOUR", 40),

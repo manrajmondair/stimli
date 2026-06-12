@@ -43,7 +43,7 @@ from app.models import (
 from app.storage import UPLOAD_DIR, Store, new_id, now_iso
 
 
-app = FastAPI(title="Stimli API", version="0.1.0")
+app = FastAPI(title="Stimli API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

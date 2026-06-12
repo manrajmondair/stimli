@@ -1,7 +1,6 @@
 # Contributing to Stimli
 
-Thanks for the interest. Stimli is a small research codebase, so the
-contribution loop is intentionally lightweight.
+Thanks for the interest. The contribution loop is intentionally lightweight.
 
 ## Quick start
 

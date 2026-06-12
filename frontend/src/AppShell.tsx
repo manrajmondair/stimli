@@ -3703,12 +3703,11 @@ export function LegalPage() {
         local provider for reproducible demos. Commercial use of the TRIBE-backed mode requires separate licensing
         agreements with the upstream authors.
       </p>
-      <h2>Built for CS 153</h2>
+      <h2>Source</h2>
       <p>
-        Stimli was built as a one-person frontier-lab project for CS 153 at Stanford. Everything in this product —
-        landing page, workbench, comparison pipeline, hosted GPU inference path — was designed, implemented, and shipped
-        as an independent project. See the <a href="https://github.com/manrajmondair/stimli">project repository</a> for
-        source and reproduction notes.
+        Everything in this product — landing page, workbench, comparison pipeline, hosted GPU inference path — is
+        developed in the open. See the <a href="https://github.com/manrajmondair/stimli">project repository</a> for
+        source, architecture notes, and the security policy.
       </p>
       <p style={{ marginTop: 48 }}>
         <a className="btn cream" href="/">

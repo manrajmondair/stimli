@@ -6,172 +6,64 @@
 [![license: CC BY-NC 4.0](https://img.shields.io/badge/license-CC%20BY--NC%204.0-blue)](LICENSE)
 [![node: 22+](https://img.shields.io/badge/node-22%2B-3c873a)](.nvmrc)
 
-Stimli is a brain-aware creative decision engine for DTC growth teams. Upload two or more scripts, landing pages, static ads, audio clips, or short videos, and get a direct ship / revise recommendation with a confidence score and the edits to make before spending media budget.
+**Stimli is a brain-aware creative decision engine for DTC growth teams.** Upload competing ad variants — scripts, landing pages, static creative, audio, or video — and get a direct ship/revise recommendation with a confidence score, per-dimension evidence, and the exact edits to make before committing media budget.
 
-> **Live:** https://stimli.pages.dev · **Status:** [stimli.pages.dev/api/health](https://stimli.pages.dev/api/health)
+> **Live:** [stimli.pages.dev](https://stimli.pages.dev) · **Status:** [stimli.pages.dev/api/health](https://stimli.pages.dev/api/health)
 
-## Table of contents
+## Capabilities
 
-- [What it does](#what-it-does)
-- [Project structure](#project-structure)
-- [Architecture in one paragraph](#architecture-in-one-paragraph)
-- [Deploy](#deploy)
-- [Authentication (Clerk)](#authentication-clerk)
-- [Subscription billing (Stripe)](#subscription-billing-stripe)
-- [Modal GPU inference](#modal-gpu-inference)
-- [Local development](#local-development)
-- [Tests](#tests)
-- [Contributing](#contributing)
-- [Security](#security)
-- [License & trust](#license--trust)
-- [Acknowledgements & external resources](#acknowledgements--external-resources)
-- [AI disclosure](#ai-disclosure)
+**Decide.** Compare two to four variants side by side. Every variant is scored across ten dimensions — hook, clarity, CTA, brand cue, pacing, offer strength, audience fit, and a per-second neural attention / memory / cognitive-load timeline — and the result is one recommendation with the evidence behind it, ranked edit cards, focused challenger drafts, and brief-compliance checks against required claims and forbidden terms.
 
-## What it does
+**Write.** The Copy Studio scores copy live as it is written, through the same engine that powers comparisons: named signal chips explain every score movement, the brief is linted in real time, a ranked ladder of engine rewrites is one click away, and finished drafts drop straight into the compare flow.
 
-- Compares creative variants side by side instead of burying the answer in charts.
-- Produces a ship / revise recommendation with a confidence score and the evidence behind it.
-- Includes a Copy Studio: write ad copy with live deterministic scoring, named signal chips, brief linting, a ranked ladder of engine rewrites, and one-click save into the compare flow.
-- Records verified revision lineage when a Studio draft saves from a baselined session — both sides rescored server-side by the same engine — and reports the Studio lift ledger (average measured lift, rematch win rate) in Insights.
-- Converts attention, memory, cognitive load, hook, clarity, CTA, and brand-cue signals into concrete edit cards.
-- Scores against a campaign brief: brand, audience, category, offer, required claims, and forbidden terms.
-- Extracts landing-page text from URLs, with a reliable fallback when a site blocks automated fetches.
-- Persists comparison history and launch outcomes so future versions can calibrate prediction quality against spend results.
-- Supports passkey accounts, team workspaces, free invite links, project ownership, and public report sharing.
-- Adds enterprise controls for team roles, audit events, hosted-job observability, retry recovery, workspace export, deletion review, validation benchmarks, brand profiles, creative library, and bulk imports.
-- Works with a deterministic local brain-response provider for reproducible demos, with a clean adapter boundary for TRIBE-style model inference.
-- Exports a report payload suitable for a short project demo or client-style review.
+**Prove.** Decisions are a register, not a feed: label them, mark them shipped or killed, pin the ones that matter, and re-run them when the engine changes. Saving a revised draft records verified lineage — both sides rescored server-side by the same engine — and the Insights view reports what winning creative looks like, which score dimensions actually predict launch outcomes, measured Studio lift, rematch win rates, and spend-weighted prediction accuracy calibrated against logged results.
 
-## Project structure
+**Operate.** Team workspaces with role-based access, invite links, audit trails, brand profiles, a creative library with bulk import and bulk compare, public report sharing, workspace export, deletion review, and subscription billing.
+
+## Architecture
+
+The browser hits **Cloudflare Pages**. Static assets serve from the edge; everything under `/api/*` dispatches to a single **Pages Function** that handles auth, projects, assets, comparisons, the Studio preview engine, reports, sharing, billing, governance, and insights. Persistence is **Neon Postgres** over the serverless HTTP driver; private uploads go to **Cloudflare R2**; authentication is **Clerk**; billing is **Stripe**.
+
+Brain-response inference is optional and degrades gracefully: when the **Modal** GPU service is configured, media uploads are processed asynchronously and text is scored inline against the hosted model, with a short timeout and circuit breaker guarding the request path. When it is unreachable, every path falls back to a deterministic in-process engine — and every variant in a comparison is always scored by the same engine, so rankings stay apples-to-apples. An optional **OpenRouter** copy-polish path rewrites edit cards and runs semantic compliance checks, with deterministic templates as the fallback. `/api/brain/providers` reports which engines are live.
 
 ```text
-functions/        Cloudflare Pages Functions — production API
-  api/
-    [[path]].js    main router
-    _lib/          analysis, auth, billing, store helpers
-frontend/         React/Vite dashboard (builds to frontend/dist)
-inference/        Modal app for hosted TRIBE inference + extraction
-backend/          FastAPI research backend (local experimentation only)
-tests/            Node test suite for the Pages Function
-wrangler.toml     Cloudflare Pages config (compatibility flags, env, R2)
-.github/workflows/
-  deploy-pages.yml  Auto-deploy to Cloudflare Pages on push to main
+functions/api/       Cloudflare Pages Function — production API
+  [[path]].js        router
+  _lib/              analysis engine, auth, billing, LLM polish, store
+frontend/            React + Vite application
+inference/           Modal app: hosted inference + media extraction
+backend/             FastAPI mirror for local development
+tests/               Node-native API suite (runs the Pages Function directly)
+docs/                product brief
 ```
 
-## Architecture in one paragraph
+## Deployment
 
-The browser hits **Cloudflare Pages** at `stimli.pages.dev`. Static assets are served straight from R2's edge cache. Anything under `/api/*` is dispatched to a single **Pages Function** (`functions/api/[[path]].js`) that handles auth, projects, assets, comparisons, reports, sharing, billing, governance, validation, library, imports, and admin. Persistence is **Neon Postgres** via the `@neondatabase/serverless` HTTP driver (Workers can't open raw TCP). Private uploads go to **Cloudflare R2** (`env.STIMLI_MEDIA.put(...)`). Brain-response inference is optional and degrades gracefully. When `TRIBE_INFERENCE_URL` / `TRIBE_CONTROL_URL` point at the **Modal** app in `inference/tribe_modal.py`, media uploads (audio/video/large files) are processed asynchronously on a GPU while text creatives are scored inline. If the hosted model is slow or unreachable, every path falls back to a deterministic in-process heuristic (short inline timeout + circuit breaker so a cold endpoint can't stall the request), and every variant in a comparison is always scored by the same engine so the ranking stays apples-to-apples. `/api/brain/providers` reports which engine is live.
+Production deploys automatically on every push to `main` via `.github/workflows/deploy-pages.yml`: the workflow verifies secrets, runs the full test suite, builds, deploys with Wrangler, and health-checks the live deployment.
 
-## Deploy
+Required Cloudflare resources:
 
-Production deploys happen automatically on every push to `main` via the GitHub Action at `.github/workflows/deploy-pages.yml`. The Action installs deps, builds the frontend, and runs `wrangler pages deploy frontend/dist --project-name=stimli`.
+- **Pages project** `stimli` (output `frontend/dist`), with R2 buckets `stimli-media` (production) and `stimli-media-preview` (branch previews).
+- **Pages secrets** via `wrangler pages secret put`: `POSTGRES_URL`, `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`; optionally `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL`, `TRIBE_API_KEY` (Modal), `OPENROUTER_API_KEY` (copy polish), and the Stripe keys below.
+- **GitHub Actions secrets**: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `VITE_CLERK_PUBLISHABLE_KEY`.
 
-Manual deploy (from a clean checkout):
+Public configuration (origins, rate limits, retention, fetch allowlists) lives in `wrangler.toml`. See `.env.example` for the full variable reference.
 
-```bash
-npm install
-echo 'VITE_CLERK_PUBLISHABLE_KEY=pk_test_...' > frontend/.env.production.local
-npx wrangler login          # one-time
-npm run deploy:pages
-```
+### Billing
 
-### Required Cloudflare resources
+Three tiers, defined in `functions/api/_lib/billing.js` and overridable per-plan via environment variables:
 
-- **Pages project** `stimli` (production branch `main`, output dir `frontend/dist`, build `npm run build`).
-- **R2 buckets**:
-  - `stimli-media` for production private uploaded assets.
-  - `stimli-media-preview` for branch preview uploads (`wrangler.toml [env.preview]` binds previews here so test uploads do not land in production media).
-- **Pages secrets** (set via `wrangler pages secret put`):
-  - `POSTGRES_URL` — Neon connection string.
-  - `CLERK_SECRET_KEY` — Clerk API secret (sk_test_… / sk_live_…).
-  - `CLERK_PUBLISHABLE_KEY` — Clerk publishable key (pk_test_… / pk_live_…).
-  - `TRIBE_INFERENCE_URL`, `TRIBE_CONTROL_URL`, `STIMLI_EXTRACT_URL` (optional) — Modal endpoint URLs for hosted inference and extraction.
-  - `TRIBE_API_KEY` (optional) — bearer token shared with the Modal worker.
-  - `OPENROUTER_API_KEY` (optional) — turns on LLM copy polish for edit cards, reasons, challengers, and semantic compliance checks. See [Optional integrations](#optional-integrations).
-- **GitHub Actions secrets** (set via `gh secret set` or repo settings → Actions):
-  - `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` — used by `wrangler-action`.
-  - `VITE_CLERK_PUBLISHABLE_KEY` — Vite reads this at build time and inlines it into the bundle. Same value as the Clerk publishable key.
-- **Public env vars** (in `wrangler.toml [vars]`): `STIMLI_ORIGIN`, `STIMLI_APP_URL`, `CLERK_AUTHORIZED_PARTIES`, rate limits, retention defaults, and optional landing-page fetch allowlists.
+| Plan     | Price  | Comparisons / mo | Assets / mo | Seats |
+|----------|--------|------------------|-------------|-------|
+| Research | Free   | 25               | 200         | 3     |
+| Growth   | $149   | 500              | 4,000       | 5     |
+| Scale    | $499   | 5,000            | 40,000      | 25    |
 
-## Authentication (Clerk)
+Wire Stripe by creating recurring prices for Growth and Scale, setting `STRIPE_SECRET_KEY`, `STRIPE_GROWTH_PRICE_ID`, `STRIPE_SCALE_PRICE_ID`, and `STRIPE_WEBHOOK_SECRET`, and pointing a webhook at `/api/billing/webhook` for the `checkout.session.*`, `customer.subscription.*`, and `invoice.payment_*` events. Webhook deliveries are signature-verified and idempotent; subscription state in Postgres is the source of truth for plan resolution. Quota exhaustion returns a structured `402` that the frontend routes to the in-app billing flow.
 
-Sign-in uses [Clerk](https://clerk.com). Providers configured: Google, Apple, GitHub, Microsoft, email/password, magic link, and passkey. Configure them in the Clerk dashboard under **User & Authentication → Email, Phone, Username** and **Social Connections**.
+### Hosted inference
 
-On the server, `functions/api/_lib/auth.js` verifies each request's `Authorization: Bearer <jwt>` against Clerk's JWKS via `@clerk/backend`. The verified Clerk `userId` is mapped to a row in `stimli_users` (auto-created on first call) and a personal team (also auto-created). Sessions are owned entirely by Clerk — the API does not issue or store its own cookies.
-
-Run `wrangler pages secret list --project-name=stimli` to confirm what's set.
-
-### Optional integrations
-
-- `STIMLI_TRIBE_COMMERCIAL_LICENSE=1` flips the license badge to `commercial-ready` for surfaces that gate commerce on the brain provider's license terms.
-- `STIMLI_LANDING_PAGE_FETCH_ALLOWLIST=example.com,brand.com` allows direct serverless fetches for trusted landing-page hosts. Leave it empty to use safe fallback text instead of fetching URLs whose DNS cannot be pinned by the Worker runtime.
-- `OPENROUTER_API_KEY=sk-or-v1-…` turns on the optional copy-polish path in `functions/api/_lib/copy_llm.js`. When set, templated edit cards, recommendation reasons, and challenger drafts are rewritten from the actual variant text + brief, and a semantic compliance check populates `comparison.compliance` with required-claim and forbidden-term hits. When unset, every path stays templated and deterministic. Override the model with `STIMLI_LLM_MODEL` and the timeout with `STIMLI_LLM_TIMEOUT_MS` (default 8000).
-
-### Subscription billing (Stripe)
-
-Three tiers, all defined in `functions/api/_lib/billing.js`:
-
-| Plan      | Price  | Comparisons / mo | Assets / mo | Seats |
-|-----------|--------|------------------|-------------|-------|
-| Research  | Free   | 25               | 200         | 3     |
-| Growth    | $149   | 500              | 4,000       | 5     |
-| Scale     | $499   | 5,000            | 40,000      | 25    |
-
-Hourly limits (40 assets / 12 comparisons on Research, scaling up by tier) remain as bot/abuse protection. Monthly quotas are the real SaaS quota and reset on the subscription's billing cycle (or on the UTC calendar month for free tenants without a Stripe subscription).
-
-Wiring billing on top of the base deployment requires:
-
-1. Create three Stripe products (Research is free — no Stripe object needed):
-   - **Growth** — recurring monthly price → `STRIPE_GROWTH_PRICE_ID`.
-   - **Scale** — recurring monthly price → `STRIPE_SCALE_PRICE_ID`.
-2. Set Pages secrets via `wrangler pages secret put`:
-   - `STRIPE_SECRET_KEY` (sk_test_… in dev, sk_live_… in production).
-   - `STRIPE_GROWTH_PRICE_ID`, `STRIPE_SCALE_PRICE_ID`.
-   - `STRIPE_WEBHOOK_SECRET` (created when you add the webhook endpoint).
-3. Add a Stripe webhook pointing at `https://stimli.pages.dev/api/billing/webhook` listening for:
-   - `checkout.session.completed`
-   - `customer.subscription.created`
-   - `customer.subscription.updated`
-   - `customer.subscription.deleted`
-   - `customer.subscription.trial_will_end`
-   - `invoice.payment_succeeded`
-   - `invoice.payment_failed`
-
-Stripe events are deduped by event id in `stimli_billing_events`, so retries are safe. Subscription state (period bounds, cancel flag, trial end, status) lives in `stimli_subscriptions` and is the source of truth for plan resolution; the team's denormalized `plan` field is kept in sync so anonymous billing-status reads stay cheap. Stripe itself charges no platform fee — costs only apply on real customer charges (2.9% + 30¢ at typical US rates), so this entire system can run at zero recurring cost in test mode and idle.
-
-When a request exceeds the monthly quota, the API returns `402 Payment Required` with a structured body:
-
-```json
-{
-  "detail": "Monthly comparison quota reached on the Research plan. Upgrade to keep shipping.",
-  "code": "quota_exceeded",
-  "details": {
-    "kind": "comparison",
-    "limit": 25,
-    "used": 25,
-    "plan": "research",
-    "reset_at": "2026-06-01T00:00:00.000Z",
-    "upgrade_url": "/?billing=upgrade"
-  }
-}
-```
-
-The frontend listens for this status on every fetch and routes the user to the in-app **Billing** view, which renders pricing cards driven by `/api/billing/status` and opens Stripe Checkout for upgrades / Stripe Customer Portal for subscription management.
-
-Per-plan quotas and prices can be overridden without a redeploy via env vars (e.g. `STIMLI_GROWTH_COMPARISON_LIMIT_PER_MONTH=750`, `STIMLI_GROWTH_PRICE_CENTS_MONTHLY=19900`).
-
-## Modal GPU inference
-
-The Modal app in `inference/tribe_modal.py` exposes three endpoints:
-
-- `https://<workspace>--stimli-tribe.modal.run` — sync TRIBE inference (`TRIBE_INFERENCE_URL`).
-- `https://<workspace>--stimli-tribe-control.modal.run` — async job control for media (`TRIBE_CONTROL_URL`).
-- `https://<workspace>--stimli-extract.modal.run` — OCR/transcript extraction (`STIMLI_EXTRACT_URL`).
-
-Two Modal secrets are required:
-
-- `stimli-huggingface` with `HF_TOKEN`
-- `stimli-modal-auth` with `STIMLI_MODAL_API_KEY` (this is the bearer the Cloudflare Pages secret `TRIBE_API_KEY` matches)
+The Modal app in `inference/tribe_modal.py` exposes three authenticated endpoints — synchronous inference, asynchronous job control for media, and OCR/transcription extraction:
 
 ```bash
 cd inference
@@ -181,113 +73,42 @@ modal secret create stimli-modal-auth STIMLI_MODAL_API_KEY=...
 modal deploy tribe_modal.py
 ```
 
-Media files are sent to Modal inline (base64 in `asset.metadata.file_base64`) for sizes up to `STIMLI_MAX_INLINE_FILE_BYTES` (8 MB by default). Larger files are stored in R2 only and Modal falls back to filename-derived text for extraction — wire up an R2 signed-URL path if you need extraction at the 8–25 MB tier.
+Files up to 8 MB are passed to Modal inline; larger uploads are stored in R2 with filename-derived extraction fallback.
 
 ## Local development
 
-Two local-dev paths. Pick by whether you need production parity or fast iteration.
-
-### Path A — Wrangler Pages dev (production parity, recommended)
-
-Uses the same Cloudflare Workers runtime as production. Good for testing R2 / auth / Modal integration locally.
+**Production parity** — the same Workers runtime as production, with R2/auth/Modal integration:
 
 ```bash
 npm install
-npm run build                # populates frontend/dist
-npm run dev:pages            # wrangler pages dev on http://localhost:8788
+npm run build
+npm run dev:pages        # http://localhost:8788  (secrets in .dev.vars)
 ```
 
-Add a local secrets file at `.dev.vars` (gitignored) with `POSTGRES_URL=...` and any Modal secrets you want to exercise.
-
-### Path B — Vite + FastAPI (fast iteration on the workbench)
-
-Use this when iterating on the React shell or the analysis heuristics. The Pages Function is bypassed; the Vite dev server proxies `/api/*` to a local FastAPI process.
-
-In one terminal, the Python backend:
+**Fast iteration** — Vite proxies `/api/*` to a local FastAPI mirror:
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+cd backend && python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
+# in another terminal:
+npm run dev:frontend     # http://localhost:5173
 ```
 
-In another, the Vite dev server:
+`docker compose up --build` brings up the same Vite + FastAPI pair.
 
-```bash
-npm install
-# Optional for full authenticated /app flows:
-# echo 'VITE_CLERK_PUBLISHABLE_KEY=pk_test_...' > frontend/.env.local
-npm run dev:frontend         # http://localhost:5173
-```
-
-Without `VITE_CLERK_PUBLISHABLE_KEY`, the landing and legal/share surfaces still render, but `/app` and `/invite/*` show the auth-configuration fallback instead of the workbench.
-
-`vite.config.ts` proxies `/api/*` to `http://127.0.0.1:8000` (override with `STIMLI_API_PROXY`), stripping the `/api` prefix so requests land on the FastAPI routes directly. The FastAPI service implements a useful subset (assets, comparisons, demo seed, learning summary, reports, challengers, outcomes); the enterprise routes return 404 and the UI handles that gracefully.
-
-### Docker
-
-```bash
-docker compose up --build
-```
-
-Brings up the same Vite + FastAPI pair as Path B at `http://localhost:5173`.
-
-## Tests
+## Testing
 
 ```bash
 npm test
 ```
 
-Runs in order:
+Runs, in order: the Node-native API suite (drives the Pages Function directly with Web Requests and a stubbed environment — auth and multi-team scoping, billing and webhooks, atomic quotas, share links, inference resilience, the Studio preview engine, revision lineage, and a full end-to-end journey), the Vitest + Testing Library frontend suite, the FastAPI test suite, and a production build as the final correctness check.
 
-1. **`npm run test:api`** — Node-native test suite (`node --test tests/serverless-api.test.js`) that drives `functions/api/[[path]].js` with Web Requests + a stub env, covering health, CORS, Clerk auth + multi-team scoping, billing status/webhooks (signature rejection, idempotency), atomic quota + rate limits, demo seed, calibration, share links (including public state-leak protection), comparison delete + cascade, brain-inference resilience (degradation, circuit breaker, single-engine fairness), enterprise controls, and a full end-to-end journey.
-2. **`npm run test:web`** — Vitest + @testing-library/react across `frontend/src/test/`, covering error-message parsing, the Landing page, App routing + the lazy-route error boundary, the Workbench compare flow + searchable/deletable decision history, the team switcher, and the outcomes CSV builder.
-3. **`npm run build`** — TypeScript build + production Vite bundle as a final correctness check.
+## Contributing & security
 
-## Contributing
+Bug fixes, accessibility improvements, and documentation are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Report vulnerabilities through a [private security advisory](https://github.com/manrajmondair/stimli/security/advisories/new); scope and response expectations are documented in [`SECURITY.md`](SECURITY.md).
 
-Bug fixes, accessibility wins, and clearer docs are all welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contribution loop, house style, and PR checklist. Open an issue first for new top-level features so we can align on scope before code lands.
+## License
 
-## Security
-
-Report vulnerabilities through a [private GitHub security advisory](https://github.com/manrajmondair/stimli/security/advisories/new) — see [`SECURITY.md`](SECURITY.md) for what's in scope, expected response times, and the hardening notes that apply to the codebase.
-
-## License & trust
-
-Stimli is released under [CC BY-NC 4.0](LICENSE) for non-commercial use. Built for CS 153 at Stanford. See [`/legal`](https://stimli.pages.dev/legal) on the live site for full terms.
-
-## Acknowledgements & external resources
-
-Stimli is built on top of these tools, services, and models:
-
-- **[Cloudflare Pages](https://pages.cloudflare.com), [Workers](https://workers.cloudflare.com) & [R2](https://www.cloudflare.com/products/r2/)** — hosting, the serverless API runtime, and private asset storage (via [Wrangler](https://developers.cloudflare.com/workers/wrangler/)).
-- **[Neon](https://neon.tech)** — serverless Postgres through the [`@neondatabase/serverless`](https://github.com/neondatabase/serverless) HTTP driver.
-- **[Clerk](https://clerk.com)** — authentication ([`@clerk/backend`](https://www.npmjs.com/package/@clerk/backend)).
-- **[Stripe](https://stripe.com)** — subscription billing.
-- **[Modal](https://modal.com)** — on-demand GPU for the hosted inference + extraction service.
-- **[OpenRouter](https://openrouter.ai)** — the optional runtime copy-polish path.
-- **TRIBE** — the brain-response inference target the Modal adapter is built around, with transcription and OCR extraction for media assets.
-- **[React](https://react.dev)** + **[Vite](https://vitejs.dev)** and **[Vitest](https://vitest.dev)** — frontend and tests.
-
-Built for **CS 153 (Frontier Systems)** at **Stanford University**.
-
-## AI disclosure
-
-I built Stimli with heavy use of AI coding agents, and I want to be explicit about how and where they were used.
-
-**Tools: [Claude Code](https://claude.com/claude-code)** (Anthropic's agentic command-line coding assistant) and **OpenAI's Codex** — both used as primary development environments for essentially the entire project, often running in parallel on different parts of the codebase.
-
-**How I worked.** I owned the product direction, the architecture, the data model, the resilience and security requirements, and the definition of "done" — what to build and why. The coding agents did most of the implementation under that direction: writing the code, generating the test suites, running multi-agent code reviews and bug-hunts across the repository, fixing the bugs those reviews surfaced, optimizing the hot paths, and verifying changes against the live deployment. I reviewed, corrected, and accepted or rejected their work throughout; I'm responsible for everything in this repository.
-
-**Where it was used** — effectively across the whole codebase:
-
-- **API** (`functions/api/`) — the Cloudflare Pages Function router, the analysis/scoring engine, the brain-inference adapter with graceful degradation + circuit breaker, Clerk auth and multi-team resolution, atomic quota enforcement, Stripe billing, and the Neon/in-memory store.
-- **Frontend** (`frontend/src/`) — the React workbench (compare flow, searchable decision history, team switcher), the neural-timeline visualization, and the typed API client.
-- **Inference** (`inference/tribe_modal.py`) — the Modal GPU service for TRIBE-style inference and extraction.
-- **Tests, CI & ops** — the Node + Vitest suites, the GitHub Actions CI/deploy workflows, and `wrangler` config; plus debugging production incidents through repeated audit / fix / verify loops against `stimli.pages.dev`.
-
-**AI inside the product (runtime), disclosed for completeness.** Stimli itself also uses AI at request time: an optional LLM copy-polish path (default **Claude Haiku 4.5** via OpenRouter) rewrites edit cards, recommendation reasons, and challenger drafts and runs a semantic compliance check; and a **TRIBE**-style neural model on Modal predicts the per-second attention / memory / cognitive-load timeline, with a deterministic in-process heuristic fallback when it's unavailable. See [Optional integrations](#optional-integrations) and [Modal GPU inference](#modal-gpu-inference).
-
-All architecture, product, and final-correctness decisions are my own.
+Released under [CC BY-NC 4.0](LICENSE) for non-commercial use. The TRIBE-backed inference mode is subject to the upstream model's own license terms; commercial use of that mode requires separate licensing. Full terms at [`/legal`](https://stimli.pages.dev/legal).
