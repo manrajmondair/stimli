@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { StudioView, writeStudioHandoff } from "../Studio";
@@ -168,6 +169,20 @@ describe("StudioView", () => {
     const applyButtons = screen.getAllByRole("button", { name: /^apply$/i });
     fireEvent.click(applyButtons[0]);
     expect(screen.getByLabelText(/ad copy draft/i)).toHaveValue("Stop settling. Try the kit today.");
+  });
+
+  it("keeps the handoff under StrictMode's double-invoked initializers", async () => {
+    // main.tsx wraps the app in StrictMode: in dev, useState initializers and
+    // useMemo run twice, and a naive consume-on-read would hand the second
+    // invocation nothing — losing the draft. The once-cache must survive it.
+    writeStudioHandoff({ text: "StrictMode survivor", baseline_overall: 50, baseline_label: "Src" });
+    stubPreviewFetch(makePreview(72));
+    render(
+      <StrictMode>
+        <StudioView workspaceKey="ws_strict" />
+      </StrictMode>
+    );
+    expect(screen.getByLabelText(/ad copy draft/i)).toHaveValue("StrictMode survivor");
   });
 
   it("rehydrates the working draft after an unmount (navigation away and back)", async () => {

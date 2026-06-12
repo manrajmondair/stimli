@@ -31,6 +31,8 @@ Stimli is a brain-aware creative decision engine for DTC growth teams. Upload tw
 
 - Compares creative variants side by side instead of burying the answer in charts.
 - Produces a ship / revise recommendation with a confidence score and the evidence behind it.
+- Includes a Copy Studio: write ad copy with live deterministic scoring, named signal chips, brief linting, a ranked ladder of engine rewrites, and one-click save into the compare flow.
+- Records verified revision lineage when a Studio draft saves from a baselined session — both sides rescored server-side by the same engine — and reports the Studio lift ledger (average measured lift, rematch win rate) in Insights.
 - Converts attention, memory, cognitive load, hook, clarity, CTA, and brand-cue signals into concrete edit cards.
 - Scores against a campaign brief: brand, audience, category, offer, required claims, and forbidden terms.
 - Extracts landing-page text from URLs, with a reliable fallback when a site blocks automated fetches.

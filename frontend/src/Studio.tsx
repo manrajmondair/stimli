@@ -3,6 +3,7 @@ import { createBriefComparisonForProject, createTextAsset, listBrandProfiles, pr
 import type { CreativeBrief, DraftPreview } from "./types";
 import { BrainBlob, Sparkle } from "./art";
 import { BriefTermChips } from "./briefChips";
+import { consumeOnce } from "./onceStorage";
 
 // Copy Studio: write ad copy WITH the engine instead of judging it after the
 // fact. The draft is scored through the same deterministic engine that powers
@@ -44,13 +45,7 @@ export function writeWorkbenchOpenHandoff(comparisonId: string) {
 }
 
 export function readWorkbenchOpenHandoff(): string | null {
-  try {
-    const raw = window.sessionStorage.getItem(WORKBENCH_OPEN_KEY);
-    if (raw) window.sessionStorage.removeItem(WORKBENCH_OPEN_KEY);
-    return raw || null;
-  } catch {
-    return null;
-  }
+  return consumeOnce(WORKBENCH_OPEN_KEY, (raw) => raw || null);
 }
 
 export function writeStudioHandoff(payload: StudioHandoff) {
@@ -62,15 +57,10 @@ export function writeStudioHandoff(payload: StudioHandoff) {
 }
 
 function readStudioHandoff(): StudioHandoff | null {
-  try {
-    const raw = window.sessionStorage.getItem(DRAFT_HANDOFF_KEY);
-    if (!raw) return null;
-    window.sessionStorage.removeItem(DRAFT_HANDOFF_KEY);
+  return consumeOnce(DRAFT_HANDOFF_KEY, (raw) => {
     const parsed = JSON.parse(raw) as StudioHandoff;
     return parsed && typeof parsed.text === "string" ? parsed : null;
-  } catch {
-    return null;
-  }
+  });
 }
 
 const EMPTY_BRIEF: CreativeBrief = {

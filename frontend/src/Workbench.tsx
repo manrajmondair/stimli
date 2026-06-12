@@ -34,6 +34,7 @@ import type {
 import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
 import { DIFF_MAX_TOKENS, diffStats, diffTruncated, wordDiff } from "./diff";
 import { readWorkbenchOpenHandoff, writeStudioHandoff } from "./Studio";
+import { consumeOnce } from "./onceStorage";
 
 // Library "Compare selected" handoff: 2-4 asset ids consumed once on mount.
 const COMPARE_SELECTION_KEY = "stimli.compare_selection";
@@ -47,16 +48,12 @@ export function writeCompareSelection(assetIds: string[]) {
 }
 
 function readCompareSelection(): string[] {
-  try {
-    const raw = window.sessionStorage.getItem(COMPARE_SELECTION_KEY);
-    if (!raw) return [];
-    window.sessionStorage.removeItem(COMPARE_SELECTION_KEY);
+  const value = consumeOnce(COMPARE_SELECTION_KEY, (raw) => {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return [...new Set(parsed.filter((id) => typeof id === "string"))].slice(0, 4);
-  } catch {
-    return [];
-  }
+    return [...new Set(parsed.filter((id) => typeof id === "string"))].slice(0, 4) as string[];
+  });
+  return value || [];
 }
 
 function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
