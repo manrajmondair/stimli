@@ -2450,13 +2450,15 @@ function Result({
             <button className="btn cream" onClick={onReCompare}>
               Re-compare
             </button>
-            <button
-              className="btn cream"
-              onClick={() => onOpenInStudio(activeVariant)}
-              title="Edit this variant's copy with live scoring against its current score"
-            >
-              Open in Studio ✎
-            </button>
+            {(activeVariant.asset.extracted_text || "").trim() ? (
+              <button
+                className="btn cream"
+                onClick={() => onOpenInStudio(activeVariant)}
+                title="Edit this variant's copy with live scoring against its current score"
+              >
+                Open in Studio ✎
+              </button>
+            ) : null}
             <button className="btn primary" onClick={onDraftChallenger}>
               Draft challenger ✺
             </button>

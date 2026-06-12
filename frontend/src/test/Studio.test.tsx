@@ -170,6 +170,18 @@ describe("StudioView", () => {
     expect(screen.getByLabelText(/ad copy draft/i)).toHaveValue("Stop settling. Try the kit today.");
   });
 
+  it("rehydrates the working draft after an unmount (navigation away and back)", async () => {
+    stubPreviewFetch(makePreview(72));
+    const first = render(<StudioView workspaceKey="ws_persist" />);
+    fireEvent.change(screen.getByLabelText(/ad copy draft/i), {
+      target: { value: "Draft that must survive navigation" }
+    });
+    first.unmount();
+
+    render(<StudioView workspaceKey="ws_persist" />);
+    expect(screen.getByLabelText(/ad copy draft/i)).toHaveValue("Draft that must survive navigation");
+  });
+
   it("saves the draft as a variant through the existing assets flow", async () => {
     // Real timers here: waitFor polls with its own timers, which deadlock when
     // faked; the save path doesn't depend on the debounce anyway.

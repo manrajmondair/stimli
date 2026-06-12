@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createTextAsset, listBrandProfiles, previewDraft } from "./api";
+import { createTextAsset, listBrandProfiles, previewDraft, StimliApiError } from "./api";
 import type { CreativeBrief, DraftPreview } from "./types";
 import { BrainBlob, Sparkle } from "./art";
 
@@ -12,6 +12,13 @@ import { BrainBlob, Sparkle } from "./art";
 
 const DEBOUNCE_MS = 600;
 const DRAFT_HANDOFF_KEY = "stimli.studio_draft";
+// How long the live loop stays paused after the preview meter returns 429 —
+// re-issuing on every pause would just burn doomed requests.
+const RATE_LIMIT_COOLDOWN_MS = 60_000;
+
+function studioStateKey(workspaceKey: string | null | undefined) {
+  return `stimli.studio_state:${workspaceKey || "anonymous"}`;
+}
 
 export type StudioHandoff = {
   text: string;
@@ -62,10 +69,29 @@ const DIMENSIONS: Array<{ key: keyof DraftPreview["scores"]; label: string; lowe
   { key: "cognitive_load", label: "Load", lowerIsBetter: true }
 ];
 
+type StudioSavedState = StudioHandoff & { savedAt?: number };
+
+function readStudioSavedState(workspaceKey: string | undefined): StudioSavedState | null {
+  try {
+    const raw = window.sessionStorage.getItem(studioStateKey(workspaceKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StudioSavedState;
+    return parsed && typeof parsed.text === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: string }) {
-  const handoff = useMemo(() => readStudioHandoff(), []);
-  const [text, setText] = useState(handoff?.text || "");
-  const [brief, setBrief] = useState<CreativeBrief>({ ...EMPTY_BRIEF, ...(handoff?.brief || {}) });
+  // A fresh handoff (from "Open in Studio") wins; otherwise rehydrate the
+  // last working state so navigating to another view and back doesn't destroy
+  // the draft — Studio unmounts on every view switch.
+  const initial = useMemo<StudioSavedState | null>(
+    () => readStudioHandoff() || readStudioSavedState(workspaceKey),
+    [workspaceKey]
+  );
+  const [text, setText] = useState(initial?.text || "");
+  const [brief, setBrief] = useState<CreativeBrief>({ ...EMPTY_BRIEF, ...(initial?.brief || {}) });
   const [preview, setPreview] = useState<DraftPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -73,15 +99,35 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
   const [ladderBusy, setLadderBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedName, setSavedName] = useState<string | null>(null);
-  const baseline = handoff?.baseline_overall ?? null;
-  const baselineLabel = handoff?.baseline_label ?? null;
-  // Monotonic token: only the latest in-flight preview may write state.
+  const baseline = initial?.baseline_overall ?? null;
+  const baselineLabel = initial?.baseline_label ?? null;
+  // Monotonic token: only the latest in-flight preview (or ladder) may write state.
   const previewTokenRef = useRef(0);
+  // Set after a 429: the live loop skips scheduling until this timestamp.
+  const pausedUntilRef = useRef(0);
+
+  // Persist the working state so the draft survives navigation.
+  useEffect(() => {
+    try {
+      if (!text.trim()) {
+        window.sessionStorage.removeItem(studioStateKey(workspaceKey));
+      } else {
+        window.sessionStorage.setItem(
+          studioStateKey(workspaceKey),
+          JSON.stringify({ text, brief, baseline_overall: baseline, baseline_label: baselineLabel })
+        );
+      }
+    } catch {
+      /* storage unavailable — the draft just won't survive navigation */
+    }
+  }, [text, brief, baseline, baselineLabel, workspaceKey]);
 
   // Pre-fill the brief from the default brand profile (same convention the
-  // Workbench uses) when the handoff didn't bring one.
+  // Workbench uses) when the handoff/rehydration didn't bring one. Applied via
+  // the functional form ONLY while the brief is still pristine, so a slow
+  // profile fetch can't clobber fields the user already typed.
   useEffect(() => {
-    if (handoff?.brief) return;
+    if (initial?.brief) return;
     const key =
       workspaceKey && workspaceKey !== "anonymous"
         ? `stimli.default_brand_profile:${workspaceKey}`
@@ -99,31 +145,48 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
         if (cancelled) return;
         const match = profiles.find((profile) => profile.id === defaultBrandId);
         if (!match) return;
-        setBrief({
-          brand_name: match.brief.brand_name || "",
-          audience: match.brief.audience || "",
-          product_category: match.brief.product_category || "",
-          primary_offer: match.brief.primary_offer || "",
-          required_claims: [...(match.brief.required_claims || [])],
-          forbidden_terms: [...(match.brief.forbidden_terms || [])]
+        setBrief((current) => {
+          const pristine =
+            !current.brand_name &&
+            !current.audience &&
+            !current.product_category &&
+            !current.primary_offer &&
+            current.required_claims.length === 0 &&
+            current.forbidden_terms.length === 0;
+          if (!pristine) return current;
+          return {
+            brand_name: match.brief.brand_name || "",
+            audience: match.brief.audience || "",
+            product_category: match.brief.product_category || "",
+            primary_offer: match.brief.primary_offer || "",
+            required_claims: [...(match.brief.required_claims || [])],
+            forbidden_terms: [...(match.brief.forbidden_terms || [])]
+          };
         });
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [handoff, workspaceKey]);
+  }, [initial, workspaceKey]);
 
-  // The live loop: debounce the draft + brief into a preview call. The ladder
-  // is invalidated by any change (it was computed against the previous text).
+  // The live loop: debounce the draft + brief into a preview call. The token
+  // bumps on EVERY change — including clearing the editor — so an in-flight
+  // response for retired text can never repopulate the screen. The ladder is
+  // invalidated by any change (it was computed against the previous text), and
+  // a stale "Saved" banner stops asserting the rewritten draft is saved.
   useEffect(() => {
+    const token = ++previewTokenRef.current;
     setLadder(null);
+    setSavedName(null);
     if (!text.trim()) {
       setPreview(null);
       setPreviewError(null);
       return;
     }
-    const token = ++previewTokenRef.current;
+    if (Date.now() < pausedUntilRef.current) {
+      return;
+    }
     const timer = window.setTimeout(() => {
       setPreviewing(true);
       previewDraft({ text, brief })
@@ -134,6 +197,13 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
         })
         .catch((err) => {
           if (previewTokenRef.current !== token) return;
+          if (err instanceof StimliApiError && err.status === 429) {
+            // The preview meter is empty — pause the loop instead of firing a
+            // doomed request on every pause in typing.
+            pausedUntilRef.current = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+            setPreviewError("Live scoring is taking a breather (rate limit) — it resumes in about a minute.");
+            return;
+          }
           setPreviewError(err instanceof Error ? err.message : "Could not score the draft.");
         })
         .finally(() => {
@@ -145,12 +215,18 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
 
   async function runLadder() {
     if (!text.trim() || ladderBusy) return;
+    // Capture the token so a ladder computed for retired text is discarded —
+    // the live-loop effect bumps it on any draft/brief change.
+    const token = previewTokenRef.current;
     setLadderBusy(true);
     try {
       const result = await previewDraft({ text, brief, include_ladder: true });
+      if (previewTokenRef.current !== token) return;
       setLadder(result.ladder || []);
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : "Could not generate rewrites.");
+      if (previewTokenRef.current === token) {
+        setPreviewError(err instanceof Error ? err.message : "Could not generate rewrites.");
+      }
     } finally {
       setLadderBusy(false);
     }
@@ -161,7 +237,8 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
     setSaving(true);
     setSavedName(null);
     try {
-      const name = `Studio draft · ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+      const now = new Date();
+      const name = `Studio draft · ${now.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
       const asset = await createTextAsset({ assetType: "script", name, text: text.trim() });
       setSavedName(asset.name);
     } catch (err) {
@@ -261,7 +338,9 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
                       color: entry.present ? "var(--pistachio-ink)" : "var(--ink-soft)"
                     }}
                   >
-                    {entry.present ? "✓" : "○"} {entry.claim}
+                    <span aria-hidden="true">{entry.present ? "✓" : "○"} </span>
+                    {entry.claim}
+                    <span className="sr-only">{entry.present ? " — claim met" : " — claim missing"}</span>
                   </span>
                 ))}
                 {preview.compliance.forbidden_terms.map((entry) =>
@@ -320,7 +399,10 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
               </div>
             ) : (
               <>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+                {/* Announced politely: updates land at debounce cadence (600ms+),
+                    so screen readers hear settled scores, not keystroke spam. */}
+                <div aria-live="polite" aria-atomic="true" style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+                  <span className="sr-only">Overall score</span>
                   <strong style={{ fontSize: 44, lineHeight: 1 }}>{overall}</strong>
                   <span
                     className="pill"
@@ -384,7 +466,9 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
                       }}
                       title={signal.active ? "Active in this draft" : "Not detected in this draft"}
                     >
-                      {signal.active ? "●" : "○"} {signal.label}
+                      <span aria-hidden="true">{signal.active ? "●" : "○"} </span>
+                      {signal.label}
+                      <span className="sr-only">{signal.active ? " — present" : " — missing"}</span>
                     </span>
                   ))}
                 </div>
