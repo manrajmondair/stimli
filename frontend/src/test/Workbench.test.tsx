@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { Workbench } from "../Workbench";
+import { Workbench, writeCompareSelection } from "../Workbench";
 import type { Comparison } from "../types";
 
 // Builds a minimal-but-valid completed comparison so the Recent decisions panel
@@ -208,6 +208,37 @@ describe("Workbench", () => {
     // History renders (so data loaded) but the checklist never appears.
     await screen.findByText("Named decision");
     expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+  });
+
+  it("consumes the Library compare-selection handoff and prunes ids that don't resolve", async () => {
+    window.sessionStorage.clear();
+    writeCompareSelection(["asset_a", "asset_ghost", "asset_b"]);
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/assets")) {
+        return json([
+          { id: "asset_a", type: "script", name: "Variant A", extracted_text: "alpha copy", metadata: {}, created_at: new Date().toISOString() },
+          { id: "asset_b", type: "script", name: "Variant B", extracted_text: "beta copy", metadata: {}, created_at: new Date().toISOString() }
+        ]);
+      }
+      if (u.includes("/comparisons")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Workbench onRequireAuth={vi.fn()} remoteProvider={null} briefDefaults={undefined} />);
+
+    // Both real assets arrive selected (the ghost id is pruned), so the panel
+    // reads ready-to-compare. (The name renders in both the variant list and
+    // the selection rail, so match all.)
+    await screen.findAllByText("Variant A");
+    await waitFor(() => {
+      expect(screen.getByText(/2 selected/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/ready/i)).toBeInTheDocument();
+    // The handoff is one-shot.
+    expect(window.sessionStorage.getItem("stimli.compare_selection")).toBeNull();
   });
 
   it("renders a delete control on each decision row", async () => {

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createTextAsset, listBrandProfiles, previewDraft, StimliApiError } from "./api";
+import { createBriefComparisonForProject, createTextAsset, listBrandProfiles, previewDraft, StimliApiError } from "./api";
 import type { CreativeBrief, DraftPreview } from "./types";
 import { BrainBlob, Sparkle } from "./art";
+import { BriefTermChips } from "./briefChips";
 
 // Copy Studio: write ad copy WITH the engine instead of judging it after the
 // fact. The draft is scored through the same deterministic engine that powers
@@ -24,8 +25,33 @@ export type StudioHandoff = {
   text: string;
   baseline_overall?: number | null;
   baseline_label?: string | null;
+  // The asset this draft revises — carried through save so the server can
+  // record verified lineage and the rematch can pit revision against source.
+  source_asset_id?: string | null;
   brief?: Partial<CreativeBrief>;
 };
+
+// Distinct from the studio keys: a comparison id for the Workbench to open on
+// mount (written by "Run the rematch").
+const WORKBENCH_OPEN_KEY = "stimli.workbench_open";
+
+export function writeWorkbenchOpenHandoff(comparisonId: string) {
+  try {
+    window.sessionStorage.setItem(WORKBENCH_OPEN_KEY, comparisonId);
+  } catch {
+    /* storage unavailable — the workbench just opens normally */
+  }
+}
+
+export function readWorkbenchOpenHandoff(): string | null {
+  try {
+    const raw = window.sessionStorage.getItem(WORKBENCH_OPEN_KEY);
+    if (raw) window.sessionStorage.removeItem(WORKBENCH_OPEN_KEY);
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
 
 export function writeStudioHandoff(payload: StudioHandoff) {
   try {
@@ -82,7 +108,20 @@ function readStudioSavedState(workspaceKey: string | undefined): StudioSavedStat
   }
 }
 
-export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: string }) {
+type SaveReceipt = {
+  assetId: string;
+  name: string;
+  lift: number | null;
+  sourceLabel: string | null;
+};
+
+export function StudioView({
+  workspaceKey = "anonymous",
+  onOpenWorkbench
+}: {
+  workspaceKey?: string;
+  onOpenWorkbench?: () => void;
+}) {
   // A fresh handoff (from "Open in Studio") wins; otherwise rehydrate the
   // last working state so navigating to another view and back doesn't destroy
   // the draft — Studio unmounts on every view switch.
@@ -99,8 +138,11 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
   const [ladderBusy, setLadderBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedName, setSavedName] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<SaveReceipt | null>(null);
+  const [rematchBusy, setRematchBusy] = useState(false);
   const baseline = initial?.baseline_overall ?? null;
   const baselineLabel = initial?.baseline_label ?? null;
+  const sourceAssetId = initial?.source_asset_id ?? null;
   // Monotonic token: only the latest in-flight preview (or ladder) may write state.
   const previewTokenRef = useRef(0);
   // Set after a 429: the live loop skips scheduling until this timestamp.
@@ -112,15 +154,24 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
       if (!text.trim()) {
         window.sessionStorage.removeItem(studioStateKey(workspaceKey));
       } else {
+        // source_asset_id MUST persist with the rest: dropping it here would
+        // keep the baseline chip after navigate-away-and-back while silently
+        // saving without lineage — looks right, records nothing.
         window.sessionStorage.setItem(
           studioStateKey(workspaceKey),
-          JSON.stringify({ text, brief, baseline_overall: baseline, baseline_label: baselineLabel })
+          JSON.stringify({
+            text,
+            brief,
+            baseline_overall: baseline,
+            baseline_label: baselineLabel,
+            source_asset_id: sourceAssetId
+          })
         );
       }
     } catch {
       /* storage unavailable — the draft just won't survive navigation */
     }
-  }, [text, brief, baseline, baselineLabel, workspaceKey]);
+  }, [text, brief, baseline, baselineLabel, sourceAssetId, workspaceKey]);
 
   // Pre-fill the brief from the default brand profile (same convention the
   // Workbench uses) when the handoff/rehydration didn't bring one. Applied via
@@ -179,6 +230,7 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
     const token = ++previewTokenRef.current;
     setLadder(null);
     setSavedName(null);
+    setReceipt(null);
     if (!text.trim()) {
       setPreview(null);
       setPreviewError(null);
@@ -236,15 +288,58 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
     if (!text.trim() || saving) return;
     setSaving(true);
     setSavedName(null);
+    setReceipt(null);
     try {
       const now = new Date();
       const name = `Studio draft · ${now.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
-      const asset = await createTextAsset({ assetType: "script", name, text: text.trim() });
+      const asset = await createTextAsset({
+        assetType: "script",
+        name,
+        text: text.trim(),
+        revisedFrom: sourceAssetId,
+        brief
+      });
+      // The lift on the receipt is the SERVER's number — recomputed for both
+      // sides through the same engine at save time, not the (possibly stale,
+      // possibly cross-engine) live pill.
+      const serverLift = Number(asset.metadata?.revision_lift);
+      setReceipt({
+        assetId: asset.id,
+        name: asset.name,
+        lift: Number.isFinite(serverLift) ? serverLift : null,
+        sourceLabel: asset.metadata?.revised_from ? baselineLabel : null
+      });
       setSavedName(asset.name);
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : "Could not save the draft.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // The full loop closer: pit the saved revision against its source in a real
+  // comparison and open the result in the Workbench.
+  async function runRematch() {
+    if (!receipt || !sourceAssetId || rematchBusy) return;
+    setRematchBusy(true);
+    try {
+      const comparison = await createBriefComparisonForProject(
+        [sourceAssetId, receipt.assetId],
+        "Rematch: Studio revision vs original.",
+        { ...EMPTY_BRIEF, ...brief },
+        null
+      );
+      writeWorkbenchOpenHandoff(comparison.id);
+      if (onOpenWorkbench) {
+        onOpenWorkbench();
+      } else {
+        setPreviewError(null);
+        setSavedName(`Rematch created — open the Workbench to see the result.`);
+      }
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Could not run the rematch.");
+    } finally {
+      setRematchBusy(false);
     }
   }
 
@@ -283,7 +378,21 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
         </div>
       </header>
       {previewError ? <div className="banner error">{previewError}</div> : null}
-      {savedName ? (
+      {receipt && receipt.lift !== null ? (
+        <div className="banner" role="status" data-testid="lift-receipt" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span>
+            {`Saved "${receipt.name}" · `}
+            <strong style={{ color: receipt.lift >= 0 ? "var(--pistachio-ink)" : "var(--tomato-ink)" }}>
+              {receipt.lift >= 0 ? "+" : ""}
+              {receipt.lift} measured
+            </strong>
+            {receipt.sourceLabel ? ` vs ${receipt.sourceLabel}` : ""} · same engine, both sides
+          </span>
+          <button className="btn primary small" onClick={runRematch} disabled={rematchBusy}>
+            {rematchBusy ? "Setting up…" : "Run the rematch ⚡"}
+          </button>
+        </div>
+      ) : savedName ? (
         <div className="banner" role="status">
           {`Saved "${savedName}" — it's in your Workbench variants, ready to compare.`}
         </div>
@@ -327,6 +436,19 @@ export function StudioView({ workspaceKey = "anonymous" }: { workspaceKey?: stri
                 <input value={brief.audience} onChange={(e) => setBrief({ ...brief, audience: e.target.value })} />
               </label>
             </div>
+            <BriefTermChips
+              label="Required claims"
+              terms={brief.required_claims}
+              onChange={(next) => setBrief({ ...brief, required_claims: next })}
+              addPlaceholder="+ claim"
+            />
+            <BriefTermChips
+              label="Forbidden terms"
+              terms={brief.forbidden_terms}
+              onChange={(next) => setBrief({ ...brief, forbidden_terms: next })}
+              addPlaceholder="+ forbid"
+              accent="var(--tomato-ink)"
+            />
             {preview && (preview.compliance.required_claims.length || preview.compliance.forbidden_terms.length) ? (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
                 {preview.compliance.required_claims.map((entry) => (

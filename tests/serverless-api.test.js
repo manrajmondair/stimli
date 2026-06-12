@@ -3560,6 +3560,88 @@ test("/api/outcomes returns workspace-wide outcomes joined with comparison + ass
   assert.ok(row.asset_name, "asset_name joined in");
 });
 
+test("revision lineage is recomputed server-side and feeds the studio_lift ledger", async () => {
+  const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const headers = { "x-stimli-workspace": workspace };
+
+  // A deliberately weak source...
+  const source = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Weak original", text: "Our brand is a holistic ecosystem for modern lifestyles." },
+    headers
+  );
+  assert.equal(source.statusCode, 200);
+  const sourceId = source.json.asset.id;
+
+  // ...revised in Studio into a clearly stronger draft, saved with lineage.
+  const brief = { brand_name: "Lumina", primary_offer: "starter kit" };
+  const revision = await call(
+    "POST",
+    "/api/assets",
+    {
+      asset_type: "script",
+      name: "Studio revision",
+      text: "Stop wasting money on routines that fail. Lumina's starter kit locks in 24-hour hydration, proven by customers. Try the starter kit today.",
+      revised_from: sourceId,
+      brief: JSON.stringify(brief)
+    },
+    headers
+  );
+  assert.equal(revision.statusCode, 200);
+  const meta = revision.json.asset.metadata;
+  assert.equal(meta.revised_from, sourceId);
+  assert.ok(Number.isFinite(meta.revision_baseline), "baseline recomputed server-side");
+  assert.ok(Number.isFinite(meta.revision_overall), "revision scored server-side");
+  assert.ok(meta.revision_lift > 0, "the stronger draft measures a positive lift");
+  assert.equal(meta.revision_engine, "web-heuristic-brain");
+
+  // A bogus or foreign revised_from degrades to a plain save — never a 400,
+  // never unverified lineage.
+  const bogus = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Bogus lineage", text: "Try the kit today.", revised_from: "asset_doesnotexist" },
+    headers
+  );
+  assert.equal(bogus.statusCode, 200);
+  assert.equal(bogus.json.asset.metadata.revised_from, undefined);
+  const foreign = await call(
+    "POST",
+    "/api/assets",
+    { asset_type: "script", name: "Foreign lineage", text: "Try the kit today.", revised_from: sourceId },
+    { "x-stimli-workspace": `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}` }
+  );
+  assert.equal(foreign.statusCode, 200);
+  assert.equal(foreign.json.asset.metadata.revised_from, undefined);
+
+  // The rematch: source vs revision; the revision wins, and the insights
+  // ledger reports the measured lift and the rematch record.
+  const rematch = await call(
+    "POST",
+    "/api/comparisons",
+    { asset_ids: [sourceId, revision.json.asset.id], objective: "rematch", brief },
+    headers
+  );
+  assert.equal(rematch.statusCode, 200);
+  assert.equal(rematch.json.recommendation.winner_asset_id, revision.json.asset.id);
+
+  const insights = await call("GET", "/api/insights", null, headers);
+  const ledger = insights.json.studio_lift;
+  assert.equal(ledger.revisions, 1);
+  assert.equal(ledger.measured, 1);
+  assert.ok(ledger.average_lift > 0);
+  assert.equal(ledger.improved_share, 1);
+  assert.equal(ledger.rematches, 1);
+  assert.equal(ledger.rematch_wins, 1);
+  assert.equal(ledger.rematch_win_rate, 1);
+
+  // Lineage survives the public surfaces (publicAsset strips blobs only).
+  const library = await call("GET", "/api/library/assets", null, headers);
+  const libraryRow = library.json.assets.find((a) => a.id === revision.json.asset.id);
+  assert.equal(libraryRow.metadata.revised_from, sourceId);
+});
+
 test("/api/analyze/preview scores a draft deterministically with signals, lint, and ladder", async () => {
   const workspace = `ws_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
   const headers = { "x-stimli-workspace": workspace };

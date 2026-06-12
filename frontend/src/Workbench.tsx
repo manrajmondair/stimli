@@ -33,7 +33,31 @@ import type {
 } from "./types";
 import { BrainBlob, BraidedTrail, NeuralTimeline, Sparkle, StickerStar, type NeuralVariant } from "./art";
 import { DIFF_MAX_TOKENS, diffStats, diffTruncated, wordDiff } from "./diff";
-import { writeStudioHandoff } from "./Studio";
+import { readWorkbenchOpenHandoff, writeStudioHandoff } from "./Studio";
+
+// Library "Compare selected" handoff: 2-4 asset ids consumed once on mount.
+const COMPARE_SELECTION_KEY = "stimli.compare_selection";
+
+export function writeCompareSelection(assetIds: string[]) {
+  try {
+    window.sessionStorage.setItem(COMPARE_SELECTION_KEY, JSON.stringify(assetIds));
+  } catch {
+    /* storage unavailable — the workbench just opens unselected */
+  }
+}
+
+function readCompareSelection(): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(COMPARE_SELECTION_KEY);
+    if (!raw) return [];
+    window.sessionStorage.removeItem(COMPARE_SELECTION_KEY);
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((id) => typeof id === "string"))].slice(0, 4);
+  } catch {
+    return [];
+  }
+}
 
 function defaultBrandStorageKey(workspaceKey: string | null | undefined) {
   return workspaceKey && workspaceKey !== "anonymous"
@@ -131,7 +155,10 @@ type WorkbenchProps = {
 export function Workbench({ onRequireAuth, onOpenStudio, remoteProvider, briefDefaults, workspaceKey = "anonymous", workspaceReady = true }: WorkbenchProps) {
   const [step, setStep] = useState<Step>("inventory");
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
+  // Seeded from the Library's "Compare selected" handoff when present; the
+  // initializer is race-free because the Workbench remounts on every view
+  // switch and runs before refreshAssets fires.
+  const [selected, setSelected] = useState<string[]>(() => readCompareSelection());
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [recentComparisons, setRecentComparisons] = useState<Comparison[]>([]);
   const [confirmRecentDeleteId, setConfirmRecentDeleteId] = useState<string | null>(null);
@@ -190,6 +217,12 @@ export function Workbench({ onRequireAuth, onOpenStudio, remoteProvider, briefDe
     getLearningSummary()
       .then((summary) => setOutcomeCount(summary.outcome_count))
       .catch(() => setOutcomeCount(null));
+    // A rematch created in the Studio hands its comparison id over to be
+    // opened immediately — openRecent owns the complete/processing handling.
+    const openId = readWorkbenchOpenHandoff();
+    if (openId) {
+      void openRecent(openId);
+    }
   }, [workspaceReady, workspaceKey]);
 
   useEffect(() => {
@@ -265,6 +298,14 @@ export function Workbench({ onRequireAuth, onOpenStudio, remoteProvider, briefDe
     try {
       const list = await listAssets();
       setAssets(list);
+      // Prune selections that no longer resolve (deleted assets, ids handed
+      // over from another view that has since changed) — a stale id would
+      // otherwise ride into handleCompare and 404 the whole comparison.
+      const known = new Set(list.map((asset) => asset.id));
+      setSelected((current) => {
+        const pruned = current.filter((id) => known.has(id));
+        return pruned.length === current.length ? current : pruned;
+      });
     } catch (err) {
       console.warn(err);
     }
@@ -793,6 +834,7 @@ export function Workbench({ onRequireAuth, onOpenStudio, remoteProvider, briefDe
       text: variant.asset.extracted_text || "",
       baseline_overall: variant.analysis.scores.overall,
       baseline_label: variant.asset.name.split("·")[0]?.trim() ?? variant.asset.name,
+      source_asset_id: variant.asset.id,
       brief: comparison?.brief
     });
     if (onOpenStudio) {

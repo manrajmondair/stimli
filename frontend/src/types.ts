@@ -317,6 +317,17 @@ export type CreativeInsights = {
   winner_profile: InsightDimensionProfile[];
   dimension_predictive_power: Array<{ dimension: string; evaluated: number; aligned: number; rate: number | null }>;
   copy_signals: Array<{ signal: string; label: string; winner_rate: number | null; runner_up_rate: number | null }>;
+  // Optional: older API deploys don't return the Studio revision ledger.
+  studio_lift?: {
+    revisions: number;
+    measured: number;
+    average_lift: number | null;
+    improved_share: number | null;
+    rematches: number;
+    rematch_wins: number;
+    rematch_win_rate: number | null;
+    engine: string;
+  };
   spend: { total: number; on_aligned_decisions: number; aligned_share: number | null };
 };
 

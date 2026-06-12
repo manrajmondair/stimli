@@ -67,6 +67,7 @@ import {
   listIntegrationJobs,
   listOutcomes,
   listProjects,
+  listStudioRevisions,
   listTeamMembers,
   listTeamsForUser,
   listTeamInvites,
@@ -258,10 +259,14 @@ export async function onRequest(context) {
     if (request.method === "GET" && apiPath === "/insights") {
       // Deterministic analytics rollup over the workspace's accumulated
       // decisions + outcomes — what winning creative looks like, which score
-      // dimensions actually predict launch results, and the copy patterns that
-      // separate winners from runners-up.
-      const [outcomes, comparisons] = await Promise.all([listOutcomes(null, workspaceId), listComparisons(workspaceId)]);
-      return sendJson(200, creativeInsights(comparisons, outcomes), headers, cookies);
+      // dimensions actually predict launch results, the copy patterns that
+      // separate winners from runners-up, and the Studio revision ledger.
+      const [outcomes, comparisons, revisions] = await Promise.all([
+        listOutcomes(null, workspaceId),
+        listComparisons(workspaceId),
+        listStudioRevisions(workspaceId)
+      ]);
+      return sendJson(200, creativeInsights(comparisons, outcomes, revisions), headers, cookies);
     }
 
     if (request.method === "GET" && apiPath === "/outcomes") {
@@ -1012,6 +1017,22 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
       extractionMetadata.extraction_status ||= "fallback";
     }
 
+    // Revision lineage (Studio "save as variant" from a baselined draft).
+    // BOTH sides are recomputed server-side through the same deterministic
+    // preview engine in this request: a client-sent baseline could be stale
+    // (debounce lag), cross-engine (a TRIBE-scored comparison vs the heuristic
+    // preview), or simply fabricated into the insights ledger. A missing or
+    // foreign source degrades to a plain save — the draft is the user's work;
+    // stale lineage must never fail it.
+    const revisionMetadata = await computeRevisionLineage(
+      stringField(fields.revised_from).trim(),
+      assetType,
+      extractedText,
+      fields.brief,
+      workspaceId,
+      env
+    );
+
     const asset = {
       id: assetId,
       type: assetType,
@@ -1020,7 +1041,7 @@ async function handleAssets(request, segments, workspaceId, authContext, env, ma
       file_path: null,
       extracted_text: extractedText.trim(),
       duration_seconds: durationSeconds,
-      metadata: { ...baseMetadata, ...extractionMetadata },
+      metadata: { ...baseMetadata, ...extractionMetadata, ...revisionMetadata },
       workspace_id: workspaceId,
       project_id: projectId,
       created_at: nowIso()
@@ -1785,6 +1806,53 @@ async function storeUploadedFile(file, workspaceId, assetId, env) {
   };
 }
 
+// Builds the revision-lineage metadata for a script asset saved from a
+// baselined Studio session. Returns {} unless revised_from names an asset in
+// THIS workspace (cross-tenant ids can't be planted) with usable text. Both
+// the source and the new draft are scored through the deterministic preview
+// engine in this request, so the recorded lift is same-engine, current, and
+// unspoofable. Sources beyond the preview text cap record status instead of a
+// baseline rather than scoring unbounded text on the save path.
+async function computeRevisionLineage(revisedFrom, assetType, draftText, rawBrief, workspaceId, env) {
+  if (!revisedFrom || assetType !== "script" || !String(draftText || "").trim()) {
+    return {};
+  }
+  if (!/^[A-Za-z0-9_-]{3,96}$/.test(revisedFrom)) {
+    return {};
+  }
+  const source = await getAsset(revisedFrom, workspaceId);
+  const sourceText = String(source?.extracted_text || "").trim();
+  if (!source || !sourceText) {
+    return {};
+  }
+  let brief = {};
+  if (rawBrief && typeof rawBrief === "object") {
+    brief = rawBrief;
+  } else if (typeof rawBrief === "string" && rawBrief.trim()) {
+    try {
+      const parsed = JSON.parse(rawBrief);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) brief = parsed;
+    } catch {
+      brief = {};
+    }
+  }
+  const maxPreviewBytes = positiveNumber(env.STIMLI_MAX_PREVIEW_TEXT_BYTES, 32_000);
+  if (new TextEncoder().encode(sourceText).byteLength > maxPreviewBytes) {
+    return { revised_from: source.id, revision_baseline: null, baseline_status: "source_text_too_large" };
+  }
+  const [baseline, revision] = await Promise.all([
+    previewAnalysis({ text: sourceText, asset_type: source.type, brief }),
+    previewAnalysis({ text: draftText, asset_type: "script", brief })
+  ]);
+  return {
+    revised_from: source.id,
+    revision_baseline: baseline.scores.overall,
+    revision_overall: revision.scores.overall,
+    revision_lift: round(revision.scores.overall - baseline.scores.overall, 1),
+    revision_engine: "web-heuristic-brain"
+  };
+}
+
 function safeBlobName(name) {
   const basename = String(name).split(/[\\/]/).pop() || "upload.bin";
   const safe = basename.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -1873,7 +1941,7 @@ const INSIGHT_DIMENSIONS = [
 // (2) which dimensions actually predicted the best real-world outcome,
 // (3) which copy patterns separate winners from runners-up. Pure math over
 // existing data — no LLM, no randomness, reproducible for tests.
-function creativeInsights(comparisons, outcomes) {
+function creativeInsights(comparisons, outcomes, revisions = []) {
   const completed = comparisons.filter(
     (comparison) => comparison.status === "complete" && comparison.recommendation?.winner_asset_id
   );
@@ -1987,6 +2055,41 @@ function creativeInsights(comparisons, outcomes) {
     };
   });
 
+  // Studio revision ledger: lifts were recomputed server-side at save time
+  // (same engine, both sides), so the math here is pure aggregation. The
+  // rematch win rate counts completed comparisons that pit a revision against
+  // its own source — "revisions made in Studio won N of M rematches".
+  const measuredRevisions = revisions.filter(
+    (asset) =>
+      Number.isFinite(Number(asset.metadata?.revision_baseline)) &&
+      Number.isFinite(Number(asset.metadata?.revision_overall))
+  );
+  const lifts = measuredRevisions.map(
+    (asset) => Number(asset.metadata.revision_overall) - Number(asset.metadata.revision_baseline)
+  );
+  let rematches = 0;
+  let rematchWins = 0;
+  for (const revision of revisions) {
+    const sourceId = revision.metadata?.revised_from;
+    if (!sourceId) continue;
+    for (const comparison of completed) {
+      const ids = (comparison.variants || []).map((variant) => variant.asset?.id);
+      if (!ids.includes(revision.id) || !ids.includes(sourceId)) continue;
+      rematches += 1;
+      if (comparison.recommendation.winner_asset_id === revision.id) rematchWins += 1;
+    }
+  }
+  const studioLift = {
+    revisions: revisions.length,
+    measured: measuredRevisions.length,
+    average_lift: lifts.length ? round(lifts.reduce((sum, lift) => sum + lift, 0) / lifts.length, 1) : null,
+    improved_share: lifts.length ? round(lifts.filter((lift) => lift > 0).length / lifts.length, 3) : null,
+    rematches,
+    rematch_wins: rematchWins,
+    rematch_win_rate: rematches ? round(rematchWins / rematches, 3) : null,
+    engine: "web-heuristic-brain"
+  };
+
   return {
     sample: {
       decisions: completed.length,
@@ -1999,6 +2102,7 @@ function creativeInsights(comparisons, outcomes) {
     winner_profile: winnerProfile,
     dimension_predictive_power: predictivePower,
     copy_signals: copySignals,
+    studio_lift: studioLift,
     spend: {
       total: round(spendTotal, 2),
       on_aligned_decisions: round(spendAligned, 2),

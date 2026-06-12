@@ -182,6 +182,72 @@ describe("StudioView", () => {
     expect(screen.getByLabelText(/ad copy draft/i)).toHaveValue("Draft that must survive navigation");
   });
 
+  it("sends lineage on save when the handoff carried a source, and shows the lift receipt", async () => {
+    vi.useRealTimers();
+    writeStudioHandoff({
+      text: "Original copy to be revised",
+      baseline_overall: 60,
+      baseline_label: "Hook v1",
+      source_asset_id: "asset_src1",
+      brief: { brand_name: "Lumina" }
+    });
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (u.includes("/analyze/preview")) return json(makePreview(72));
+      if (u.includes("/assets") && (init?.method || "GET") === "POST") {
+        return json({
+          asset: {
+            id: "asset_rev1",
+            name: "Studio draft · saved",
+            type: "script",
+            extracted_text: "x",
+            created_at: "now",
+            metadata: { revised_from: "asset_src1", revision_baseline: 58, revision_overall: 66.2, revision_lift: 8.2 }
+          }
+        });
+      }
+      if (u.includes("/brand-profiles")) return json([]);
+      return json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<StudioView workspaceKey="ws_lineage" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /save as variant/i }));
+
+    // The receipt shows the SERVER-measured lift with the rematch CTA.
+    await waitFor(() => {
+      expect(screen.getByTestId("lift-receipt")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/\+8\.2 measured/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /run the rematch/i })).toBeInTheDocument();
+
+    // And the save request carried the lineage hint + brief for the server to verify.
+    const assetPost = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).includes("/assets") && (init?.method || "GET") === "POST"
+    );
+    const form = assetPost?.[1]?.body as FormData;
+    expect(form.get("revised_from")).toBe("asset_src1");
+    expect(JSON.parse(String(form.get("brief"))).brand_name).toBe("Lumina");
+  });
+
+  it("does not send lineage when the draft has no source", async () => {
+    vi.useRealTimers();
+    const fetchMock = stubPreviewFetch(makePreview(72));
+    render(<StudioView workspaceKey="ws_nolineage" />);
+    fireEvent.change(screen.getByLabelText(/ad copy draft/i), { target: { value: "Fresh draft" } });
+    fireEvent.click(screen.getByRole("button", { name: /save as variant/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Saved "Studio draft · saved"/i)).toBeInTheDocument();
+    });
+    const assetPost = fetchMock.mock.calls.find(
+      ([u, init]) => String(u).includes("/assets") && (init?.method || "GET") === "POST"
+    );
+    const form = assetPost?.[1]?.body as FormData;
+    expect(form.get("revised_from")).toBeNull();
+  });
+
   it("saves the draft as a variant through the existing assets flow", async () => {
     // Real timers here: waitFor polls with its own timers, which deadlock when
     // faked; the save path doesn't depend on the debounce anyway.

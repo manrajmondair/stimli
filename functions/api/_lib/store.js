@@ -94,6 +94,27 @@ export async function listAssets(workspaceId = "public") {
   return rows.map((row) => row.payload);
 }
 
+// Studio revisions only — NEVER swap this for listAssets in aggregate paths:
+// full asset payloads can carry metadata.file_base64 blobs up to 8MB each (by
+// design, for the Modal extractor), so loading a media-heavy workspace's whole
+// asset list in an analytics request risks the isolate memory cap. Revisions
+// are script assets and never inline blobs.
+export async function listStudioRevisions(workspaceId = "public") {
+  const sql = getSql();
+  if (!sql) {
+    return [...memoryStore.assets.values()]
+      .filter((asset) => workspaceForPayload(asset) === workspaceId && asset.metadata?.revised_from)
+      .sort(descCreatedAt);
+  }
+  await ensureTables(sql);
+  const rows = await sql`
+    select payload from stimli_assets
+    where workspace_id = ${workspaceId} and payload->'metadata' ? 'revised_from'
+    order by created_at desc
+  `;
+  return rows.map((row) => row.payload);
+}
+
 export async function getAsset(assetId, workspaceId = "public") {
   const sql = getSql();
   if (!sql) {

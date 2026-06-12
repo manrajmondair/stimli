@@ -116,6 +116,10 @@ export async function createTextAsset(input: {
   durationSeconds?: number;
   file?: File | null;
   projectId?: string | null;
+  // Revision lineage (Studio saves): the server validates revised_from in the
+  // workspace and recomputes both scores itself — these are hints, not data.
+  revisedFrom?: string | null;
+  brief?: Partial<CreativeBrief> | null;
   onUploadProgress?: (percentage: number) => void;
 }): Promise<Asset> {
   const form = new FormData();
@@ -125,6 +129,8 @@ export async function createTextAsset(input: {
   if (input.url) form.append("url", input.url);
   if (input.durationSeconds !== undefined) form.append("duration_seconds", String(input.durationSeconds));
   if (input.projectId) form.append("project_id", input.projectId);
+  if (input.revisedFrom) form.append("revised_from", input.revisedFrom);
+  if (input.brief) form.append("brief", JSON.stringify(input.brief));
   if (input.file) form.append("file", input.file);
   const response = await fetch(`${API_BASE}/assets`, {
     method: "POST",

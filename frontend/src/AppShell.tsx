@@ -53,7 +53,7 @@ import type {
   WorkspaceOutcome
 } from "./types";
 import { BrainBlob, NeuralTimeline, type NeuralVariant } from "./art";
-import { Workbench } from "./Workbench";
+import { Workbench, writeCompareSelection } from "./Workbench";
 import { StudioView } from "./Studio";
 
 const DEFAULT_BRAND_KEY = "stimli.default_brand_profile";
@@ -595,8 +595,18 @@ export function AppShell() {
             briefDefaults={undefined}
           />
         ) : workspaceLoading : null}
-        {view === "studio" ? workspaceReady ? <StudioView key={workspaceKey} workspaceKey={workspaceKey} /> : workspaceLoading : null}
-        {view === "library" ? workspaceReady ? <LibraryView key={workspaceKey} /> : workspaceLoading : null}
+        {view === "studio" ? workspaceReady ? (
+          <StudioView key={workspaceKey} workspaceKey={workspaceKey} onOpenWorkbench={() => navigateView("workbench")} />
+        ) : workspaceLoading : null}
+        {view === "library" ? workspaceReady ? (
+          <LibraryView
+            key={workspaceKey}
+            onCompareSelected={(assetIds) => {
+              writeCompareSelection(assetIds);
+              navigateView("workbench");
+            }}
+          />
+        ) : workspaceLoading : null}
         {view === "brands" ? workspaceReady ? <BrandsView key={workspaceKey} workspaceKey={workspaceKey} /> : workspaceLoading : null}
         {view === "outcomes" ? workspaceReady ? <OutcomesView key={workspaceKey} /> : workspaceLoading : null}
         {view === "team" ? (
@@ -1490,7 +1500,7 @@ export function SignInTrigger({
 }
 
 
-function LibraryView() {
+function LibraryView({ onCompareSelected }: { onCompareSelected?: (assetIds: string[]) => void }) {
   const [items, setItems] = useState<LibraryAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1732,6 +1742,26 @@ function LibraryView() {
             >
               {allVisibleSelected ? "Clear selection" : `Select all ${visible.length}`}
             </button>
+            {onCompareSelected ? (
+              <button
+                type="button"
+                className="btn primary small"
+                onClick={() => onCompareSelected([...selected])}
+                // Hard-gated to the comparison engine's 2-4 variant range —
+                // silently truncating a larger selection would lie about what
+                // got compared.
+                disabled={selected.size < 2 || selected.size > 4}
+                title={
+                  selected.size < 2
+                    ? "Select at least two assets to compare"
+                    : selected.size > 4
+                    ? "Comparisons take at most four variants"
+                    : "Open the Workbench with these variants selected"
+                }
+              >
+                {`Compare ${selected.size >= 2 && selected.size <= 4 ? selected.size : "selected"}`}
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn cream small"
@@ -1803,6 +1833,18 @@ function LibraryView() {
                   <span className="kicker">{asset.library?.extraction_status || "provided"}</span>
                   <span className="kicker">{asset.library?.text_length ?? previewText.length} chars</span>
                   {asset.library?.has_private_blob ? <span className="kicker">private file</span> : null}
+                  {asset.metadata?.revised_from ? (
+                    <span
+                      className="kicker"
+                      style={{ color: "var(--pistachio-ink)" }}
+                      title="Saved from the Studio with a measured, same-engine lift vs its source"
+                    >
+                      {(() => {
+                        const lift = Number(asset.metadata?.revision_lift);
+                        return Number.isFinite(lift) ? `studio revision · ${lift >= 0 ? "+" : ""}${lift}` : "studio revision";
+                      })()}
+                    </span>
+                  ) : null}
                 </div>
                 {isOpen ? <div className="asset-preview-body">{previewText || "(no extracted text)"}</div> : null}
                 <div className="list-card-actions">
@@ -2760,6 +2802,40 @@ function CreativeInsightsPanel({ insights }: { insights: CreativeInsights }) {
               ))}
             </tbody>
           </table>
+        </div>
+      ) : null}
+
+      {insights.studio_lift && insights.studio_lift.measured >= 2 ? (
+        <div style={{ marginTop: 16 }} data-testid="studio-lift">
+          <div className="panel-head">
+            <h3 style={{ fontSize: 14 }}>Studio lift</h3>
+            <span className="kicker">measured at save time · same engine both sides</span>
+          </div>
+          <div className="metric-grid">
+            <div className="metric">
+              <span>Revisions measured</span>
+              <strong>{insights.studio_lift.measured}</strong>
+            </div>
+            <div className="metric">
+              <span>Avg lift</span>
+              <strong>
+                {(insights.studio_lift.average_lift ?? 0) >= 0 ? "+" : ""}
+                {insights.studio_lift.average_lift}
+              </strong>
+            </div>
+            <div className="metric">
+              <span>Improved</span>
+              <strong>{Math.round((insights.studio_lift.improved_share ?? 0) * 100)}%</strong>
+            </div>
+            {insights.studio_lift.rematches > 0 ? (
+              <div className="metric">
+                <span>Rematches won</span>
+                <strong>
+                  {insights.studio_lift.rematch_wins}/{insights.studio_lift.rematches}
+                </strong>
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>
